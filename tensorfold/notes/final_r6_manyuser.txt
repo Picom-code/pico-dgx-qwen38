@@ -1,0 +1,32 @@
+Window Q, spark-923b, documented path (recipe.sh), one window. Distinct coding prompts, 512 tokens each, total tok/s (last first token). MEASURED.
++----------------------+-------------------------------+------------------------------+-------------------------------+----------+
+| users                | MiaAI config, 16 x 64K slots  | USERS16 (ours, default)      | USERS16 with COPY_ROWS=16     | ours vs MiaAI |
++----------------------+-------------------------------+------------------------------+-------------------------------+----------+
+| 1                    | 75.1 (0.23 s)                 | 77.6 (0.24 s)                | 81.3 (0.25 s)                 | +3.3 %   |
+| 4                    | 136.8 (1.72 s)                | 154.4 (0.55 s)               | 154.4 (0.58 s)                | +12.9 %  |
+| 8                    | 190.7 (3.00 s)                | 213.8 (0.79 s)               | 211.2 (0.79 s)                | +12.1 %  |
+| 16, two runs         | 214.0 / 219.5 (6.91 / 6.72 s) | 260.6 / 262.7 (1.29 / 1.13 s)| 260.6 / 262.9 (1.28 / 1.15 s) | +20.7 %  |
+| 16 copies            | 245.4 (6.57 s)                | 317.8 (1.01 s)               | 326.1 (1.09 s)                | +29.5 %  |
+| 8 copies             | 213.3 (2.76 s)                | 238.2 (0.69 s)               | 245.2 (0.69 s)                | +11.7 %  |
+| 4 copies             | 149.8 (1.19 s)                | 163.9 (0.51 s)               | 163.1 (0.51 s)                | +9.4 %   |
+| waves of 16 held     | 128.1, last first token 7.16 s| 148.4, 1.65 s                |                               | +15.8 %  |
+| waves of 4 held      | 87.9, 1.34 s                  | 96.5, 0.76 s                 |                               | +9.8 %   |
++----------------------+-------------------------------+------------------------------+-------------------------------+----------+
+Identity USERS16 vs MiaAI 16: waves-16 texts 128/128, waves-4 64/64 identical.
+USERS16 keeps the 262,144-token window (pool: 16 lanes share 25,681 MiB; a full-window stream takes 4,877 MiB):
+  1 x 136,607-token prompt + 15 short sent together: 0 errors, recall 3/3, long first token 71.2 s, shorts' last first token 1.55 s.
+  227,621-token prompt: 3/3, 2158 tok/s.
+MiaAI default (5 slots at 262K) for reference, window L: 16 users 155.4 (queued, last first token 38 s).
+
+spark-4e5c (test launcher, kp21, 16 lanes pool + wide 128 + many + cert + fused): copy rows at 16 users, same window:
++------------------------+-----------------------+---------+---------------------+----------------+
+| WINDOW_ROWS            | 16 users, three runs  | 8 users | held 16 in flight   | texts vs first |
++------------------------+-----------------------+---------+---------------------+----------------+
+| 16 (first)             | 248.7 / 257.3 / 267.7 | 213.1   | 174.1               | -              |
+| 32                     | 257.7 / 264.7 / 263.4 | 210.2   | 174.6               | 107/107        |
+| 16 (last)              | 254.4 / 264.5 / 256.1 | 208.6   | 174.1               | 107/107        |
++------------------------+-----------------------+---------+---------------------+----------------+
+=> copy rows 32 costs nothing at 16 users (means 258.1 vs 261.9; spread of one config is +-9). The window-P question is closed: it was run-to-run noise.
+Whole final stack CHECKED with 16 in flight (CERT=2 + fused read-out check, HCF_MAX=128): 180,000 read-outs, 6,368,221 rows, 19,511,807,096 words, 0 differ;
+waves of 16 136.8 tok/s and the edit set 4 in flight 218.3 tok/s under the checker, 0 errors.
+Mixed sizes (4e5c): 1 x 136,607 + 15 short: 3/3, shorts' last first token 1.99 s; 3 x ~91K + 13 short: 3/3 x 3, 1.01 s; 5 x ~182K at once: 3/3 x 5, 409 s wall, 0 errors, lowest MemAvailable 14 GiB.

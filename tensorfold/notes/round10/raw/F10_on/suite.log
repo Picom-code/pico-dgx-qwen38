@@ -1,0 +1,69 @@
+suite F10_on mode full start 2026-11-14T16:55:48Z model Qwen3.8-Flash-Next
+idle after load: MemAvailable 36 GiB, GPU MiB 80287
+== ttft 16:55:49
+ttft short prompt: median 119 ms  [125, 112, 122, 119, 124, 119, 108]
+== c1 16:55:51
+chat 1 user: median 51.5 tok/s  mean 52.8  [56.26, 50.24, 55.52, 51.46, 50.42, 55.03, 49.99, 48.26, 57.83]
+code 1 user: median 86.9 tok/s  mean 88.5  [90.55, 98.73, 78.97, 85.72, 97.99, 83.08, 86.93, 94.68, 79.63]
+== sd 16:58:02
+sd-method prose T0 think-off: median 61.8  mean 61.9  [62.49, 61.79, 61.82, 61.66, 61.96]
+sd-method prose T0.7 think-on: median 49.6  mean 50.8  [55.42, 49.59, 47.79, 52.45, 48.6]
+sd-method code T0 think-off (task 0): median 122.6  mean 122.6  [123.52, 121.57, 122.86, 122.63, 122.42]
+sd-method code8 T0 think-off (tasks 0-7): median 106.1  mean 108.4  [122.34, 117.28, 106.33, 101.48, 108.06, 101.9, 105.83, 103.82]
+sd-method structured T0 think-off: median 169.2  mean 169.1  [169.1, 169.75, 169.32, 169.17, 168.03]
+== ident 16:59:39
+math:8 256 75.98
+math:9 4 70.72
+zh:0 204 27.47
+zh:1 58 34.96
+zh:2 256 33.27
+json:0 256 116.44
+json:1 34 94.68
+long:8k 256 65.1
+long:30k 256 55.78
+long:code 256 93.2
+long:qa 256 64.5
+ident saved /home/picom/q38/runs/F10_on/ident_on.json n 51 median tps 67.7
+== prefill 17:03:44
+prefill target 8000: prompt_tokens 7303  ttft 2.91 s  2508 tok/s
+prefill target 32000: prompt_tokens 28990  ttft 11.40 s  2544 tok/s
+prefill target 128000: prompt_tokens 116438  ttft 47.21 s  2466 tok/s
+== held 17:04:46
+held chat: 56.20 tok/s (tokens/decode-time)  mean-of-prompts 60.52  n 198
+held code: 87.66 tok/s (tokens/decode-time)  mean-of-prompts 94.34  n 77
+held math: 86.98 tok/s (tokens/decode-time)  mean-of-prompts 87.70  n 40
+held ALL: 65.51 tok/s  n 315
+== sparkDash 1.8.8 real 17:27:07
+17:27:21 sdrun: c1 prose run 1: 61.38 tok/s, 256 tokens, ttft 70.96 ms 
+17:27:24 sdrun: c1 code run 1: 122.59 tok/s, 256 tokens, ttft 166.81 ms 
+17:27:26 sdrun: c1 structured run 1: 168.01 tok/s, 256 tokens, ttft 71.55 ms 
+17:27:35 sdrun: c1 prose run 2: 60.64 tok/s, 256 tokens, ttft 68.9 ms 
+17:27:38 sdrun: c1 code run 2: 121.43 tok/s, 256 tokens, ttft 73.93 ms 
+17:27:40 sdrun: c1 structured run 2: 167.48 tok/s, 256 tokens, ttft 69.45 ms 
+17:27:49 sdrun: c1 prose run 3: 61.33 tok/s, 256 tokens, ttft 67.81 ms 
+17:27:51 sdrun: c1 code run 3: 121.11 tok/s, 256 tokens, ttft 67.83 ms 
+17:27:53 sdrun: c1 structured run 3: 167.42 tok/s, 256 tokens, ttft 70.38 ms 
+17:28:02 sdrun: c1 prose run 4: 60.98 tok/s, 256 tokens, ttft 69.51 ms 
+17:28:05 sdrun: c1 code run 4: 122 tok/s, 256 tokens, ttft 69.44 ms 
+17:28:07 sdrun: c1 structured run 4: 163.94 tok/s, 256 tokens, ttft 68.93 ms 
+17:28:16 sdrun: c1 prose run 5: 60.99 tok/s, 256 tokens, ttft 70.74 ms 
+17:28:18 sdrun: c1 code run 5: 121.11 tok/s, 256 tokens, ttft 68.18 ms 
+17:28:20 sdrun: c1 structured run 5: 167.56 tok/s, 256 tokens, ttft 69.36 ms 
+17:30:04 sdrun: catalog prose: 16 prompts, mean 48.1 tok/s
+17:31:18 sdrun: catalog structural: 18 prompts, mean 76.8 tok/s
+17:33:02 sdrun: catalog code: 32 prompts, mean 97.6 tok/s
+== qeval c4 17:33:02
+   math     12/14
+   prose     5/5
+   reason   16/16
+wrote qeval-F10_on.json
+== img 17:34:46
+img: PASS ttft 0.52 s  ' The shapes are a red circle and a blue square.'
+== needle200k 17:34:47
+needle 200000: prompt_tokens 182154  recall 3/3  ttft 75.4 s  prefill 2415 tok/s  answer 'The vault code is MARLIN-7731, the name of the lead surveyor is Odalys Brenner, and the bridge inspection number is QX-90214.'
+== ctx 17:36:03
+ctx 250000: prompt_tokens 227621  recall 3/3  ttft 94.3 s  prefill 2413 tok/s  answer 'The vault code is MARLIN-7731, the name of the lead surveyor is Odalys Brenner, and the bridge inspection number is QX-90214.'
+min MemAvailable during suite: 8394 MiB; max GPU MiB 107914
+gpu temp C min/max during suite: 46/83 on spark-923b
+suite end 2026-11-14T17:37:38Z
+SUITE_DONE

@@ -1,0 +1,22 @@
+Round 8 final, many users. spark-923b, DOCUMENTED PATH (recipe.sh prepare with patches 0101-0113, recipe.sh start, vision on), ONE window
+(2026-11-13 20:04-20:31 UTC). Distinct coding prompts, 512 tokens, total tok/s (last first token). MEASURED.
++--------------------+----------------------------------------+------------------------------------------+
+| users              | MiaAI config, 16 x 64K slots           | USERS16=1, recipe default                |
+|                    | (every lever of ours off)              | (patches 0101-0113)                      |
++--------------------+----------------------------------------+------------------------------------------+
+| 1                  | 75.4 (0.24 s)                          | 81.6 (0.19 s)                            |
+| 4                  | 140.1 (1.22 s)                         | 153.7 (0.53 s)                           |
+| 8                  | 189.9 (2.88 s)                         | 219.9 (0.70 s)                           |
+| 12                 | 209.1 (4.91 s)                         | 260.0 (0.99 s)                           |
+| 16                 | 218.4 / 219.2 / 217.3 (6.80/6.73/6.76) | 276.9 / 283.0 / 278.6 (0.95/0.70/0.71)   |
+| 16 copies          | 245.4 (6.52 s)                         | 347.9 (0.65 s)                           |
+| waves of 16 held   | 127.7, last first token 7.20 s         | 160.1, 1.12 s                            |
+| waves of 4 held    | 87.2, 1.36 s                           | 101.3, 0.55 s                            |
++--------------------+----------------------------------------+------------------------------------------+
+16 users: 279.5 (mean of three) against 218.3 = +28 %; 12 users +24 %; 8 users +16 %; last first token at 16 users 6.8 s -> 0.8 s.
+Identity (texts): waves of 16 128/128 and waves of 4 64/64 identical between the two columns; held 107 prompts with 16 in flight 107/107
+identical to the round-7 build's texts (194.1 tok/s total).
+USERS16 keeps the 262,144-token window: 136,607-token prompt + 15 short: recall 3/3, shorts' last first token 1.01 s;
+227,621-token prompt 3/3 (2141 tok/s).
+Round 7 on the same path (patches 0101-0109, windows T / U): 81.2 / 151.5 / 212.3 / 247.9 / 269.4 + 266.1 + 272.7 (1.2 s), copies 336.8,
+waves of 16 151.5 (1.63 s), waves of 4 97.2 (0.71 s).

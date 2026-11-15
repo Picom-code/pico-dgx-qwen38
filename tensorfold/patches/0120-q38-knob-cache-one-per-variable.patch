@@ -1,0 +1,20 @@
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index 5a4e894..0b9e0b7 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -362,9 +362,15 @@ pub fn q38Head2Block() bool {
+ }
+ 
+ fn q38EnvInt(comptime env: [:0]const u8, comptime knob: []const u8, default: i64) i64 {
++    // One cache a variable. The struct must NAME `env`: a struct declared in a generic function that uses none of the call's
++    // comptime values is one and the same type for every call, so its `v` was ONE cache shared by all of these knobs, and each
++    // returned whatever the first one read (round 9: with TF_FLASHNEXT_Q38_QSA_CERT=1 the slack was 1 millionth instead of 100,
++    // QSA_CERT_MIN 1 instead of 64, QSA_STATS on; in a knob-file engine the stock path ran with QSA_LOOP=32).
+     const st = struct {
++        const variable = env;
+         var v: i64 = std.math.minInt(i64);
+     };
++    std.debug.assert(st.variable.len == env.len);
+     if (q38KnobFile(knob)) |v| return v;
+     if (st.v == std.math.minInt(i64)) st.v = if (std.c.getenv(env)) |e| (std.fmt.parseInt(i64, std.mem.span(e), 10) catch default) else default;
+     return st.v;

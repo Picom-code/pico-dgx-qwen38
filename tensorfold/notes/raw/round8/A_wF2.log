@@ -1,0 +1,29 @@
+READY recipe [CERT=0 MANY=0 COPY_ROWS=16 FUSED=0 HALF=0 MTP_LAST=0 GDN_MANY=0 BEST_LANES=0 ATTN_LANES=0 LATE_SKIP=0 KEEP_INPASS=0 LANE_REUSE=0] in 217 s; MemAvailable 38 GiB; GPU MiB 78215; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+heldpar 1 in flight: 24 prompts, 19505 tokens in 142.1 s = 137.2 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 152.4  tok/round 12.592  drafts proposed/round 12.533  accepted/round 11.584  accept rate 0.924  ms/round 82.64  rows/round 13.53
+fit over drafted requests: ms/round = 53.83 + 2.30 x drafts verified per round  (x range 9.34..14.73)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 43.5 s = 54.2 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 71.0  tok/round 4.638  drafts proposed/round 5.527  accepted/round 3.648  accept rate 0.660  ms/round 65.33  rows/round 6.53
+fit over drafted requests: ms/round = 47.56 + 3.22 x drafts verified per round  (x range 3.91..7.39)
+crash lines: 0
+F_off done 20:56:52
+READY recipe [] in 211 s; MemAvailable 37 GiB; GPU MiB 79304; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+heldpar 1 in flight: 24 prompts, 19505 tokens in 110.8 s = 176.1 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 198.1  tok/round 18.384  drafts proposed/round 19.572  accepted/round 17.372  accept rate 0.888  ms/round 92.80  rows/round 20.57
+fit over drafted requests: ms/round = 51.93 + 2.09 x drafts verified per round  (x range 12.53..29.33)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 39.9 s = 59.1 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 76.0  tok/round 4.647  drafts proposed/round 5.639  accepted/round 3.658  accept rate 0.649  ms/round 61.11  rows/round 6.64
+fit over drafted requests: ms/round = 44.16 + 3.01 x drafts verified per round  (x range 3.91..7.71)
+q38 cert: MXFP8 copy of the head made (625 MiB), mean residual 0.0266 of a row's norm, check 0
+q38 cert: MXFP8 copy of the head made (625 MiB), mean residual 0.0266 of a row's norm, check 0
+crash lines: 0
+F_on done 21:27:07
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 24/24  mean shared-prefix fraction 1.000  differ: []
+identical 16/16  mean shared-prefix fraction 1.000  differ: []
+wF done 21:27:07

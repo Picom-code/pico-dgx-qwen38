@@ -1,0 +1,69 @@
+READY tfb/pc_16_262144 in 209 s; MemAvailable 38 GiB; GPU MiB 77274
+waves of 16: 160 prompts, 31889 tokens in 229.6 s = 138.9 tok/s total; last first-token of a wave mean 1.80 s max 2.85 s (first 1.12 s); errors 0
+distinct 16 users: 239.4 tok/s total  (7828 tokens in 32.7 s; max ttft 1.20 s; errors 0 [])
+heldpar 4 in flight: 24 prompts, 19435 tokens in 89.5 s = 217.1 tok/s total; errors 0
+q38 hcf check: 180000 read-outs, 6606011 rows, 20240358932 words compared with the five-launch chain, 0 differ
+q38 hcf check: 200000 read-outs, 7480588 rows, 22920022376 words compared with the five-launch chain, 0 differ
+T2_chk done 15:32:16
+READY tfb/pc_16_262144 in 217 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 12 users: 240.9 tok/s total  (5797 tokens in 24.1 s; max ttft 1.13 s; errors 0 [])
+distinct 9 users: 211.0 tok/s total  (4253 tokens in 20.2 s; max ttft 0.79 s; errors 0 [])
+waves of 16: 96 prompts, 19495 tokens in 129.6 s = 150.4 tok/s total; last first-token of a wave mean 1.66 s max 2.24 s (first 1.23 s); errors 0
+heldpar 4 in flight: 24 prompts, 19435 tokens in 82.6 s = 235.3 tok/s total; errors 0
+heldpar 1 in flight: 54 prompts, 10137 tokens in 170.6 s = 59.4 tok/s total; errors 0
+T2_on done 15:43:03
+READY tfb/pc_16_262144 in 207 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 12 users: 235.2 tok/s total  (5858 tokens in 24.9 s; max ttft 1.14 s; errors 0 [])
+distinct 9 users: 210.2 tok/s total  (4261 tokens in 20.3 s; max ttft 0.79 s; errors 0 [])
+waves of 16: 96 prompts, 19495 tokens in 132.5 s = 147.1 tok/s total; last first-token of a wave mean 1.68 s max 2.28 s (first 1.24 s); errors 0
+heldpar 4 in flight: 24 prompts, 19435 tokens in 82.8 s = 234.8 tok/s total; errors 0
+heldpar 1 in flight: 54 prompts, 10137 tokens in 170.8 s = 59.4 tok/s total; errors 0
+identical 96/96  mean shared-prefix fraction 1.000  differ: []
+identical 24/24  mean shared-prefix fraction 1.000  differ: []
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+T2_off done 15:53:44
+READY tfb/pc_16_262144 in 211 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 263.1 tok/s total  (7845 tokens in 29.8 s; max ttft 1.39 s; errors 0 [])
+distinct 16 users: 257.5 tok/s total  (7860 tokens in 30.5 s; max ttft 1.13 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 115.0 s = 175.6 tok/s total; errors 0
+q38 gprof 9+rows: 652 passes, 78.07 rows a pass, 196.038 ms a pass: embed 0.053 hc-attn-side 8.060 gdn 34.302 hc-mlp-side 7.167 moe 129.023 ple 1.239 head 7.592 qsa-attn 8.602
+T2_gp done 16:00:13
+READY tfb/pc_16_262144 in 211 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 241.0 tok/s total  (7821 tokens in 32.5 s; max ttft 1.64 s; errors 0 [])
+distinct 16 users: 244.2 tok/s total  (7866 tokens in 32.2 s; max ttft 1.20 s; errors 0 [])
+tables 2 used 2; embed launches (steps/passes) 2113; total serialised ms 61324.3
+route_topk launches 17125; per embed launch 8.10
+kernel                                               calls/pass  ms/pass      %  us/call blocks/call
+_experts19nvfp4_expert_kernel<2,2,4>                       8.06   10.291  35.46   1276.9       184.3
+_experts19nvfp4_expert_kernel<1,0,4>                       8.06    5.371  18.51    666.4       239.6
+fn_gdn_rows_late_lanes                                     4.36    1.835   6.32    420.7      4746.0
+qmmf_kernel<2,128,64,1,4,2,000>                            4.38    1.028   3.54    234.5       248.0
+qmmf_kernel<2,128,64,1,4,2,110>                            4.38    0.969   3.34    220.9       320.0
+qmmf_kernel<4,64,64,1,4,4,110>                            10.08    0.874   3.01     86.8        97.0
+qmmf_kernel<4,128,64,1,4,2,000>                            9.18    0.506   1.74     55.1       166.8
+qmm_kernel<32,16,64,1,4,4,000>                             0.83    0.493   1.70    594.8      1244.0
+fn_row_best                                                9.13    0.487   1.68     53.3         1.9
+qmmf_kernel<2,128,64,1,4,2,100>                            4.52    0.401   1.38     88.7       119.2
+qmmf_kernel<2,16,64,1,4,4,000>                             2.08    0.401   1.38    193.1       248.0
+fn_attn_chunks_kv8                                        18.49    0.394   1.36     21.3        14.2
+qmmf_kernel<4,64,64,1,4,4,000>                            13.92    0.374   1.29     26.9         9.1
+fn_q38_hcdn3h                                              6.80    0.315   1.09     46.4        87.0
+qmmf_kernel<2,64,64,1,4,4,010>                             9.27    0.302   1.04     32.6        77.8
+fn_hcn_up1_k5                                              6.80    0.262   0.90     38.6        80.0
+qmmf_kernel<4,16,64,1,4,4,000>                             1.71    0.257   0.88    150.2       101.1
+tf_route_logits_wide                                       4.51    0.251   0.86     55.6         9.4
+fn_gdn_front_lanes                                         4.36    0.223   0.77     51.2      7782.5
+qmmf_kernel<2,16,64,1,4,4,110>                             2.08    0.189   0.65     91.1       320.0
+fn_qsa_pool                                               26.13    0.181   0.62      6.9         2.8
+fn_attn_chunks_ahead                                       7.63    0.180   0.62     23.7         3.8
+qmmf_kernel<4,16,64,1,4,4,110>                             1.76    0.179   0.62    101.7       226.9
+fn_attn_merge                                             26.13    0.165   0.57      6.3       124.0
+fn_attn_prep_kv8                                          18.49    0.158   0.55      8.6       202.7
+fn_hc_writeback_moe                                        7.88    0.146   0.50     18.5       591.6
+fn_hc_normalize2                                          10.40    0.145   0.50     14.0       369.2
+fn_qsa_select                                             26.13    0.141   0.49      5.4         5.2
+fn_hc_writeback_slices                                     8.10    0.132   0.46     16.3       614.1
+fn_shift_window_lanes                                      4.36    0.125   0.43     28.6       494.4
+fn_hc_dense_mix2                                          10.40    0.124   0.43     11.9       923.1
+TOTAL ms per pass 29.02
+T2_kp16 done 16:04:51

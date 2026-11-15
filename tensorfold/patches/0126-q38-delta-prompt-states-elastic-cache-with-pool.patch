@@ -1,0 +1,610 @@
+diff --git a/zig/src/core/prompt_cache.zig b/zig/src/core/prompt_cache.zig
+index 61e530b..d39f3bc 100644
+--- a/zig/src/core/prompt_cache.zig
++++ b/zig/src/core/prompt_cache.zig
+@@ -38,6 +38,8 @@ pub const Snapshots = struct {
+         reuses: ?*const fn (ptr: *anyopaque, at: u32) bool = null,
+         /// q38: whether new storage of `bytes` can be placed now (a family that carves states from one arena; null: always).
+         placeable: ?*const fn (ptr: *anyopaque, bytes: u64) bool = null,
++        /// q38: the new storage a keep by `owner` at `at` takes when the family shares what the owner already holds kept (null: `bytes`).
++        need: ?*const fn (ptr: *anyopaque, owner: ?*anyopaque, at: u32) u64 = null,
+         /// Write `saved` as learned state `key`, in files of the family's own under `dir` (null: nothing kept on disk).
+         write: ?*const fn (ptr: *anyopaque, saved: Saved, dir: [:0]const u8, key: u64) anyerror!void = null,
+         /// Learned state `key` of `at` tokens, read back from its files under `dir` into new storage.
+@@ -328,15 +330,21 @@ pub const Store = struct {
+     fn reserve(s: *Store, prompt: []const u32, born: u32, from: ?*Entry, marks_: []const u32, spans: []const modes.Span) void {
+         var need: u64 = 0;
+         var new: usize = 0; // states it keeps that the store lacks: a slot each
++        // q38 delta states: a mark's keep takes its fixed part and the rows past the state the pass stands on (an estimate here:
++        // keepBorn asks the family for the exact bytes before each copy); orphaned shared rows count as held
++        const delta = policy.q38Delta();
++        var stands: u32 = if (from) |e| e.at else 0;
++        const orphan: u64 = if (delta) s.spare() else 0;
+         for (marks_) |at| {
+             const n = @as(usize, at) + s.rules.lookahead;
+             const exists = for (s.entries.items) |e| {
+                 if (!e.expired and e.at == at and e.tokens.len == n and n <= prompt.len and std.mem.eql(u32, e.tokens, prompt[0..n]) and modes.equal(e.decode_spans, spans, at)) break true;
+             } else false;
+-            if (!exists) need += s.family.vtable.bytes(s.family.ptr, at);
++            if (!exists) need += if (delta and stands > 0 and stands < at) s.family.vtable.bytes(s.family.ptr, at) - s.family.vtable.bytes(s.family.ptr, stands) + s.family.vtable.bytes(s.family.ptr, 0) else s.family.vtable.bytes(s.family.ptr, at);
++            if (!exists and delta) stands = at;
+             new += @intFromBool(!exists);
+         }
+-        while (s.held + need > s.budget or s.entries.items.len + @min(new, s.most) > s.most) {
++        while (s.held + orphan + need > s.budget or s.entries.items.len + @min(new, s.most) > s.most) {
+             const i = s.victimBut(from, prompt, born) orelse return;
+             s.remove(i);
+             s.counts.evicted += 1;
+@@ -493,7 +501,7 @@ pub const Store = struct {
+         const decoded = modes.prefix(s.gpa, spans, at) catch |err| return s.fail(at, err);
+         var owns_decoded = true;
+         defer if (owns_decoded) s.gpa.free(decoded);
+-        const bytes = s.family.vtable.bytes(s.family.ptr, at);
++        const bytes = if (s.family.vtable.need) |f| f(s.family.ptr, owner, at) else s.family.vtable.bytes(s.family.ptr, at);
+         if (bytes > s.budget or s.most == 0) {
+             s.counts.refused += 1;
+             note("kept nothing at {d} tokens: {d} MiB passes the {d} MiB budget", .{ at, bytes >> 20, s.budget >> 20 });
+diff --git a/zig/src/core/prompt_cache_policy.zig b/zig/src/core/prompt_cache_policy.zig
+index 92e16f7..6baf150 100644
+--- a/zig/src/core/prompt_cache_policy.zig
++++ b/zig/src/core/prompt_cache_policy.zig
+@@ -51,7 +51,7 @@ pub fn q38Siblings() bool {
+         // round 9: the elastic cache (TF_FLASHNEXT_Q38_CACHE_ELASTIC=1) turns this order on too, unless _SIBLINGS=0 is given: with 16
+         // agents on 5 lanes a request keeps a state at every chunk boundary, and those must go before another conversation's newest
+         if (q38_siblings == 0 and std.c.getenv("TF_FLASHNEXT_Q38_CACHE_SIBLINGS") == null) {
+-            if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_ELASTIC")) |v| q38_siblings = @intFromBool(v[0] == '1');
++            if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_ELASTIC")) |v| q38_siblings = @intFromBool(v[0] == '1' or v[0] == '2');
+         }
+     }
+     return q38_siblings == 1;
+@@ -63,3 +63,11 @@ fn sibling(s: *const pc.Store, e: *const pc.Entry) bool {
+         std.mem.eql(u32, o.tokens[0..e.tokens.len], e.tokens)) return true;
+     return false;
+ }
++
++var q38_delta: i8 = -1;
++/// TF_FLASHNEXT_Q38_SNAP_DELTA=1|2 (q38; default off): the family's kept states share the rows of the state they extend, so a
++/// keep takes only its own rows and an evicted state's shared rows stay (as the family's spare bytes) while a later state needs them.
++pub fn q38Delta() bool {
++    if (q38_delta < 0) q38_delta = if (std.c.getenv("TF_FLASHNEXT_Q38_SNAP_DELTA")) |v| @intFromBool(v[0] == '1' or v[0] == '2') else 0;
++    return q38_delta == 1;
++}
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index d962185..97998a1 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -479,7 +479,18 @@ pub fn q38CacheElastic() bool {
+     const st = struct {
+         var v: i8 = -1;
+     };
+-    if (st.v < 0) st.v = if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_ELASTIC")) |e| @intFromBool(e[0] == '1') else 0;
++    if (st.v < 0) st.v = if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_ELASTIC")) |e| @intFromBool(e[0] == '1' or e[0] == '2') else 0;
++    return st.v == 1;
++}
++
++/// TF_FLASHNEXT_Q38_CACHE_ELASTIC=2 (q38, round 13): the elastic prompt cache also with the pool (TF_FLASHNEXT_Q38_POOL_CTX): the
++/// cache borrows the part of the POOL that live streams are not using and hands it back before a stream opens, as it does with
++/// the lanes' full windows without the pool. With =1 the pool profile keeps its start-up cache (as before).
++pub fn q38CacheElasticPool() bool {
++    const st = struct {
++        var v: i8 = -1;
++    };
++    if (st.v < 0) st.v = if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_ELASTIC")) |e| @intFromBool(e[0] == '2') else 0;
+     return st.v == 1;
+ }
+ 
+diff --git a/zig/src/families/flashnext/cuda_lanes.zig b/zig/src/families/flashnext/cuda_lanes.zig
+index f862643..62a6d1f 100644
+--- a/zig/src/families/flashnext/cuda_lanes.zig
++++ b/zig/src/families/flashnext/cuda_lanes.zig
+@@ -52,6 +52,9 @@ pub fn Namespace(comptime Tri: type) type {
+         pub const snap_restore = snapRestore;
+         pub const snap_drop = snapDrop;
+         pub const snap_placeable = snapPlaceable;
++        pub const snap_charged = snapCharged;
++        pub const snap_spare = snapSpare;
++        pub const snap_need = snapNeed;
+         /// The pass ignores its cuts, so states keep at any token; the MTP head reads one token on (lookahead 1).
+         pub const cache_rules = struct {
+             pub const lookahead: u32 = 1;
+@@ -141,6 +144,8 @@ pub fn Namespace(comptime Tri: type) type {
+             bytes: u64 = 0,
+             /// q38 (TF_FLASHNEXT_Q38_KEEP_INPASS): the state a pass filled at a mark inside it, until the cache takes it.
+             prepared: ?*snap.Snap = null,
++            /// q38 (TF_FLASHNEXT_Q38_SNAP_DELTA): the kept row ranges this stream's caches stand on (the state it resumed, or kept last).
++            base: ?*snap.Seg = null,
+         };
+ 
+         const Ops = mtp.Ops(Tri);
+@@ -395,6 +400,7 @@ pub fn Namespace(comptime Tri: type) type {
+                 } else if (if (self.ranks) |r| r.restore(&l.seq, kept) else snap.restore(self.stream, &l.seq, if (l.draft) |*d| d else null, kept)) |_| {
+                     l.filled = kept.at;
+                     s.cached = @intCast(kept.at);
++                    if (self.ranks == null) snap.rebase(&l.base, kept.seg);
+                 } else |err| switch (err) {
+                     error.SequenceTooShort, error.NoHeadState => s.reuse_failed = true,
+                     else => return err,
+@@ -445,7 +451,7 @@ pub fn Namespace(comptime Tri: type) type {
+                             }
+                             // q38 arena: a state that has no place now is not kept inside the pass; the mark cuts the pass as
+                             // before and the cache's own keep makes room for it
+-                            const prepared: ?*snap.Snap = snap.prepare(self.gpa, self.engine.driver, &l.seq, if (l.draft) |*d| d else null, stop, hist) catch |err| switch (err) {
++                            const prepared: ?*snap.Snap = snap.prepare(self.gpa, self.engine.driver, &l.seq, if (l.draft) |*d| d else null, stop, hist, &l.base) catch |err| switch (err) {
+                                 error.Q38ArenaFull => null,
+                                 else => return err,
+                             };
+@@ -468,7 +474,7 @@ pub fn Namespace(comptime Tri: type) type {
+                 l.filled = if (last) null else stop;
+                 if (inpass) |p| {
+                     // the mark's attention rows, then the cache takes the state as it is (snapSave); a state the cache did not take is dropped
+-                    try snap.finish(self.stream, &l.seq, if (l.draft) |*d| d else null, p);
++                    try snap.finish(self.stream, &l.seq, if (l.draft) |*d| d else null, p, &l.base);
+                     l.prepared = p;
+                     inpass = null;
+                     if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(p.at));
+@@ -554,9 +560,12 @@ pub fn Namespace(comptime Tri: type) type {
+             const self = of(ptr);
+             const knobs = @import("cuda_knobs.zig");
+             q38Warm(self);
+-            if (!knobs.q38CacheElastic() or self.pool_stream != 0 or self.ranks != null or self.elastic_stream == 0) return;
+-            const idle: u64 = @as(u64, knobs.q38LaneReuse()) * (640 << 20); // idle lane sets stay allocated (LANE_REUSE)
+-            self.elastic_room = (self.elastic_stream * streams) -| idle;
++            const pooled = self.pool_stream != 0;
++            if (!knobs.q38CacheElastic() or (pooled and !knobs.q38CacheElasticPool()) or self.ranks != null or (!pooled and self.elastic_stream == 0)) return;
++            // round 13 (TF_FLASHNEXT_Q38_CACHE_ELASTIC=2): with the pool the lanes' room is the pool, not lanes x full window
++            const lane_room: u64 = (if (pooled) self.pool_stream else self.elastic_stream) * streams;
++            const idle: u64 = @as(u64, @min(knobs.q38LaneReuse(), streams)) * (640 << 20); // idle lane sets stay allocated (LANE_REUSE)
++            self.elastic_room = lane_room -| idle;
+             if (self.elastic_room == 0) return;
+             self.elastic_base = base;
+             self.elastic_ctx = ctx;
+@@ -568,7 +577,7 @@ pub fn Namespace(comptime Tri: type) type {
+                 const ar = @import("cuda_q38_arena.zig");
+                 const t0 = plogUs(self);
+                 const want: u64 = if (std.c.getenv("TF_FLASHNEXT_Q38_ARENA_MIB")) |e| ((std.fmt.parseInt(u64, std.mem.span(e), 10) catch 0) << 20) else 0;
+-                ar.install(self.gpa, self.engine.driver, if (want > 0) want else base + self.elastic_stream * streams + (256 << 20));
++                ar.install(self.gpa, self.engine.driver, if (want > 0) want else base + lane_room + (256 << 20));
+                 if (ar.on()) std.debug.print("q38 arena: start-up cost {d} ms\n", .{@divTrunc(plogUs(self) - t0, 1000)});
+             }
+         }
+@@ -620,6 +629,10 @@ pub fn Namespace(comptime Tri: type) type {
+             l.bytes = 0;
+             if (self.elastic_room > 0) _ = self.elastic_resize.?(self.elastic_ctx.?, self.elastic_base + (self.elastic_room -| self.held_bytes));
+             if (l.draft) |*d| d.deinit();
++            if (l.base) |b| {
++                snap.release(b);
++                l.base = null;
++            }
+             if (self.ranks) |r| r.drop(&l.seq) else {
+                 self.engine.giveFixed(&l.seq);
+                 l.seq.deinit(self.gpa);
+@@ -914,7 +927,27 @@ pub fn Namespace(comptime Tri: type) type {
+                 return try r.save(&l.seq);
+             }
+             if (l.draft) |*d| try self.ops().flushLate(&l.seq, d);
+-            return try snap.save(self.gpa, self.engine.driver, self.stream, &l.seq, if (l.draft) |*d| d else null);
++            return try snap.save(self.gpa, self.engine.driver, self.stream, &l.seq, if (l.draft) |*d| d else null, &l.base);
++        }
++
++        /// q38 delta states: what a kept state holds (its own buffers), the shared rows no kept state owns any more, and what a
++        /// keep by `owner` at `at` would newly take. Without the flag: the stock sizes.
++        fn snapCharged(ptr: *anyopaque, saved: *anyopaque) u64 {
++            const kept: *snap.Snap = @ptrCast(@alignCast(saved));
++            if (kept.seg == null) return snapBytes(ptr, @intCast(kept.at));
++            return snap.held(kept);
++        }
++
++        fn snapSpare(_: *anyopaque) u64 {
++            return snap.orphans();
++        }
++
++        fn snapNeed(ptr: *anyopaque, owner: ?*anyopaque, at: u32) u64 {
++            const self = of(ptr);
++            if (snap.deltaMode() == 0 or self.ranks != null) return snapBytes(ptr, at);
++            const s: *lanes.Stream = @ptrCast(@alignCast(owner orelse return snapBytes(ptr, at)));
++            const l = self.lane(s) catch return snapBytes(ptr, at);
++            return snap.needBytes(l.base, l.seq.kv, if (l.draft) |*d| d.kv else null, at);
+         }
+ 
+         fn snapRestore(ptr: *anyopaque, owner: ?*anyopaque, saved: *anyopaque) anyerror!void {
+@@ -925,7 +958,9 @@ pub fn Namespace(comptime Tri: type) type {
+                 if (l.draft != null) return error.NoHeadState;
+                 return r.restore(&l.seq, @ptrCast(@alignCast(saved)));
+             }
+-            try snap.restore(self.stream, &l.seq, if (l.draft) |*d| d else null, @ptrCast(@alignCast(saved)));
++            const kept: *snap.Snap = @ptrCast(@alignCast(saved));
++            try snap.restore(self.stream, &l.seq, if (l.draft) |*d| d else null, kept);
++            snap.rebase(&l.base, kept.seg);
+         }
+ 
+         /// q38 arena: whether a state of `bytes` has a place now (always, without the arena).
+diff --git a/zig/src/families/flashnext/cuda_rank_engine.zig b/zig/src/families/flashnext/cuda_rank_engine.zig
+index 35a1650..3f53537 100644
+--- a/zig/src/families/flashnext/cuda_rank_engine.zig
++++ b/zig/src/families/flashnext/cuda_rank_engine.zig
+@@ -241,7 +241,7 @@ pub const Session = struct {
+     }
+ 
+     pub fn save(s: *Session, q: *prompt.Seq) !*snaps.Snap {
+-        const kept = try snaps.save(s.gpa, s.engine.driver, s.engine.stream.*, q, null);
++        const kept = try snaps.save(s.gpa, s.engine.driver, s.engine.stream.*, q, null, null);
+         errdefer snaps.drop(s.gpa, s.engine.stream.*, kept);
+         kept.rank_id = s.next_object;
+         s.next_object = std.math.add(u64, s.next_object, 1) catch return error.BadRankFrame;
+@@ -360,7 +360,7 @@ pub const Session = struct {
+             .save => {
+                 if (s.saved.contains(h.arg)) return error.BadRankFrame;
+                 const q = s.seqs.get(h.object) orelse return error.UnknownRankSequence;
+-                const kept = try snaps.save(s.gpa, s.engine.driver, s.engine.stream.*, q, null);
++                const kept = try snaps.save(s.gpa, s.engine.driver, s.engine.stream.*, q, null, null);
+                 errdefer snaps.drop(s.gpa, s.engine.stream.*, kept);
+                 try s.saved.put(s.gpa, h.arg, kept);
+             },
+diff --git a/zig/src/families/flashnext/cuda_snap.zig b/zig/src/families/flashnext/cuda_snap.zig
+index 29c6c24..42377b4 100644
+--- a/zig/src/families/flashnext/cuda_snap.zig
++++ b/zig/src/families/flashnext/cuda_snap.zig
+@@ -47,8 +47,249 @@ pub const Snap = struct {
+     kv: Kv = .bf16,
+     /// The format of the head's rows when it holds them.
+     head_kv: Kv = .bf16,
++    /// q38 (TF_FLASHNEXT_Q38_SNAP_DELTA): the state's attention rows as a chain of shared row ranges; `buf` then holds only the
++    /// conv windows, DeltaNet states and n-gram tail.
++    seg: ?*Seg = null,
+ };
+ 
++// -- q38 delta states (TF_FLASHNEXT_Q38_SNAP_DELTA=1; =2 also checks) ---------------------------------------------------------
++// A stream's attention caches are append-only: once row r of a key, value, indexer-key or pooled buffer is written it is never
++// written again while the stream lives (the check mode proves it on every keep). So two states of one conversation hold the same
++// bytes for the rows both cover. With the flag a kept state is its fixed pieces (a copy, as before) plus a reference-counted
++// chain of row ranges: its own rows [from, at) and, through `parent`, the ranges of the state its stream resumed from or kept
++// last. A restore copies the same bytes into the same places as a whole copy would; only where the kept bytes live changes.
++// (The idea of sharing prefix blocks between kept states: vLLM PagedAttention, SGLang RadixAttention, upstream TF_FLASHNEXT_KV_PAGES.)
++
++/// Bytes of a delta state's own buffer: the DeltaNet's conv windows and states and the n-gram tail.
++pub const fixed_bytes = wt.linear_n * (conv_bytes + state_bytes) + tail_bytes;
++
++/// Rows [from, at) of every attention cache (and the head's, with `head`), kept once and shared by every state that extends them.
++pub const Seg = struct {
++    buf: cuda.DeviceBuffer,
++    from: usize,
++    at: usize,
++    parent: ?*Seg,
++    /// Holders of the STRUCT: its state (while kept), each child range, each stream standing on it.
++    refs: u32 = 1,
++    /// Holders of the BYTES: its state (while kept) and each child range whose own bytes are still held. A stream standing on a
++    /// range does not hold its bytes: when the cache has evicted every state that needs them they are freed at once (`dead`), and
++    /// the stream's next keep is a whole copy again. (Otherwise evictions under pressure would free nothing while streams live.)
++    strong: u32 = 1,
++    dead: bool = false,
++    /// Its state is still kept (the prompt cache charges the bytes to that state); else they count as orphans.
++    owned: bool = true,
++    head: bool,
++    kv: Kv,
++    head_kv: Kv,
++};
++
++pub const DeltaStats = struct { keeps: u64 = 0, shared: u64 = 0, whole_bytes: u64 = 0, kept_bytes: u64 = 0, orphan: u64 = 0, restores: u64 = 0, chain_max: u64 = 0, check_bytes: u64 = 0, check_diff: u64 = 0 };
++var ds: DeltaStats = .{};
++var seg_gpa: std.mem.Allocator = undefined;
++var delta_mode: i8 = -1;
++
++/// TF_FLASHNEXT_Q38_SNAP_DELTA: 0 / unset off; 1 on; 2 on, and every keep compares the stream's rows with the chain it shares.
++pub fn deltaMode() u8 {
++    if (delta_mode < 0) delta_mode = if (std.c.getenv("TF_FLASHNEXT_Q38_SNAP_DELTA")) |e| (if (e[0] == '1') @as(i8, 1) else if (e[0] == '2') @as(i8, 2) else 0) else 0;
++    return @intCast(delta_mode);
++}
++
++pub fn deltaStats() DeltaStats {
++    return ds;
++}
++
++/// Bytes of shared row ranges whose own state is gone while a later state or a stream still needs them: inside the cache's budget.
++pub fn orphans() u64 {
++    return ds.orphan;
++}
++
++/// The device bytes `snap` holds for the cache's accounts: its buffer and its own row range.
++pub fn held(snap: *const Snap) u64 {
++    return snap.buf.len + if (snap.seg) |g| g.buf.len else 0;
++}
++
++fn attnRange(format: Kv, from: usize, at: usize) usize {
++    return (at - from) * format.position() + (at / wt.index_ratio - from / wt.index_ratio) * index_row;
++}
++
++fn segBytes(format: Kv, head_format: ?Kv, from: usize, at: usize) usize {
++    return wt.attn_n * attnRange(format, from, at) + if (head_format) |h| attnRange(h, from, at) else 0;
++}
++
++/// Whether a new range of a stream in `kv` (drafting: `head_kv`) may extend `base`: the same formats, the same pieces.
++fn extends(base: ?*const Seg, kv: Kv, head_kv: ?Kv, at: usize) bool {
++    const b = base orelse return false;
++    if (b.dead or b.at > at or b.kv != kv or b.head != (head_kv != null)) return false;
++    if (head_kv) |h| if (b.head_kv != h) return false;
++    return true;
++}
++
++/// What a keep at `at` would newly take for a stream standing on `base` (the cache checks its budget with this).
++pub fn needBytes(base: ?*const Seg, kv: Kv, head_kv: ?Kv, at: usize) u64 {
++    const from = if (extends(base, kv, head_kv, at)) base.?.at else 0;
++    return fixed_bytes + segBytes(kv, head_kv, from, at);
++}
++
++const Range = struct { bufs: []cuda.DeviceBuffer, off: usize, n: usize };
++
++fn attnRanges(format: Kv, kc: []cuda.DeviceBuffer, vc: []cuda.DeviceBuffer, ikc: []cuda.DeviceBuffer, pooled: []cuda.DeviceBuffer, from: usize, at: usize) [4]Range {
++    const pf = from / wt.index_ratio;
++    return .{
++        .{ .bufs = kc, .off = from * format.keyRow(), .n = (at - from) * format.keyRow() },
++        .{ .bufs = vc, .off = from * format.valueRow(), .n = (at - from) * format.valueRow() },
++        .{ .bufs = ikc, .off = from * index_row, .n = (at - from) * index_row },
++        .{ .bufs = pooled, .off = pf * index_row, .n = (at / wt.index_ratio - pf) * index_row },
++    };
++}
++
++/// The ranges of `seg` in the stream's buffers, in the order they lie in its buffer (the head's last).
++fn segRanges(seq: *prompt.Seq, d: ?*Draft, seg: *const Seg, out: *[8]Range) usize {
++    out[0..4].* = attnRanges(seq.kv, seq.kc, seq.vc, seq.ikc, seq.pooled, seg.from, seg.at);
++    if (!seg.head) return 4;
++    const h = d orelse return 4; // a stream without drafts leaves the head's rows in the buffer
++    out[4..8].* = attnRanges(h.kv, (&h.kc)[0..1], (&h.vc)[0..1], (&h.ikc)[0..1], (&h.pooled)[0..1], seg.from, seg.at);
++    return 8;
++}
++
++fn moveSeg(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, seg: *const Seg, way: Way) !void {
++    const dr = stream.d;
++    var rs: [8]Range = undefined;
++    const n = segRanges(seq, d, seg, &rs);
++    var off: u64 = 0;
++    for (rs[0..n]) |r| for (r.bufs) |b| {
++        if (r.n == 0) continue;
++        const dst, const src = if (way == .save) .{ seg.buf.ptr + off, b.ptr + r.off } else .{ b.ptr + r.off, seg.buf.ptr + off };
++        try dr.check(dr.api.cuMemcpyDtoDAsync_v2(dst, src, r.n, stream.handle), "cuMemcpyDtoDAsync");
++        off += r.n;
++    };
++    std.debug.assert(off <= seg.buf.len and (off == seg.buf.len or (seg.head and d == null)));
++}
++
++fn moveFixed(stream: cuda.Stream, seq: *prompt.Seq, base: u64, way: Way) !void {
++    const dr = stream.d;
++    var off: u64 = 0;
++    const pieces = [3]Piece{ .{ .bufs = seq.conv, .n = conv_bytes }, .{ .bufs = seq.state, .n = state_bytes }, .{ .bufs = (&seq.tail)[0..1], .n = tail_bytes } };
++    for (pieces) |p| for (p.bufs) |b| {
++        const dst, const src = if (way == .save) .{ base + off, b.ptr } else .{ b.ptr, base + off };
++        try dr.check(dr.api.cuMemcpyDtoDAsync_v2(dst, src, p.n, stream.handle), "cuMemcpyDtoDAsync");
++        off += p.n;
++    };
++    std.debug.assert(off == fixed_bytes);
++}
++
++/// One holder of `seg`'s struct less; a range nobody names is destroyed (its bytes went when the last state needing them did).
++pub fn release(seg: *Seg) void {
++    var s: ?*Seg = seg;
++    while (s) |x| {
++        x.refs -= 1;
++        if (x.refs > 0) return;
++        if (!x.dead) unhold(x); // only a range that never got its state (a failed keep): its bytes go now
++        s = x.parent;
++        seg_gpa.destroy(x);
++    }
++}
++
++/// One holder of `seg`'s bytes less (its state was dropped, or a child range's bytes went); bytes nobody needs are freed and the
++/// parent's lose a holder in turn.
++fn unhold(seg: *Seg) void {
++    var s: ?*Seg = seg;
++    while (s) |x| {
++        x.strong -= 1;
++        if (x.strong > 0) return;
++        if (!x.owned) ds.orphan -= x.buf.len;
++        x.buf.free();
++        x.buf.len = 0;
++        x.dead = true;
++        s = x.parent;
++    }
++}
++
++/// The stream now stands on `seg` (null: on nothing kept): its next keep extends it.
++pub fn rebase(base: *?*Seg, seg: ?*Seg) void {
++    if (seg) |g| g.refs += 1;
++    if (base.*) |o| release(o);
++    base.* = seg;
++}
++
++fn newSeg(gpa: std.mem.Allocator, driver: *const cuda.Driver, seq: *prompt.Seq, d: ?*Draft, base: ?*Seg, at: usize) !*Seg {
++    const head_kv: ?Kv = if (d) |h| h.kv else null;
++    const share = extends(base, seq.kv, head_kv, at);
++    const from = if (share) base.?.at else 0;
++    const n = segBytes(seq.kv, head_kv, from, at);
++    if (n > 0 and !q38_arena.fits(n)) return error.Q38ArenaFull;
++    seg_gpa = gpa;
++    const seg = try gpa.create(Seg);
++    errdefer gpa.destroy(seg);
++    q38_arena.raw(true);
++    defer q38_arena.raw(false);
++    seg.* = .{ .buf = try cuda.DeviceBuffer.alloc(driver, n), .from = from, .at = at, .parent = if (share) base else null, .head = d != null, .kv = seq.kv, .head_kv = head_kv orelse .bf16 };
++    if (seg.parent) |p| {
++        p.refs += 1;
++        p.strong += 1;
++    }
++    return seg;
++}
++
++fn prepareDelta(gpa: std.mem.Allocator, driver: *const cuda.Driver, seq: *prompt.Seq, d: ?*Draft, at: usize, history: [2]i64, base: ?*Seg) !*Snap {
++    const seg = try newSeg(gpa, driver, seq, d, base, at);
++    errdefer release(seg);
++    if (!q38_arena.fits(fixed_bytes)) return error.Q38ArenaFull;
++    const snap = try gpa.create(Snap);
++    errdefer gpa.destroy(snap);
++    q38_arena.raw(true);
++    defer q38_arena.raw(false);
++    snap.* = .{ .buf = try cuda.DeviceBuffer.alloc(driver, fixed_bytes), .at = at, .history = history, .head = d != null, .kv = seq.kv, .head_kv = if (d) |h| h.kv else .bf16, .seg = seg };
++    return snap;
++}
++
++/// The state's own rows into its range; the stream then stands on it.
++fn finishDelta(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, snap: *Snap, base: *?*Seg) !void {
++    const seg = snap.seg.?;
++    try moveSeg(stream, seq, d, seg, .save);
++    try stream.synchronize();
++    var chain: u64 = 0;
++    var s: ?*Seg = seg;
++    while (s) |x| : (s = x.parent) chain += 1;
++    ds.keeps += 1;
++    ds.shared += @intFromBool(seg.parent != null);
++    ds.whole_bytes += bytesWith(seq.kv, if (d) |h| h.kv else null, snap.at);
++    ds.kept_bytes += held(snap);
++    ds.chain_max = @max(ds.chain_max, chain);
++    if (deltaMode() == 2) try checkChain(seq, d, seg);
++    if (@import("cuda_knobs.zig").plog()) std.debug.print("q38 snapdelta keep at={d} from={d} own_kib={d} whole_kib={d} chain={d} orphan_mib={d} keeps={d} shared={d} kept_mib={d} whole_mib={d} check_bytes={d} check_diff={d}\n", .{ snap.at, seg.from, held(snap) >> 10, bytesWith(seq.kv, if (d) |h| h.kv else null, snap.at) >> 10, chain, ds.orphan >> 20, ds.keeps, ds.shared, ds.kept_bytes >> 20, ds.whole_bytes >> 20, ds.check_bytes, ds.check_diff });
++    rebase(base, seg);
++}
++
++/// Check mode: every row range of the chain from `seg` down against the stream's own rows, byte by byte on the host.
++fn checkChain(seq: *prompt.Seq, d: ?*Draft, seg: *const Seg) !void {
++    const slice: usize = 16 << 20;
++    const a = try seg_gpa.alloc(u8, slice);
++    defer seg_gpa.free(a);
++    const b = try seg_gpa.alloc(u8, slice);
++    defer seg_gpa.free(b);
++    var s: ?*const Seg = seg;
++    while (s) |x| : (s = x.parent) {
++        var rs: [8]Range = undefined;
++        const n = segRanges(seq, d, x, &rs);
++        var off: u64 = 0;
++        for (rs[0..n]) |r| for (r.bufs) |live| {
++            var done: usize = 0;
++            while (done < r.n) {
++                const m = @min(slice, r.n - done);
++                const dr = live.d;
++                try dr.check(dr.api.cuMemcpyDtoH_v2(a.ptr, live.ptr + r.off + done, m), "cuMemcpyDtoH");
++                try dr.check(dr.api.cuMemcpyDtoH_v2(b.ptr, x.buf.ptr + off + done, m), "cuMemcpyDtoH");
++                if (!std.mem.eql(u8, a[0..m], b[0..m])) {
++                    for (a[0..m], b[0..m]) |p, q| ds.check_diff += @intFromBool(p != q);
++                }
++                ds.check_bytes += m;
++                done += m;
++            }
++            off += r.n;
++        };
++    }
++}
++
+ const Way = enum { save, restore };
+ 
+ const Piece = struct { bufs: []cuda.DeviceBuffer, n: usize };
+@@ -75,13 +316,15 @@ pub const layout = struct {
+         return snap.buf.ptr + wt.linear_n * conv_bytes;
+     }
+     pub fn tailAt(snap: *const Snap) u64 {
++        if (snap.seg != null) return snap.buf.ptr + wt.linear_n * (conv_bytes + state_bytes); // a delta state's buffer holds no rows
+         return snap.buf.ptr + wt.linear_n * (conv_bytes + state_bytes) + wt.attn_n * attnBytes(snap.kv, snap.at);
+     }
+ };
+ 
+ /// q38: an empty state for `at` tokens of `seq` (with the head's rows when `d`), for a pass that fills its DeltaNet pieces and
+ /// n-gram tail on the way (cuda_batch.zig markRow); `finish` then copies the attention rows.
+-pub fn prepare(gpa: std.mem.Allocator, driver: *const cuda.Driver, seq: *prompt.Seq, d: ?*Draft, at: usize, history: [2]i64) !*Snap {
++pub fn prepare(gpa: std.mem.Allocator, driver: *const cuda.Driver, seq: *prompt.Seq, d: ?*Draft, at: usize, history: [2]i64, base: ?*?*Seg) !*Snap {
++    if (base) |b| if (deltaMode() != 0) return prepareDelta(gpa, driver, seq, d, at, history, b.*);
+     const head_kv: Kv = if (d) |h| h.kv else .bf16;
+     const snap = try gpa.create(Snap);
+     errdefer gpa.destroy(snap);
+@@ -93,9 +336,10 @@ pub fn prepare(gpa: std.mem.Allocator, driver: *const cuda.Driver, seq: *prompt.
+ }
+ 
+ /// q38: a prepared state's attention rows (and the head's), once the pass that ran through its mark has written them.
+-pub fn finish(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, snap: *Snap) !void {
++pub fn finish(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, snap: *Snap, base: ?*?*Seg) !void {
+     if (seq.fed < snap.at) return error.NotAtMark;
+     if (d) |h| if (h.len < snap.at) return error.NotAtMark;
++    if (snap.seg != null) return finishDelta(stream, seq, d, snap, base.?);
+     try moveSome(stream, seq, d, snap.buf.ptr, snap.at, .save, true);
+     try stream.synchronize();
+ }
+@@ -129,9 +373,16 @@ fn moveSome(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: u64, at: us
+ }
+ 
+ /// A copy of `seq` (and of the head's cache, with `d`) as it stands after `seq.fed` tokens.
+-pub fn save(gpa: std.mem.Allocator, driver: *const cuda.Driver, stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft) !*Snap {
++pub fn save(gpa: std.mem.Allocator, driver: *const cuda.Driver, stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: ?*?*Seg) !*Snap {
+     const at = seq.fed;
+     if (d) |h| if (h.len != at or h.drafted != 0) return error.NotAtMark;
++    if (base) |b| if (deltaMode() != 0) {
++        const snap = try prepareDelta(gpa, driver, seq, d, at, seq.history, b.*);
++        errdefer drop(gpa, stream, snap);
++        try moveFixed(stream, seq, snap.buf.ptr, .save);
++        try finishDelta(stream, seq, d, snap, b);
++        return snap;
++    };
+     const head_kv: Kv = if (d) |h| h.kv else .bf16;
+     const snap = try gpa.create(Snap);
+     errdefer gpa.destroy(snap);
+@@ -152,7 +403,20 @@ pub fn restore(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, snap: *const S
+     if (d) |h| if (!snap.head or snap.at > h.cap) return error.NoHeadState;
+     if (d) |h| if (h.kv != snap.head_kv) return error.NoHeadState;
+     // a state with the head's rows serves a stream without drafts too: those rows stay in the buffer
+-    try move(stream, seq, d, snap.buf.ptr, snap.at, .restore);
++    if (snap.seg) |seg| {
++        // q38 delta state: its fixed pieces, then every row range of its chain (each row once: the ranges do not overlap)
++        var s: ?*const Seg = seg;
++        var next: usize = snap.at;
++        while (s) |x| : (s = x.parent) {
++            if (x.at != next or x.dead) return error.SnapshotChain;
++            next = x.from;
++        }
++        if (next != 0) return error.SnapshotChain;
++        try moveFixed(stream, seq, snap.buf.ptr, .restore);
++        s = seg;
++        while (s) |x| : (s = x.parent) try moveSeg(stream, seq, d, x, .restore);
++        ds.restores += 1;
++    } else try move(stream, seq, d, snap.buf.ptr, snap.at, .restore);
+     try stream.synchronize();
+     seq.history = snap.history;
+     seq.fed = snap.at;
+@@ -165,6 +429,12 @@ pub fn restore(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, snap: *const S
+ pub fn drop(gpa: std.mem.Allocator, stream: cuda.Stream, snap: *Snap) void {
+     stream.synchronize() catch {};
+     snap.buf.free();
++    if (snap.seg) |seg| { // its rows stay while a later kept state needs them (orphans until then); a stream alone does not hold them
++        seg.owned = false;
++        ds.orphan += seg.buf.len;
++        unhold(seg);
++        release(seg);
++    }
+     gpa.destroy(snap);
+ }
+ 
+@@ -210,3 +480,19 @@ test "a state with the head's cache in bf16 under fp8 caches takes 2,048 + 256 b
+         try std.testing.expectEqual(at * (2048 - 1056), bytesWith(.fp8, .bf16, at) - bytesWith(.fp8, .fp8, at));
+     }
+ }
++
++test "q38 delta state: a range's bytes add up to the whole state's, wherever the chain is cut" {
++    for ([_]Kv{ .bf16, .fp8 }) |format| {
++        for ([_]usize{ 0, 3, 4, 1001, 52144 }) |from| {
++            for ([_]usize{ 0, 5, 1479, 6144 }) |more| {
++                const at = from + more;
++                try std.testing.expectEqual(bytesWith(format, .bf16, at), fixed_bytes + segBytes(format, .bf16, 0, from) + segBytes(format, .bf16, from, at));
++                try std.testing.expectEqual(bytesWith(format, null, at), fixed_bytes + segBytes(format, null, 0, from) + segBytes(format, null, from, at));
++                var none: [1]cuda.DeviceBuffer = undefined;
++                var n: usize = 0;
++                for (attnRanges(format, none[0..0], none[0..0], none[0..0], none[0..0], from, at)) |r| n += r.n;
++                try std.testing.expectEqual(attnRange(format, from, at), n);
++            }
++        }
++    }
++}
+diff --git a/zig/src/native/cuda_snaps.zig b/zig/src/native/cuda_snaps.zig
+index d2bca08..98530da 100644
+--- a/zig/src/native/cuda_snaps.zig
++++ b/zig/src/native/cuda_snaps.zig
+@@ -32,6 +32,7 @@ pub fn Snaps(comptime F: type, comptime image: ?*const api.prompt_cache.rows.Ima
+             .spare = if (@hasDecl(F, "snap_spare")) F.snap_spare else null,
+             .reuses = if (@hasDecl(F, "snap_reuses")) F.snap_reuses else null,
+             .placeable = if (@hasDecl(F, "snap_placeable")) F.snap_placeable else null,
++            .need = if (@hasDecl(F, "snap_need")) F.snap_need else null,
+         };
+     };
+ }

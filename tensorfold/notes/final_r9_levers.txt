@@ -1,0 +1,51 @@
+Round 9 levers. spark-923b, DOCUMENTED PATH (recipe.sh prepare, recipe.sh start, vision on), 2026-11-14 00:08-03:41 UTC, ONE shared window.
+Every pair: same image, reference first and last, one user, greedy, 384 tokens a prompt. MEASURED. tok/s = tokens / decode time.
+"held-104" = every third of the 320 held prompts. "fresh-123" = head2/corpus/fresh.jsonl: 123 prompts written for this round and never used to
+fit or tune anything (40 chat, 26 code, 16 math, 9 structured, 8 agent / tool transcripts, 24 non-English in 21 languages).
+
+A. Two-stage draft head (HEAD2) with the rotation RE-FITTED on a corpus that shares no prompt with any bench set (image 0101-0115)
++---------------------------------------------+-------------+---------------------------+----------------+----------+-----------+
+| run                                         | first token | held-104 (chat/code/math) | fresh-123      | edit set | agent set |
++---------------------------------------------+-------------+---------------------------+----------------+----------+-----------+
+| P_ref1  HEAD2 off                           | 117 ms      | 62.43 (53.49/85.72/79.33) | 54.24          | 176.1    | 58.9      |
+| P_new   HEAD2 on, rotation r9 (new)         | 112 ms      | 63.75 (54.58/87.66/81.17) | 55.17          | 176.8    | 59.5      |
+| P_ref2  HEAD2 off                           | 121 ms      | 62.15 (53.19/85.63/79.13) | 54.16          | 175.7    | -         |
+| P_old   HEAD2 on, rotation r512 (round 8)   | -           | 63.75 (54.56/87.73/81.24) | 54.93          | 176.2    | 59.1      |
++---------------------------------------------+-------------+---------------------------+----------------+----------+-----------+
+New rotation against the mean reference: held (now OUTSIDE the fit) +2.3 %, fresh +1.8 % (chat +2.3, code +2.4, math +2.6, structured +2.0,
+agent +2.5, non-English +0.4), edit set +0.5 %, agent set +1.0 %. 3-prompt bench x9: 50.7 / 84.6 against 49.5 / 82.7 and 51.7 / 83.5 (inside its noise).
+Texts against P_ref1: identity set 51/51, held 107/107, fresh 123/123, edit 24/24, agent 16/16 identical, for the new and the old rotation.
+Offline replay on real draft-head inputs (pick of the two-stage head == pick of the full 4-bit draft head, block form):
++------------------------------------------+---------------------------+---------------------------+
+| head inputs from                         | rotation r512 (round 8)   | rotation r9 (this round)  |
++------------------------------------------+---------------------------+---------------------------+
+| fitting corpus, 260 prompts, 110,919 rows| 97.05 %                   | 98.43 % (in its fit)      |
+| fresh-123, 59,290 rows                   | 96.33 %                   | 97.63 %                   |
+|   of which non-English / agent           | 90.25 % / 93.60 %         | 95.12 % / 96.99 %         |
+| held-104, 30,970 rows                    | 98.88 % (in its fit)      | 98.47 % (outside its fit) |
++------------------------------------------+---------------------------+---------------------------+
+=> HEAD2 is a recipe default with rotation r9. The file is built by `recipe.sh prepare` from the checkpoint and the shipped 5.2 MB rotation
+(sha256 of the file on a GB10 GPU: fce7c913060d45f2...; rebuilt from the rotation alone: byte-identical).
+
+B. The round-9 levers of builders B, C and D together (image 0101-0118; R9=0 = round-8 defaults + HEAD2 r9, R9=1 = the new defaults)
++---------------------------------------------+---------------------------+-----------------------------------------------------------+
+| run                                         | held-104 (chat/code/math) | fresh-123 all (chat/code/math/struct/agent/non-English)   |
++---------------------------------------------+---------------------------+-----------------------------------------------------------+
+| Y_ref   R9=0                                | 63.44 (54.35/87.11/80.73) | 55.05 (47.84/75.73/81.86/80.93/82.78/37.54)               |
+| Y_all   R9=1                                | 66.56 (56.14/94.24/88.64) | 57.31 (49.06/79.45/87.24/86.53/89.97/39.06)               |
+| Y_ref2  R9=0                                | 63.66 (54.41/87.87/81.36) | 55.41 (48.16/76.24/82.40/81.56/83.23/37.76)               |
++---------------------------------------------+---------------------------+-----------------------------------------------------------+
+R9=1 against the mean reference: held +4.7 % (chat +3.2, code +7.7, math +9.4); fresh +3.8 % (chat +2.2, code +4.6, math +6.2, structured +6.5,
+agent +8.4, non-English +3.7). Texts against P_ref1 (HEAD2 off, image 0101-0115): held 107/107, fresh 123/123 identical in all three runs.
+What R9=1 turns on, with each builder's own paired result on its box (see notes/round9/builder-*-NOTE.md):
++--------------------------------------+---------+--------------------------------------------------------------------------------------+
+| setting                              | builder | builder's own pair (texts identical in every row)                                    |
++--------------------------------------+---------+--------------------------------------------------------------------------------------+
+| DEEP=0.9 (chains up to 12 drafts)    | B       | held-104 +2.0 % (chat +0.3, code +5.6, math +6.9)                                    |
+| STOP2=0.5 (skip a doomed draft step) | B       | +0.6 % without HEAD2, +0.9 % on top of HEAD2 + FAST                                  |
+| HEAD2_FAST=3 (int8 preview, bf16 rot)| B       | +0.9 % over HEAD2                                                                    |
+| CERT_CODE=sm8 + CERT_TOPK=20         | D       | sampled T0.7 +4.0..4.8 %, with thinking +2.9..3.9 %, greedy +1.7 % (seeded, 40/40)   |
+| QSA_CERT=1 + QSA_HALF=1              | C       | cold prompt first token: 110K -4.0 %, 214K -8.7 %; nothing below ~30K                |
+| ELASTIC=1 (no pool profiles)         | C       | 5 agents x 56K-token prompts: follow-up first token 64.8 -> 0.99 s (default profile) |
++--------------------------------------+---------+--------------------------------------------------------------------------------------+
+The three stages on held-104 in this window: no HEAD2 62.3 -> HEAD2 r9 63.6..63.8 -> all round-9 levers 66.56.

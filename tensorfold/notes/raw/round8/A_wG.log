@@ -1,0 +1,47 @@
+draft rows 79591 rotation read from /h/head2_rot_r512.rot rank 512
+wrote /out/head2_r512.bin 30712024 bytes
+c1f89b717e2288f1
+prepare rc 0
+0115-q38-two-stage-draft-head.patch
+[prepare.sh] Done. Start the server with ./start.sh (port 8888).
+READY recipe [] in 214 s; MemAvailable 35 GiB; GPU MiB 79304; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+ttft short prompt: median 118 ms  [115, 111, 122, 118, 117, 118, 119]
+chat 1 user: median 50.7 tok/s  mean 50.2  [52.3, 47.04, 50.72, 49.92, 48.7, 53.73, 50.99, 44.57, 54.1]
+code 1 user: median 85.2 tok/s  mean 82.0  [85.15, 86.25, 76.59, 85.89, 88.32, 71.99, 83.52, 88.29, 72.22]
+held chat: 53.52 tok/s (tokens/decode-time)  mean-of-prompts 56.98  n 66
+held code: 85.72 tok/s (tokens/decode-time)  mean-of-prompts 96.88  n 25
+held math: 79.36 tok/s (tokens/decode-time)  mean-of-prompts 79.80  n 13
+held ALL: 62.46 tok/s  n 104
+ident saved /home/picom/q38/runs/G_ref/ident.json n 51 median tps 64.4
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+crash lines: 0
+G_ref done 22:19:23
+READY recipe [HEAD2=1] in 202 s; MemAvailable 36 GiB; GPU MiB 79455; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+ttft short prompt: median 112 ms  [128, 111, 110, 112, 112, 109, 117]
+chat 1 user: median 52.1 tok/s  mean 51.0  [51.83, 47.14, 54.67, 52.1, 45.38, 52.95, 55.41, 47.38, 52.33]
+code 1 user: median 85.6 tok/s  mean 84.3  [86.46, 89.36, 80.02, 84.25, 87.19, 76.65, 85.58, 88.92, 80.07]
+held chat: 54.62 tok/s (tokens/decode-time)  mean-of-prompts 58.10  n 66
+held code: 87.82 tok/s (tokens/decode-time)  mean-of-prompts 98.96  n 25
+held math: 81.30 tok/s (tokens/decode-time)  mean-of-prompts 81.77  n 13
+held ALL: 63.81 tok/s  n 104
+ident saved /home/picom/q38/runs/G_h2/ident.json n 51 median tps 64.7
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+img: PASS ttft 0.46 s  ' The shapes are a red circle and a blue square.'
+distinct 4 users: 159.5 tok/s total  (2048 tokens in 12.8 s; max ttft 0.30 s; errors 0 [])
+crash lines: 0
+q38 head2: on, rank 512, block form, re-score 933 of 79591 rows
+G_h2 done 22:36:32
+READY recipe [] in 212 s; MemAvailable 37 GiB; GPU MiB 79304; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+ttft short prompt: median 120 ms  [130, 112, 123, 108, 117, 124, 120]
+chat 1 user: median 49.8 tok/s  mean 49.1  [51.9, 45.54, 53.79, 50.57, 47.05, 48.94, 50.02, 44.69, 49.81]
+code 1 user: median 80.8 tok/s  mean 81.6  [84.03, 88.24, 76.63, 80.79, 87.01, 75.4, 80.5, 86.66, 75.49]
+held chat: 53.48 tok/s (tokens/decode-time)  mean-of-prompts 56.92  n 66
+held code: 85.70 tok/s (tokens/decode-time)  mean-of-prompts 96.85  n 25
+held math: 79.34 tok/s (tokens/decode-time)  mean-of-prompts 79.77  n 13
+held ALL: 62.42 tok/s  n 104
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+crash lines: 0
+G_ref2 done 22:49:36
+wG done 22:49:36

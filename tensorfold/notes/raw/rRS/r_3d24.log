@@ -1,0 +1,24 @@
+READY tfb/pc_16_262144 in 208 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 257.0 tok/s total  (7892 tokens in 30.7 s; max ttft 1.32 s; errors 0 [])
+distinct 16 users: 260.7 tok/s total  (7866 tokens in 30.2 s; max ttft 1.14 s; errors 0 [])
+distinct 16 users: 259.4 tok/s total  (7908 tokens in 30.5 s; max ttft 1.14 s; errors 0 [])
+distinct 8 users: 213.0 tok/s total  (4096 tokens in 19.2 s; max ttft 0.72 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 115.7 s = 174.5 tok/s total; errors 0
+R2_ref done 14:00:41
+READY tfb/pc_16_262144 in 197 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 261.5 tok/s total  (7837 tokens in 30.0 s; max ttft 1.27 s; errors 0 [])
+distinct 16 users: 264.9 tok/s total  (7872 tokens in 29.7 s; max ttft 1.10 s; errors 0 [])
+distinct 16 users: 263.9 tok/s total  (7837 tokens in 29.7 s; max ttft 1.02 s; errors 0 [])
+distinct 8 users: 207.7 tok/s total  (4096 tokens in 19.7 s; max ttft 0.71 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 115.3 s = 175.1 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+R2_t1 done 14:07:45
+READY tfb/pc_16_262144 in 208 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 257.1 tok/s total  (7866 tokens in 30.6 s; max ttft 1.44 s; errors 0 [])
+distinct 16 users: 265.9 tok/s total  (7862 tokens in 29.6 s; max ttft 1.14 s; errors 0 [])
+distinct 16 users: 262.5 tok/s total  (7879 tokens in 30.0 s; max ttft 1.13 s; errors 0 [])
+distinct 8 users: 206.3 tok/s total  (4096 tokens in 19.9 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 116.3 s = 173.5 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+R2_t1p32 done 14:15:04
+Error response from daemon: No such container: q38-run-tf

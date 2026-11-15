@@ -1,0 +1,130 @@
+device NVIDIA GB10 SMs 48; native FP decode compiled: 0; width 640, pool 1024 experts, 48 layers a step
+fp check (this binary's decodes against the stock arithmetic): E2M1 pairs differing 0 of 16,777,216; E4M3 scale pairs differing 0
+weights: gate/up 1.76 GiB, down 0.88 GiB; one expert 2.637 MiB
+resident CTAs an SM (warps):  gate decode stock 4 (16)  gate decode d3 3 (12)  gate decode d4 3 (12)  gate decode 1-warp 16 (16)  gate tile rt4 s3 p64 2 (8)  gate tile rt4 s4 p64 2 (8)  gate tile rt2 s3 p32 2 (8)  gate tile rt2 s4 p32 2 (8)  gate tile rt2 s4 p16 2 (8)  down decode stock 5 (20)  down decode d3 4 (16)  down decode d4 4 (16)  down decode d8 2 (8)  down decode 1-warp 20 (20)  down tile rt4 s3 p64 2 (8)  down tile rt4 s4 p64 2 (8)  down tile rt2 s3 p32 4 (16)  down tile rt2 s3 p16 4 (16)
+
+== 1 row (10 experts): 10.0 distinct experts a layer, 11 (row, expert) pairs; a step reads gate/up 0.824 GiB + down 0.412 GiB
+  gate  decode stock         4.504 ms a step   196.4 GB/s    +0.0 %  hash 7f7355797e9a514b ref
+  gate  decode d3            4.452 ms a step   198.7 GB/s    +1.2 %  hash 7f7355797e9a514b BITS SAME
+  gate  decode d4            4.646 ms a step   190.4 GB/s    -3.1 %  hash 7f7355797e9a514b BITS SAME
+  gate  decode 1-warp        4.498 ms a step   196.7 GB/s    +0.1 %  hash 7f7355797e9a514b BITS SAME
+  gate  tile rt4 s3 p64      4.136 ms a step   213.9 GB/s    +8.9 %  hash 7f7355797e9a514b BITS SAME
+  gate  tile rt4 s4 p64      4.017 ms a step   220.2 GB/s   +12.1 %  hash 7f7355797e9a514b BITS SAME
+  gate  tile rt2 s3 p32      4.029 ms a step   219.6 GB/s   +11.8 %  hash 7f7355797e9a514b BITS SAME
+  gate  tile rt2 s4 p32      4.007 ms a step   220.8 GB/s   +12.4 %  hash 7f7355797e9a514b BITS SAME
+  gate  tile rt2 s4 p16      4.010 ms a step   220.6 GB/s   +12.3 %  hash 7f7355797e9a514b BITS SAME
+  down  decode stock         2.095 ms a step   211.2 GB/s    +0.0 %  hash ac5f87aa302aef76 ref
+  down  decode d3            2.498 ms a step   177.1 GB/s   -16.1 %  hash ac5f87aa302aef76 BITS SAME
+  down  decode d4            2.524 ms a step   175.3 GB/s   -17.0 %  hash ac5f87aa302aef76 BITS SAME
+  down  decode d8            2.565 ms a step   172.5 GB/s   -18.3 %  hash ac5f87aa302aef76 BITS SAME
+  down  decode 1-warp        2.086 ms a step   212.1 GB/s    +0.4 %  hash ac5f87aa302aef76 BITS SAME
+  down  tile rt4 s3 p64      2.254 ms a step   196.3 GB/s    -7.1 %  hash ac5f87aa302aef76 BITS SAME
+  down  tile rt4 s4 p64      2.210 ms a step   200.2 GB/s    -5.2 %  hash ac5f87aa302aef76 BITS SAME
+  down  tile rt2 s3 p32      2.242 ms a step   197.3 GB/s    -6.6 %  hash ac5f87aa302aef76 BITS SAME
+  down  tile rt2 s3 p16      2.242 ms a step   197.3 GB/s    -6.6 %  hash ac5f87aa302aef76 BITS SAME
+  SUM stock 6.599 ms (201.1 GB/s); best gate 'tile rt2 s4 p32' + best down 'decode 1-warp' 6.092 ms (+8.3 %)
+
+== 5 rows from 30 experts (a drafted round): 25.5 distinct experts a layer, 55 (row, expert) pairs; a step reads gate/up 2.105 GiB + down 1.052 GiB
+  gate  decode stock         9.962 ms a step   226.8 GB/s    +0.0 %  hash 365d8a888ab4356f ref
+  gate  decode d3            9.984 ms a step   226.3 GB/s    -0.2 %  hash 365d8a888ab4356f BITS SAME
+  gate  decode d4           10.030 ms a step   225.3 GB/s    -0.7 %  hash 365d8a888ab4356f BITS SAME
+  gate  decode 1-warp        9.981 ms a step   226.4 GB/s    -0.2 %  hash 365d8a888ab4356f BITS SAME
+  gate  tile rt4 s3 p64     10.114 ms a step   223.4 GB/s    -1.5 %  hash 365d8a888ab4356f BITS SAME
+  gate  tile rt4 s4 p64      9.994 ms a step   226.1 GB/s    -0.3 %  hash 365d8a888ab4356f BITS SAME
+  gate  tile rt2 s3 p32     10.084 ms a step   224.1 GB/s    -1.2 %  hash 365d8a888ab4356f BITS SAME
+  gate  tile rt2 s4 p32      9.995 ms a step   226.1 GB/s    -0.3 %  hash 365d8a888ab4356f BITS SAME
+  gate  tile rt2 s4 p16      9.992 ms a step   226.2 GB/s    -0.3 %  hash 365d8a888ab4356f BITS SAME
+  down  decode stock         5.175 ms a step   218.3 GB/s    +0.0 %  hash f47f03a03b3d8123 ref
+  down  decode d3            5.054 ms a step   223.6 GB/s    +2.4 %  hash f47f03a03b3d8123 BITS SAME
+  down  decode d4            5.075 ms a step   222.7 GB/s    +2.0 %  hash f47f03a03b3d8123 BITS SAME
+  down  decode d8            5.369 ms a step   210.4 GB/s    -3.6 %  hash f47f03a03b3d8123 BITS SAME
+  down  decode 1-warp        5.181 ms a step   218.1 GB/s    -0.1 %  hash f47f03a03b3d8123 BITS SAME
+  down  tile rt4 s3 p64      5.117 ms a step   220.8 GB/s    +1.1 %  hash f47f03a03b3d8123 BITS SAME
+  down  tile rt4 s4 p64      5.066 ms a step   223.0 GB/s    +2.2 %  hash f47f03a03b3d8123 BITS SAME
+  down  tile rt2 s3 p32      5.056 ms a step   223.5 GB/s    +2.4 %  hash f47f03a03b3d8123 BITS SAME
+  down  tile rt2 s3 p16      5.066 ms a step   223.0 GB/s    +2.2 %  hash f47f03a03b3d8123 BITS SAME
+  SUM stock 15.137 ms (223.9 GB/s); best gate 'decode stock' + best down 'decode d3' 15.015 ms (+0.8 %)
+
+== 16 rows from 100: 81.8 distinct experts a layer, 176 (row, expert) pairs; a step reads gate/up 6.736 GiB + down 3.368 GiB
+  gate  decode stock        32.623 ms a step   221.7 GB/s    +0.0 %  hash 2b1b7101074e63b4 ref
+  gate  decode d3           31.374 ms a step   230.5 GB/s    +4.0 %  hash 2b1b7101074e63b4 BITS SAME
+  gate  decode d4           31.464 ms a step   229.9 GB/s    +3.7 %  hash 2b1b7101074e63b4 BITS SAME
+  gate  decode 1-warp       32.684 ms a step   221.3 GB/s    -0.2 %  hash 2b1b7101074e63b4 BITS SAME
+  gate  tile rt4 s3 p64     31.489 ms a step   229.7 GB/s    +3.6 %  hash 2b1b7101074e63b4 BITS SAME
+  gate  tile rt4 s4 p64     31.427 ms a step   230.1 GB/s    +3.8 %  hash 2b1b7101074e63b4 BITS SAME
+  gate  tile rt2 s3 p32     31.506 ms a step   229.6 GB/s    +3.5 %  hash 2b1b7101074e63b4 BITS SAME
+  gate  tile rt2 s4 p32     31.516 ms a step   229.5 GB/s    +3.5 %  hash 2b1b7101074e63b4 BITS SAME
+  gate  tile rt2 s4 p16     31.424 ms a step   230.2 GB/s    +3.8 %  hash 2b1b7101074e63b4 BITS SAME
+  down  decode stock        15.755 ms a step   229.5 GB/s    +0.0 %  hash b0c050ca61f1cd85 ref
+  down  decode d3           15.731 ms a step   229.9 GB/s    +0.2 %  hash b0c050ca61f1cd85 BITS SAME
+  down  decode d4           15.764 ms a step   229.4 GB/s    -0.1 %  hash b0c050ca61f1cd85 BITS SAME
+  down  decode d8           16.092 ms a step   224.7 GB/s    -2.1 %  hash b0c050ca61f1cd85 BITS SAME
+  down  decode 1-warp       15.787 ms a step   229.1 GB/s    -0.2 %  hash b0c050ca61f1cd85 BITS SAME
+  down  tile rt4 s3 p64     16.124 ms a step   224.3 GB/s    -2.3 %  hash b0c050ca61f1cd85 BITS SAME
+  down  tile rt4 s4 p64     16.068 ms a step   225.1 GB/s    -1.9 %  hash b0c050ca61f1cd85 BITS SAME
+  down  tile rt2 s3 p32     16.327 ms a step   221.5 GB/s    -3.5 %  hash b0c050ca61f1cd85 BITS SAME
+  down  tile rt2 s3 p16     16.326 ms a step   221.5 GB/s    -3.5 %  hash b0c050ca61f1cd85 BITS SAME
+  SUM stock 48.379 ms (224.3 GB/s); best gate 'decode d3' + best down 'decode d3' 47.105 ms (+2.7 %)
+
+== 97 rows from 120 (16 users): 120.0 distinct experts a layer, 1067 (row, expert) pairs; a step reads gate/up 9.888 GiB + down 4.944 GiB
+  gate  decode stock        47.590 ms a step   223.1 GB/s    +0.0 %  hash 9ebe8029a4f3ae55 ref
+  gate  decode d3           47.366 ms a step   224.1 GB/s    +0.5 %  hash 9ebe8029a4f3ae55 BITS SAME
+  gate  decode d4           47.801 ms a step   222.1 GB/s    -0.4 %  hash 9ebe8029a4f3ae55 BITS SAME
+  gate  decode 1-warp       47.915 ms a step   221.6 GB/s    -0.7 %  hash 9ebe8029a4f3ae55 BITS SAME
+  gate  tile rt4 s3 p64     46.864 ms a step   226.5 GB/s    +1.6 %  hash 9ebe8029a4f3ae55 BITS SAME
+  gate  tile rt4 s4 p64     46.633 ms a step   227.7 GB/s    +2.1 %  hash 9ebe8029a4f3ae55 BITS SAME
+  gate  tile rt2 s3 p32     46.744 ms a step   227.1 GB/s    +1.8 %  hash 9ebe8029a4f3ae55 BITS SAME
+  gate  tile rt2 s4 p32     46.614 ms a step   227.8 GB/s    +2.1 %  hash 9ebe8029a4f3ae55 BITS SAME
+  gate  tile rt2 s4 p16     46.609 ms a step   227.8 GB/s    +2.1 %  hash 9ebe8029a4f3ae55 BITS SAME
+  down  decode stock        24.813 ms a step   213.9 GB/s    +0.0 %  hash e0e82e57d3112796 ref
+  down  decode d3           24.728 ms a step   214.7 GB/s    +0.3 %  hash e0e82e57d3112796 BITS SAME
+  down  decode d4           25.451 ms a step   208.6 GB/s    -2.5 %  hash e0e82e57d3112796 BITS SAME
+  down  decode d8           24.682 ms a step   215.1 GB/s    +0.5 %  hash e0e82e57d3112796 BITS SAME
+  down  decode 1-warp       24.864 ms a step   213.5 GB/s    -0.2 %  hash e0e82e57d3112796 BITS SAME
+  down  tile rt4 s3 p64     25.692 ms a step   206.6 GB/s    -3.4 %  hash e0e82e57d3112796 BITS SAME
+  down  tile rt4 s4 p64     25.256 ms a step   210.2 GB/s    -1.8 %  hash e0e82e57d3112796 BITS SAME
+  down  tile rt2 s3 p32     25.665 ms a step   206.8 GB/s    -3.3 %  hash e0e82e57d3112796 BITS SAME
+  down  tile rt2 s3 p16     25.935 ms a step   204.7 GB/s    -4.3 %  hash e0e82e57d3112796 BITS SAME
+  SUM stock 72.403 ms (220.0 GB/s); best gate 'tile rt2 s4 p16' + best down 'decode d8' 71.291 ms (+1.6 %)
+
+== 97 rows from 250 (16 users, wider): 245.0 distinct experts a layer, 1067 (row, expert) pairs; a step reads gate/up 20.186 GiB + down 10.093 GiB
+  gate  decode stock        93.639 ms a step   231.5 GB/s    +0.0 %  hash b7cfefee45eb9862 ref
+  gate  decode d3           93.479 ms a step   231.9 GB/s    +0.2 %  hash b7cfefee45eb9862 BITS SAME
+  gate  decode d4           93.596 ms a step   231.6 GB/s    +0.0 %  hash b7cfefee45eb9862 BITS SAME
+  gate  decode 1-warp       93.842 ms a step   231.0 GB/s    -0.2 %  hash b7cfefee45eb9862 BITS SAME
+  gate  tile rt4 s3 p64     93.822 ms a step   231.0 GB/s    -0.2 %  hash b7cfefee45eb9862 BITS SAME
+  gate  tile rt4 s4 p64     93.856 ms a step   230.9 GB/s    -0.2 %  hash b7cfefee45eb9862 BITS SAME
+  gate  tile rt2 s3 p32     93.771 ms a step   231.1 GB/s    -0.1 %  hash b7cfefee45eb9862 BITS SAME
+  gate  tile rt2 s4 p32     93.887 ms a step   230.9 GB/s    -0.3 %  hash b7cfefee45eb9862 BITS SAME
+  gate  tile rt2 s4 p16     93.866 ms a step   230.9 GB/s    -0.2 %  hash b7cfefee45eb9862 BITS SAME
+  down  decode stock        49.407 ms a step   219.3 GB/s    +0.0 %  hash dc7c2ea3398e5720 ref
+  down  decode d3           49.228 ms a step   220.1 GB/s    +0.4 %  hash dc7c2ea3398e5720 BITS SAME
+  down  decode d4           49.322 ms a step   219.7 GB/s    +0.2 %  hash dc7c2ea3398e5720 BITS SAME
+  down  decode d8           48.693 ms a step   222.6 GB/s    +1.5 %  hash dc7c2ea3398e5720 BITS SAME
+  down  decode 1-warp       49.307 ms a step   219.8 GB/s    +0.2 %  hash dc7c2ea3398e5720 BITS SAME
+  down  tile rt4 s3 p64     48.942 ms a step   221.4 GB/s    +0.9 %  hash dc7c2ea3398e5720 BITS SAME
+  down  tile rt4 s4 p64     49.041 ms a step   221.0 GB/s    +0.7 %  hash dc7c2ea3398e5720 BITS SAME
+  down  tile rt2 s3 p32     49.836 ms a step   217.5 GB/s    -0.9 %  hash dc7c2ea3398e5720 BITS SAME
+  down  tile rt2 s3 p16     49.820 ms a step   217.5 GB/s    -0.8 %  hash dc7c2ea3398e5720 BITS SAME
+  SUM stock 143.046 ms (227.3 GB/s); best gate 'decode d3' + best down 'decode d8' 142.172 ms (+0.6 %)
+
+== 1024 rows from 512 (prompt): 512.0 distinct experts a layer, 11264 (row, expert) pairs; a step reads gate/up 42.188 GiB + down 21.094 GiB
+  gate  decode stock       209.751 ms a step   216.0 GB/s    +0.0 %  hash 9bf4fb51d063625a ref
+  gate  decode d3          210.148 ms a step   215.6 GB/s    -0.2 %  hash 9bf4fb51d063625a BITS SAME
+  gate  decode d4          210.956 ms a step   214.7 GB/s    -0.6 %  hash 9bf4fb51d063625a BITS SAME
+  gate  decode 1-warp      209.104 ms a step   216.6 GB/s    +0.3 %  hash 9bf4fb51d063625a BITS SAME
+  gate  tile rt4 s3 p64    208.359 ms a step   217.4 GB/s    +0.7 %  hash 9bf4fb51d063625a BITS SAME
+  gate  tile rt4 s4 p64    208.593 ms a step   217.2 GB/s    +0.6 %  hash 9bf4fb51d063625a BITS SAME
+  gate  tile rt2 s3 p32    208.187 ms a step   217.6 GB/s    +0.8 %  hash 9bf4fb51d063625a BITS SAME
+  gate  tile rt2 s4 p32    208.424 ms a step   217.3 GB/s    +0.6 %  hash 9bf4fb51d063625a BITS SAME
+  gate  tile rt2 s4 p16    207.234 ms a step   218.6 GB/s    +1.2 %  hash 9bf4fb51d063625a BITS SAME
+  down  decode stock       185.261 ms a step   122.3 GB/s    +0.0 %  hash ba881fc6b68ce8f7 ref
+  down  decode d3          155.751 ms a step   145.4 GB/s   +18.9 %  hash ba881fc6b68ce8f7 BITS SAME
+  down  decode d4          154.807 ms a step   146.3 GB/s   +19.7 %  hash ba881fc6b68ce8f7 BITS SAME
+  down  decode d8          169.251 ms a step   133.8 GB/s    +9.5 %  hash ba881fc6b68ce8f7 BITS SAME
+  down  decode 1-warp      193.008 ms a step   117.3 GB/s    -4.0 %  hash ba881fc6b68ce8f7 BITS SAME
+  down  tile rt4 s3 p64    126.936 ms a step   178.4 GB/s   +45.9 %  hash ba881fc6b68ce8f7 BITS SAME
+  down  tile rt4 s4 p64    126.031 ms a step   179.7 GB/s   +47.0 %  hash ba881fc6b68ce8f7 BITS SAME
+  down  tile rt2 s3 p32    128.843 ms a step   175.8 GB/s   +43.8 %  hash ba881fc6b68ce8f7 BITS SAME
+  down  tile rt2 s3 p16    127.009 ms a step   178.3 GB/s   +45.9 %  hash ba881fc6b68ce8f7 BITS SAME
+  SUM stock 395.012 ms (172.0 GB/s); best gate 'tile rt2 s4 p16' + best down 'tile rt4 s4 p64' 333.265 ms (+18.5 %)

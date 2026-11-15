@@ -1,0 +1,86 @@
+Builder C results (spark-4e5c, 2026-11-13 17:00-20:35 UTC). All MEASURED on the official FP4-Local checkpoint, TensorFold + MiaAI + patches 0101-0109 as the
+base; fp8 KV as the recipe has it. "off" = the same binary with the flag unset. Raw: Mac q38/results/rC (box ~/q38/runs/C_w*). Log: Mac q38/PROGRESS-C.md.
+
+1. WHERE A PROMPT PASS'S GPU TIME GOES (TF_FLASHNEXT_Q38_GPROF=2, a 3,072-row chunk, ms)
++----------------------+--------+--------+-----+-----+---------+--------+----------+
+| chunk @ context      | GPU ms | us/row | MoE | GDN | hc-attn | hc-mlp | QSA attn |
++----------------------+--------+--------+-----+-----+---------+--------+----------+
+| 3,072 rows @ 3K      |  1127  |  367   | 423 | 263 |   164   |  101   |   162    |
+| 3,072 rows @ 30K     |  1191  |  388   | 428 | 268 |   170   |  102   |   208    |
+| 3,072 rows @ 67K     |  1265  |  412   | 435 | 271 |   168   |  104   |   271    |
+| 3,072 rows @ 104K    |  1335  |  435   | 438 | 271 |   169   |  104   |   340    |
+| 1,123-1,447 rows     | 497-648| 442-449| 227-285 | 100-133 | 64-82 | 39-50 | 63-93 |
+| first chunk, new engine | 1418 | 462  | 701 | 288 |   169   |  105   |   121    |
++----------------------+--------+--------+-----+-----+---------+--------+----------+
+Whole prompts (GPU of wall): 7,276 tok 3,042 of 3,186 ms; 29,044 tok 10,993 of 11,387 ms (MoE 37.6 %, GDN 22.9, QSA 15.1, hc-attn 14.4, hc-mlp 8.8);
+116,494 tok 47,053 of 48,745 ms (MoE 34.7 %, GDN 21.7, QSA 20.4, hc-attn 13.6, hc-mlp 8.3).
+Reading: every group is flat with context except QSA (+2.1 ms a chunk per 1K tokens of context). KPROF of a 117K prompt: that growth is the indexer's
+block scores (qsa_tile::scores, scalar fp32: 74 %), the top-block select (19 %) and the fused attention (7 %). It is ~10 % of a 117K prefill; without it
+the 117K prompt would run at ~2,700 tok/s (ARITHMETIC; a third engine measured 2,848). Host time between chunks is 3.5 %. Chunk size was already measured zero.
+No exact prefill lever was built; the design for the indexer is in NEXT-qsa-certified-select.md.
+
+2. LEVERS (one user, recipe default profile 5 x 262K, vision on; ONE engine switched by knob file, fresh 29-token prompts, 16 each, 3 repetitions; build C6)
++---------------------------------------+-----------------------+----------------------+---------------------------+
+| setting                               | new short prompt,     | agent follow-up turn | cold prompt 2.7K / 7.3K / |
+|                                       | first token ms        | (700 new tok at 6-9K)| 29K tokens, s             |
++---------------------------------------+-----------------------+----------------------+---------------------------+
+| off                                   | 173.7 / 176.8 / 175.5 | 0.57 s               | 1.18 / 3.03 / 11.71       |
+| KEEP_INPASS=4096                      | 133.8 / 133.4 / 132.3 | 0.52-0.53 s          | 1.14 / 2.95 / 11.68       |
+| KEEP_INPASS=4096 + LANE_REUSE         | 112.4 / 112.9 / 112.6 | 0.49-0.50 s          | 1.09 / 2.94 / 11.65       |
+| LANE_REUSE alone                      | 155.5 / 156.6 / 153.1 | 0.55 s               | 1.14 / 2.97 / 11.59       |
++---------------------------------------+-----------------------+----------------------+---------------------------+
+Both: new short prompt -36 % (175.3 -> 112.6 ms); agent follow-up turn -13 %; cold prompts -8 % at 2.7K, -3 % at 7.3K, about -1 % at 29K, 0 at 117K.
+qk.py ttft (the recipe's "first token of a short prompt" figure, 182 ms on 923b): 184-185 ms off -> 118-122 ms on this box.
+Identity vs off, fresh engines (C5 / C6): ident set 51/51, needle 109,126 tok 3/3 and the same answer, short 24/24, agent trace 4/4, prefill 2/2,
+held 40/40; score hashes after the prompt pass 71/71 and at release 71/71; 72 marks kept in pass. C6 off = C5 off: ident 51/51, hashes 52/52.
+HANDOFF BINARY C9 (built from base + C-stack.patch; KEEP_INPASS=4096 + LANE_REUSE=5 + PREFIX_WAIT on) vs the flags-off reference: ident 51/51, needle 3/3
+same answer, short 24/24, agent 4/4, prefill 2/2, hashes 71/71 + 71/71; new short prompt 168.1 -> 100.7 ms, agent follow-up (1.5K new tok at 20K) 0.88 -> 0.77 s,
+cold 2.8K 1.19 -> 1.09 s, 7.3K 3.03 -> 2.88 s (PLOG on both sides).
+
+3. 16 LANES (USERS16 profile without vision; ONE engine, alternating, 3 repetitions; build C8 = C7 + a dropped flag; qk.py distinct N, 512 tokens)
++-------+-------------------------------------------+-------------------------------------------+
+| users | off: tok/s total; LAST first token        | KEEP_INPASS=4096 + LANE_REUSE=16          |
++-------+-------------------------------------------+-------------------------------------------+
+| 16    | 263.8, 259.9, 269.4; 1.13, 2.02, 1.32 s   | 271.3, 271.3, 273.7; 1.04, 0.70, 0.71 s   |
+| 8     | 215.5, 211.7, 206.4; 0.72, 0.69, 0.73 s   | 216.0, 216.0, 211.9; 0.49, 0.49, 0.50 s   |
+| 4     | 150.1, 151.9, 154.7; 0.51, 0.52, 0.53 s   | 158.1, 154.6, 149.8; 0.37, 0.38, 0.38 s   |
+| 1     | 184, 185, 185 ms (qk.py ttft)             | 118, 119, 118 ms                          |
++-------+-------------------------------------------+-------------------------------------------+
+Identity with 16 in flight: held 107 prompts x 128 tokens 107/107 texts identical.
+
+4. PREFIX WAIT (TENSORFOLD_PREFIX_WAIT_MS=60000; 16 lanes; two fresh engines on the SAME prompts, off vs on with the two levers above; build C8)
++----------------------------------------------------------------+----------------------+----------------------+
+| load                                                           | off                  | on                   |
++----------------------------------------------------------------+----------------------+----------------------+
+| 8 requests at once on a NEW 25.5K-token system prompt:         | 28.4 / 82.7 / 86.7 s | 10.7 / 11.6 / 12.9 s |
+|   first / median / LAST first token                            |                      |                      |
+| 16 requests at once on a NEW 11K-token system prompt           | 4.9 / 75.0 / 76.9 s  | 4.7 / 6.4 / 9.0 s    |
+| 8 agents, shared 20K system prompt, 3 turns: wall; sum of waits| 92.2 s; 503.9 s      | 35.9 s; 106.5 s      |
++----------------------------------------------------------------+----------------------+----------------------+
+(The same in one engine by knob file, build C6, two repetitions: 85.7 -> 13.4 s, 75.9 -> 11.0 s, 92.2 -> 38.7 s.)
+Identity: texts 8/8, 16/16, 24/24; score hashes after the prompt pass 48/48. The release-time hash differs under concurrency (47/48), and it differs just
+as much between two IDENTICAL flags-off runs (21/24 differ, texts 24/24): schedule noise, not the levers. With one user it is stable (71/71 above).
+
+5. AGENTS AND THE PROMPT CACHE (5 agents at once, each its own 56K-token system prompt, 3 turns of +1.5K tokens; KEEP_INPASS on)
++--------------------------------------------------------------+------------+--------------------------+--------------+---------+
+| configuration                                                | cache      | follow-up first token    | cache hits   | wall    |
+|                                                              | budget     | median / max             | of 10        |         |
++--------------------------------------------------------------+------------+--------------------------+--------------+---------+
+| recipe one-user default: 5 lanes x 262,144 windows           | 4.1 GiB    | 85.1 s / 146.0 s         | 0            | 365.6 s |
+| the same + sibling-first eviction (tried, DROPPED)           | 4.3 GiB    | 84.9 s / 145.6 s         | 0            | 364.7 s |
+| 5 lanes sharing a pool of 5 x 131,072 tokens                 | 13.4 GiB   | 1.01 s / 13.0 s          | 10           | 138.0 s |
+|   (TF_FLASHNEXT_Q38_POOL_CTX=131072, --parallel 5)           |            |                          |              |         |
+| the same pool + every lever (C8, "agents profile")           | 15.6 GiB   | 0.99 s / 13.8 s          | 10           | 135.4 s |
++--------------------------------------------------------------+------------+--------------------------+--------------+---------+
+Texts 15/15 identical in every row. Cause: a kept state is a device copy (110 MiB + ~17 KiB a token = 1.09 GiB at 56K tokens), a request keeps about three
+marks, and the cache gets only what the lanes' full-window reservation leaves (28.4 GiB room - 5 x 4.85 GiB). One agent's request fills it and pushes the
+others' states out, so every follow-up prefills its whole history again. One user alone is fine (20K system + turns: 0.84 s follow-ups, every turn a hit).
+One short prompt on the pool profile: 110.5 ms; cold 7.3K / 29K: 2445 / 2523 tok/s (same as the default profile).
+
+6. DROPPED / NOT BUILT
+- TF_FLASHNEXT_Q38_CACHE_SIBLINGS (eviction takes a prompt's own earlier marks first): zero (row 2 of table 5); the store makes room for all of a new request's
+  marks at its lookup. Removed from the patch. Upstream's rework is #2699.
+- Upstream BF16 128x128 prompt tile (#1846 / #1848, 3.7-4.4 % upstream): not ported. This base's prompt passes already run MiaAI's 128x128 MXFP8 tile
+  (TF_FLASHNEXT_PROMPT_MX128 / GEMM2) on the projections; the groups are flat at ~0.36 ms a row and round 7 measured the tensor-core rate equal in every group.
+- Upstream KEEP_INPASS as written (#1866) needs its fused DeltaNet kernel's cut; built our own form instead (lever 1).
+- Prompt chunk size, expert tile shapes: measured zero in rounds 6-7, not repeated.

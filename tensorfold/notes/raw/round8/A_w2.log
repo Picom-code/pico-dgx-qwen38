@@ -1,0 +1,16 @@
+READY tfb/pc_16_262144 in 213 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 266.0 tok/s total  (7845 tokens in 29.5 s; max ttft 1.35 s; errors 0 [])
+distinct 16 users: 268.5 tok/s total  (7879 tokens in 29.3 s; max ttft 1.17 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 113.4 s = 178.1 tok/s total; errors 0
+q38 gprof 9+rows: 668 passes, 79.77 rows a pass, 197.531 ms a pass: embed 0.054 hc-attn-side 8.077 gdn 34.450 hc-mlp-side 7.246 moe 130.422 ple 1.285 head 7.526 qsa-attn 8.471
+crash lines: 0
+A_gp_off done 18:20:51
+READY tfb/pc_16_262144 in 215 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 267.7 tok/s total  (7879 tokens in 29.4 s; max ttft 1.49 s; errors 0 [])
+distinct 16 users: 270.1 tok/s total  (7845 tokens in 29.0 s; max ttft 1.14 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 112.0 s = 180.3 tok/s total; errors 0
+q38 gprof 9+rows: 674 passes, 78.96 rows a pass, 193.879 ms a pass: embed 0.053 hc-attn-side 8.163 gdn 34.224 hc-mlp-side 7.196 moe 129.864 ple 1.162 head 7.534 qsa-attn 5.682
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+crash lines: 0
+A_gp_on done 18:27:19
+w2 done 18:27:19

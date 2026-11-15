@@ -1,0 +1,287 @@
+diff --git a/zig/kernels/cuda/nvfp4_experts.cu b/zig/kernels/cuda/nvfp4_experts.cu
+index afbaac8..96d5251 100644
+--- a/zig/kernels/cuda/nvfp4_experts.cu
++++ b/zig/kernels/cuda/nvfp4_experts.cu
+@@ -1,5 +1,6 @@
+ // Device code of nvfp4/experts.cu (lines 14-149, host launchers, comments and ATen dropped) and its instances.
+ 
++#include "q38_pdl.cuh"
+ #include <cuda_bf16.h>
+ #include <cuda_fp8.h>
+ #include <stdint.h>
+@@ -81,10 +82,10 @@ __device__ __forceinline__ void compute_stage(float (&acc)[M][1][NTW][4], const
+     }
+ }
+ 
+-template <int M>
++// D: stages a warp keeps in flight (stock 2). The groups are computed in the same order for every D, so the sums are the same bits.
++template <int M, int D = 2>
+ __device__ __forceinline__ void k_loop(float (&acc)[M][1][NTW][4], const uint4* blk, int KG, int lane, int t,
+                                        const __nv_bfloat16* x0, const __nv_bfloat16* x1, bool v0, bool v1) {
+-  constexpr int D = 2;
+   Stage<M> st[D];
+ #pragma unroll
+   for (int d = 0; d < D; ++d)
+@@ -101,12 +102,12 @@ __device__ __forceinline__ void k_loop(float (&acc)[M][1][NTW][4], const uint4*
+   }
+ }
+ 
+-template <int M, int EPI, int WARPS>
+-__global__ void __launch_bounds__(WARPS * 32)
+-    nvfp4_expert_kernel(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++template <int M, int EPI, int WARPS, int D>
++__device__ __forceinline__ void expert_body(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
+                         const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
+                         const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
+                         float limit, int skip) {
++  q38_pdl();
+   const int lane = threadIdx.x & 31, gq = lane >> 2, t = lane & 3;
+   const int units = __ldg(counts) * NB;
+   for (int unit = blockIdx.x * WARPS + (threadIdx.x >> 5); unit < units; unit += gridDim.x * WARPS) {
+@@ -126,7 +127,7 @@ __global__ void __launch_bounds__(WARPS * 32)
+       for (int m = 0; m < M; ++m)
+ #pragma unroll
+         for (int j = 0; j < NTW; ++j) acc[m][0][j][0] = acc[m][0][j][1] = acc[m][0][j][2] = acc[m][0][j][3] = 0.f;
+-      k_loop<M>(acc, blk, KG, lane, t, x0, x1, v0, v1);
++      k_loop<M, D>(acc, blk, KG, lane, t, x0, x1, v0, v1);
+ #pragma unroll
+       for (int m = 0; m < M; ++m) {
+         const float g = __ldg(scale + e * M + m);
+@@ -140,6 +141,15 @@ __global__ void __launch_bounds__(WARPS * 32)
+   }
+ }
+ 
++template <int M, int EPI, int WARPS>
++__global__ void __launch_bounds__(WARPS * 32)
++    nvfp4_expert_kernel(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) {
++  expert_body<M, EPI, WARPS, 2>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip);
++}
++
+ // The prompt form's tile: 16 RT rows a warp, WM x WN warps (BM pairs of one item by WN 32-column blocks a CTA).
+ template <int M, int RT, int WM, int WN>
+ struct Prompt4 {
+@@ -335,3 +345,43 @@ template __global__ void nvfp4_expert_kernel<1, 1, 1>(const __nv_bfloat16* __res
+ TF_NVFP4_PROMPT(tf_nvfp4_prompt_relu2, 1, 1, 8)
+ TF_NVFP4_PROMPT(tf_nvfp4_prompt_swiglu, 2, 2, 4)
+ TF_NVFP4_PROMPT(tf_nvfp4_prompt_down, 1, 3, 8)
++
++// q38: the decode kernels with a deeper prefetch (TF_FLASHNEXT_Q38_EXP_D=N picks q38_gate_up_dN / q38_down_f32_dN; unset: stock symbols).
++extern "C" {
++__global__ void __launch_bounds__(128) q38_gate_up_d3(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<2, 2, 4, 3>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_gate_up_d4(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<2, 2, 4, 4>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_gate_up_d6(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<2, 2, 4, 6>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_gate_up_d8(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<2, 2, 4, 8>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_down_f32_d3(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<1, 0, 4, 3>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_down_f32_d4(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<1, 0, 4, 4>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_down_f32_d6(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<1, 0, 4, 6>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_down_f32_d8(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<1, 0, 4, 8>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_down_f32_d12(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<1, 0, 4, 12>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++}
+diff --git a/zig/kernels/cuda/qmmf.cu b/zig/kernels/cuda/qmmf.cu
+index 6569cf0..cbfe209 100644
+--- a/zig/kernels/cuda/qmmf.cu
++++ b/zig/kernels/cuda/qmmf.cu
+@@ -73,7 +73,7 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+     const int m0 = at.x, n0 = at.y, slice = FUSE ? 0 : blockIdx.z, g0 = slice * per;
+ 
+     auto stage = [&](int s) { return buf + s * T::STAGE; };
+-    auto load = [&](int s, int g) {
++    auto loadX = [&](int s, int g) {
+         unsigned char* p = stage(s);
+         for (int c = tid; c < BM * T::CHUNKS; c += T::THREADS) {
+             const int r = c / T::CHUNKS, ch = c % T::CHUNKS;
+@@ -81,6 +81,9 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+             cp16z(p + r * T::ROW + swz<T::CHUNKS>(r, ch) * 16, x + static_cast<size_t>(row) * ldx + g * GS + ch * 8,
+                   m0 + r < M);
+         }
++    };
++    auto loadW = [&](int s, int g) {
++        unsigned char* p = stage(s);
+         unsigned char* pw = p + T::X;
+         constexpr int TILE_BYTES = MODE == FP4 ? 64 * GS / 2 : MODE == BF16 ? 64 * GS * 2 : 64 * GS;
+         for (int c = tid; c < T::W / 16; c += T::THREADS) {
+@@ -93,6 +96,10 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+                 cp16(ps + c * 16, bs + (static_cast<size_t>(n0 / 64) * KG + g) * T::S + c * 16);
+         }
+     };
++    auto load = [&](int s, int g) {
++        loadX(s, g);
++        loadW(s, g);
++    };
+ 
+     float acc[T::MT][T::NT][4];
+     float tot[FUSE ? T::MT : 1][FUSE ? T::NT : 1][4];
+@@ -102,9 +109,17 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+         for (int j = 0; j < T::NT; ++j)
+ #pragma unroll
+             for (int e = 0; e < 4; ++e) acc[i][j][e] = 0.0f;
++    // q38 (programmatic dependent launch; without the launch attribute both calls are no-ops): the next kernel may spin up
++    // now, and this one streams its first weight stages (constants) before it waits for the kernels ahead of it; inputs
++    // are read only after the wait. The stages' contents and the mma order are unchanged.
++    grid_launch();
++#pragma unroll
++    for (int s = 0; s < STAGES - 1; ++s)
++        if (s < per) loadW(s, g0 + s);
++    grid_wait();
+ #pragma unroll
+     for (int s = 0; s < STAGES - 1; ++s) {
+-        if (s < per) load(s, g0 + s);
++        if (s < per) loadX(s, g0 + s);
+         commit();
+     }
+     for (int it = 0; it < per; ++it) {
+@@ -306,6 +321,40 @@ template __global__ void qmmf_kernel<MXFP8, 64, 64, 1, 4, 4, false, false, false
+ template __global__ void qmmf_kernel<MXFP8, 64, 64, 1, 4, 4, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<MXFP8, 64, 64, 1, 4, 4, false, false, true>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ 
++// q38: deeper / shallower cp.async pipelines of the 16-row MXFP8 and BF16 lane tiles (TF_FLASHNEXT_Q38_QMMF_ST); same mma sequence, same bits.
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 3, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 3, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 3, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 3, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 6, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 6, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 6, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 6, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 8, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 8, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 8, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 8, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 12, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 12, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 12, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 12, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 3, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 3, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 3, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 3, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 6, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 6, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 6, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 6, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 8, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 8, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 8, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 8, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 12, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 12, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 12, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 64, 1, 4, 12, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++
+ // The instances the Zig launchers load by name (the Python host instantiates these through its launch switch).
+ template __global__ void qmmf_kernel<FP8G, 16, 64, 1, 4, 4, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<FP8G, 16, 64, 1, 4, 4, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+diff --git a/zig/src/cuda/experts.zig b/zig/src/cuda/experts.zig
+index a041df9..3be3e18 100644
+--- a/zig/src/cuda/experts.zig
++++ b/zig/src/cuda/experts.zig
+@@ -389,6 +389,15 @@ pub const Nvfp4Experts = struct {
+                 break :blk narrow[0..name.len :0];
+             } else name;
+             e.fns[i] = try mod.function(selected);
++            // TF_FLASHNEXT_Q38_EXP_D=N / TF_FLASHNEXT_Q38_EXP_D1=N (q38, off unless set): the 4-warp gate-up / down kernels with N stages in flight (same bits).
++            if (warps == 4 and i < 2) {
++                if (std.c.getenv(if (i == 0) "TF_FLASHNEXT_Q38_EXP_D" else "TF_FLASHNEXT_Q38_EXP_D1")) |v| {
++                    var q: [64]u8 = undefined;
++                    const qlen = (try std.fmt.bufPrint(q[0..62], "{s}{s}", .{ if (i == 0) "q38_gate_up_d" else "q38_down_f32_d", std.mem.span(v) })).len;
++                    q[qlen] = 0;
++                    e.fns[i] = try mod.function(q[0..qlen :0]);
++                }
++            }
+             e.resident[i] = @max(1, try e.fns[i].occupancy(@intCast(warps * 32), 0)) * sms;
+         }
+         for (symbols.prompt, &e.prompt_fns, [3]usize{ 1, 2, 1 }, prompt_wn) |name, *f, parts, wn| {
+diff --git a/zig/src/cuda/qmmf.zig b/zig/src/cuda/qmmf.zig
+index 1ba14c6..7911209 100644
+--- a/zig/src/cuda/qmmf.zig
++++ b/zig/src/cuda/qmmf.zig
+@@ -38,6 +38,31 @@ pub fn sharedBytes(mode: Mode, bm: u32) u32 {
+     return @max(4 * stage, partials);
+ }
+ 
++/// TF_FLASHNEXT_Q38_QMMF_ST=N (q38, off unless set): cp.async stages of the 16-row MXFP8 / BF16 lane tiles (stock 4); TF_FLASHNEXT_Q38_QMMF_ST_CL=N
++/// overrides it for the cluster (K-sliced) instances. Only the pipeline depth changes: each block's mma sequence, and so its bits, are the same.
++fn q38Stages(cluster: bool) u32 {
++    const st = struct {
++        var v: [2]u32 = .{ 0, 0 };
++    };
++    if (st.v[0] == 0) {
++        st.v[0] = 4;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_QMMF_ST")) |e| st.v[0] = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 4;
++        st.v[1] = st.v[0];
++        if (std.c.getenv("TF_FLASHNEXT_Q38_QMMF_ST_CL")) |e| st.v[1] = std.fmt.parseInt(u32, std.mem.span(e), 10) catch st.v[0];
++    }
++    return st.v[@intFromBool(cluster)];
++}
++
++/// sharedBytes with the q38 stage count of a 16-row MXFP8 / BF16 tile.
++pub fn sharedBytesQ(mode: Mode, bm: u32, cluster: bool) u32 {
++    if (bm != 16 or (mode != .mxfp8 and mode != .bf16)) return sharedBytes(mode, bm);
++    const w: u32 = if (mode == .bf16) bn * group * 2 else bn * group;
++    const s: u32 = if (mode == .mxfp8) bn * 2 else 0;
++    const stage = (bm * group * 2 + w + s + 127) / 128 * 128;
++    const partials = (bm / 16) * 2 * 4 * threads * 4;
++    return @max(q38Stages(cluster) * stage, partials);
++}
++
+ /// K slices for an (n, k) weight, from the shape alone so a row's bits never depend on the row count (qmm.split_k).
+ pub fn splitK(n: usize, k: usize) u32 {
+     const tiles = (n + bn - 1) / bn;
+@@ -96,8 +121,16 @@ pub const Out = enum { bf16, f32 };
+ fn loadTiles(mod: Module, comptime mode: Mode, comptime wide: bool) ![7]Function {
+     var set: [7]Function = undefined;
+     inline for (row_tiles, 0..) |bm, ti| inline for (.{ false, true }, 0..) |cl, ci| {
+-        const f = try mod.function(symbol(mode, bm, cl, false, wide));
+-        try f.allowDynamicShared(sharedBytes(mode, bm));
++        var f = try mod.function(symbol(mode, bm, cl, false, wide));
++        if (bm == 16 and (mode == .mxfp8 or mode == .bf16) and q38Stages(cl) != 4) {
++            var buf: [192]u8 = undefined;
++            const base = symbol(mode, bm, cl, false, wide);
++            const marker = std.mem.indexOf(u8, base, "ELi1ELi4ELi4ELb").?;
++            const nlen = (try std.fmt.bufPrint(buf[0..190], "{s}ELi1ELi4ELi{d}ELb{s}", .{ base[0..marker], q38Stages(cl), base[marker + 15 ..] })).len;
++            buf[nlen] = 0;
++            f = try mod.function(buf[0..nlen :0]);
++        }
++        try f.allowDynamicShared(sharedBytesQ(mode, bm, cl));
+         set[ti * 2 + ci] = f;
+     };
+     set[6] = try mod.function(symbol(mode, 64, false, true, wide));
+@@ -219,7 +252,7 @@ pub const Lane = struct {
+         try launch_.launch(f, .{
+             .grid = .{ .x = @intCast(rows_t * ((w.n + bn - 1) / bn)), .y = 1, .z = if (p.fused) 1 else p.sk },
+             .block = .{ .x = threads, .y = 1, .z = 1 },
+-            .shared = sharedBytes(w.mode, p.bm),
++            .shared = sharedBytesQ(w.mode, p.bm, p.cluster),
+             .cluster = if (p.cluster) .{ .x = 1, .y = 1, .z = p.sk } else null,
+         }, s, &args);
+         if (p.reduce) {

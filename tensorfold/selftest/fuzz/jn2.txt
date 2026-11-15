@@ -1,0 +1,8 @@
+# night 11-14, E2: the SAME binary started with every lever off by its flags (two engine starts): proves knob-off == flags-off and covers the levers that have no knob.
+ENGINE off|def|off|||PAR=2
+NEED=5 QK_URL=http://127.0.0.1:18301/v1/chat/completions python3 -I $KK/qk.py ident $O/ident_envoff.json | tail -1; echo "knob-off vs flags-off:"; python3 -I $KK/qk.py cmp $HOME/q38/runs/D_RT_N_on/ident_koff.json $O/ident_envoff.json; echo "levers on vs flags-off:"; python3 -I $KK/qk.py cmp $HOME/q38/runs/D_RT_N_on/ident_on.json $O/ident_envoff.json
+NEED=6 bash $RT/rj.sh cold run $HOME/q38/runs/D_RT_N_on/sess.jsonl.cases $O/cold.jsonl envoff order=rev dl=$DL
+NEED=6 bash $RT/rj.sh env1 run $RT/matrix/cases1.jsonl $O/env1.jsonl envoff mode=n not=long dl=$DL
+NEED=6 bash $RT/rj.sh env3 run $RT/matrix/cases3.jsonl $O/env3.jsonl envoff mode=n not=long_out limit=330 dl=$DL
+NEED=6 bash $RT/rj.sh envL run $RT/matrix/cases1.jsonl $O/envL.jsonl envoff mode=n sel=long dl=$DL
+NEED=6 bash $RT/rj.sh envO run $RT/matrix/cases3.jsonl $O/envO.jsonl envoff mode=n sel=long_out dl=$DL

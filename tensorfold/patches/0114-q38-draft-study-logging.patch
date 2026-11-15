@@ -1,0 +1,170 @@
+diff --git a/zig/src/core/lanes/engine.zig b/zig/src/core/lanes/engine.zig
+index 50e57a2..aefc2ec 100644
+--- a/zig/src/core/lanes/engine.zig
++++ b/zig/src/core/lanes/engine.zig
+@@ -318,13 +318,21 @@ pub const Engine = struct {
+     }
+ 
+     /// TF_STEP_LOG=1 (q38 measuring aid, off unless set): one stderr line a verified window: its plan kind, rows and kept drafts.
+-    fn stepLog(p: Plan, rows: usize, kept: usize) void {
++    fn stepLog(p: Plan, rows: usize, kept: usize, tokens: []const u32, committed: []const u32) void {
+         const st = struct {
+             var on: i8 = -1;
+         };
+-        if (st.on < 0) st.on = if (std.c.getenv("TF_STEP_LOG")) |v| @intFromBool(v[0] == '1') else 0;
++        if (st.on < 0) st.on = if (std.c.getenv("TF_STEP_LOG")) |v| (if (v[0] == '1') @as(i8, 1) else if (v[0] == '2') @as(i8, 2) else 0) else 0;
+         if (st.on == 0) return;
+         std.debug.print("QSTEP {s} {d} {d}\n", .{ @tagName(p.kind), rows, kept });
++        if (st.on >= 2) {
++            // the window's draft tokens, then the tokens the round commits (kept drafts and the bonus token)
++            std.debug.print("QWIN", .{});
++            for (tokens[1..]) |t| std.debug.print(" {d}", .{t});
++            std.debug.print("\nQTOK", .{});
++            for (committed) |t| std.debug.print(" {d}", .{t});
++            std.debug.print("\n", .{});
++        }
+     }
+ 
+     /// TF_FLASHNEXT_COPY_LOG=1: every 400 verified windows, the windows, rows and kept drafts by plan kind since the last line.
+@@ -374,7 +382,7 @@ pub const Engine = struct {
+             try committed.append(a, sampled[path[path.len - 1]]);
+             if (s.proposer) |pr| pr.round(@intCast(rows), @intCast(path.len - 1));
+             copyLog(p, rows, path.len - 1);
+-            stepLog(p, rows, path.len - 1);
++            stepLog(p, rows, path.len - 1, tokens, committed.items);
+             if (rows > 1) {
+                 const kept = path.len - 1;
+                 e.drafted += rows - 1;
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index e9cc382..3f8a5d3 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -242,6 +242,7 @@ pub fn Ops(comptime Tri: type) type {
+                     if (scores) {
+                         try p.readout(h.mixer, 0, 1);
+                         try h.project(&p, s.mixed, s.xsm, d.dlogits.ptr, 1);
++                        if (MtpDump.on2()) try MtpDump.mixed(o.stream(), s.mixed);
+                     }
+                     continue;
+                 }
+@@ -260,6 +261,7 @@ pub fn Ops(comptime Tri: type) type {
+                     }
+                     try p.readout(h.mixer, 0, 1);
+                     try h.project(&p, s.mixed, s.xsm, d.dlogits.ptr, 1);
++                        if (MtpDump.on2()) try MtpDump.mixed(o.stream(), s.mixed);
+                 }
+             }
+         }
+@@ -304,6 +306,29 @@ pub fn Ops(comptime Tri: type) type {
+             return mtp.drawPick(o.e.gpa, row, h.ids, lse, position, sm);
+         }
+ 
++        /// q38 measuring aid (TF_STEP_LOG=2): chain step `j`'s 8 best head tokens with their probabilities (QTOP line), and with
++        /// TF_FLASHNEXT_Q38_MTPDUMP=FILE the head layer's output streams of that step ([wide] bf16) appended to FILE. Values never change.
++        fn logTop(o: Self, d: *Draft, j: usize) !void {
++            const h = o.h;
++            const view_ = h.view();
++            const n = view_.logical;
++            const lse: f64 = d.best_host[1];
++            const c = &MtpDump.cands;
++            try h.cand(o.stream(), d.dlogits.ptr, n, n, 1, 8, 0);
++            try o.candidates(1, c);
++            std.debug.print("QTOP {d}", .{j});
++            if (c.flags[0] != 0) {
++                std.debug.print(" nan\n", .{});
++            } else {
++                for (c.vals[0..8], c.cols[0..8]) |v, col| std.debug.print(" {d}:{d:.5}", .{ try view_.global(@intCast(col)), @exp(@as(f64, v) - lse) });
++                std.debug.print("\n", .{});
++            }
++            if (MtpDump.on()) {
++                try copyIdle(o.stream(), &MtpDump.host, d.out.ptr);
++                _ = write(MtpDump.fd, &MtpDump.host, wide * 2);
++            }
++        }
++
+         /// Python decode.draft: absorb the kept rows, then chain up to `count` drafts, the first always kept.
+         pub fn draft(o: Self, d: *Draft, next: []const u32, rows: u64, position: u64, count: usize, sm: ?Sampling, confidence: f64, out: *Chain, ahead: ?*ple.Ahead) !void {
+             out.n = 0;
+@@ -315,6 +340,7 @@ pub fn Ops(comptime Tri: type) type {
+             var hp_t: u64 = if (hp.on()) hp.now() else 0;
+             while (j < @min(count, max_chain)) : (j += 1) {
+                 const got = try o.pick(d, position + j, sm);
++                if (stepLogLevel() >= 2) try o.logTop(d, j);
+                 if (hp.on()) {
+                     // q38 (TF_HOSTPROF): wall time of each chain step (the head's forward queued before it, its best read back here)
+                     const t1 = hp.now();
+@@ -341,6 +367,11 @@ pub fn Ops(comptime Tri: type) type {
+                 std.debug.print("QCHAIN {d}", .{out.n});
+                 for (out.probs[0..out.n]) |pr| std.debug.print(" {d:.4}", .{pr});
+                 std.debug.print("\n", .{});
++                if (stepLogLevel() >= 2) {
++                    std.debug.print("QCTOK {d}", .{out.n});
++                    for (out.tokens[0..out.n]) |t| std.debug.print(" {d}", .{t});
++                    std.debug.print("\n", .{});
++                }
+             }
+         }
+ 
+@@ -853,15 +884,58 @@ pub fn Ops(comptime Tri: type) type {
+     };
+ }
+ 
+-/// TF_STEP_LOG=1 (q38 measuring aid, off unless set).
+-fn stepLogOn() bool {
++/// TF_STEP_LOG=1 or 2 (q38 measuring aid, off unless set). 2 adds token ids and the head's best tokens a chain step.
++fn stepLogLevel() i8 {
+     const st = struct {
+         var on: i8 = -1;
+     };
+-    if (st.on < 0) st.on = if (std.c.getenv("TF_STEP_LOG")) |v| @intFromBool(v[0] == '1') else 0;
+-    return st.on == 1;
++    if (st.on < 0) st.on = if (std.c.getenv("TF_STEP_LOG")) |v| (if (v[0] == '1') @as(i8, 1) else if (v[0] == '2') @as(i8, 2) else 0) else 0;
++    return st.on;
+ }
+ 
++fn stepLogOn() bool {
++    return stepLogLevel() >= 1;
++}
++
++extern "c" fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
++extern "c" fn write(fd: c_int, buf: [*]const u8, n: usize) isize;
++
++const MtpDump = struct {
++    var state: i8 = -1;
++    var fd: c_int = -1;
++    var host: [wide * 2]u8 = undefined;
++    var cands: mtp.Cands = undefined;
++    var state2: i8 = -1;
++    var fd2: c_int = -1;
++    /// TF_FLASHNEXT_Q38_MTPDUMP2=FILE: the draft head's input row ([dims] bf16, what the head's rows multiply) of every scored head call.
++    fn on2() bool {
++        if (state2 < 0) {
++            state2 = 0;
++            if (std.c.getenv("TF_FLASHNEXT_Q38_MTPDUMP2")) |e| {
++                fd2 = open(e, 0x441, @as(c_int, 0o644));
++                if (fd2 >= 0) state2 = 1;
++                std.debug.print("q38: mtp head-input dump fd {d}\n", .{fd2});
++            }
++        }
++        return state2 == 1;
++    }
++    fn mixed(stream: cuda.Stream, ptr: u64) !void {
++        try download(stream, host[0 .. dims * 2], ptr);
++        _ = write(fd2, &host, dims * 2);
++    }
++    fn on() bool {
++        if (state < 0) {
++            state = 0;
++            if (std.c.getenv("TF_FLASHNEXT_Q38_MTPDUMP")) |e| {
++                fd = open(e, 0x441, @as(c_int, 0o644));
++                if (fd >= 0) state = 1;
++                std.debug.print("q38: mtp dump fd {d}\n", .{fd});
++            }
++        }
++        return state == 1;
++    }
++};
++
+ /// q38 measuring aid (TF_HOSTPROF): the lone chain's steps by depth; step 0 includes absorbing the kept rows.
+ const MtpStat = struct {
+     var n: [8]u64 = @splat(0);

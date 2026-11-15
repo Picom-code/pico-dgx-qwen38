@@ -1,0 +1,61 @@
+READY tfb/pc_16_262144 in 203 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 254.2 tok/s total  (7828 tokens in 30.8 s; max ttft 1.41 s; errors 0 [])
+distinct 16 users: 260.8 tok/s total  (7862 tokens in 30.1 s; max ttft 1.12 s; errors 0 [])
+distinct 16 users: 255.3 tok/s total  (7866 tokens in 30.8 s; max ttft 1.12 s; errors 0 [])
+distinct 8 users: 215.1 tok/s total  (4096 tokens in 19.0 s; max ttft 0.72 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 115.7 s = 174.5 tok/s total; errors 0
+T3_ref done 15:30:05
+READY tfb/pc_16_262144 in 192 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 262.3 tok/s total  (7837 tokens in 29.9 s; max ttft 1.35 s; errors 0 [])
+distinct 16 users: 273.4 tok/s total  (7872 tokens in 28.8 s; max ttft 1.13 s; errors 0 [])
+distinct 16 users: 262.4 tok/s total  (7841 tokens in 29.9 s; max ttft 1.13 s; errors 0 [])
+distinct 8 users: 208.8 tok/s total  (4096 tokens in 19.6 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 113.4 s = 177.9 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+0
+T3_all done 15:37:03
+READY tfb/pc_16_262144 in 205 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 262.1 tok/s total  (7879 tokens in 30.1 s; max ttft 1.41 s; errors 0 [])
+distinct 16 users: 263.9 tok/s total  (7858 tokens in 29.8 s; max ttft 1.04 s; errors 0 [])
+distinct 16 users: 263.6 tok/s total  (7845 tokens in 29.8 s; max ttft 1.13 s; errors 0 [])
+distinct 8 users: 213.6 tok/s total  (4096 tokens in 19.2 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 116.0 s = 174.0 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+0
+T3_r128 done 15:44:16
+READY tfb/pc_16_262144 in 203 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 257.0 tok/s total  (7841 tokens in 30.5 s; max ttft 1.38 s; errors 0 [])
+distinct 16 users: 266.2 tok/s total  (7862 tokens in 29.5 s; max ttft 1.14 s; errors 0 [])
+distinct 16 users: 266.1 tok/s total  (7832 tokens in 29.4 s; max ttft 1.13 s; errors 0 [])
+distinct 8 users: 214.1 tok/s total  (4096 tokens in 19.1 s; max ttft 0.72 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 113.8 s = 177.4 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+0
+T3_g2 done 15:51:24
+READY tfb/pc_16_262144 in 190 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 261.2 tok/s total  (7845 tokens in 30.0 s; max ttft 1.52 s; errors 0 [])
+distinct 16 users: 263.0 tok/s total  (7866 tokens in 29.9 s; max ttft 1.13 s; errors 0 [])
+distinct 16 users: 265.8 tok/s total  (7908 tokens in 29.7 s; max ttft 1.14 s; errors 0 [])
+distinct 8 users: 206.5 tok/s total  (4096 tokens in 19.8 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 114.8 s = 175.9 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+0
+T3_g1 done 15:58:22
+READY tfb/pc_16_262144 in 207 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 262.0 tok/s total  (7909 tokens in 30.2 s; max ttft 1.45 s; errors 0 [])
+distinct 16 users: 268.8 tok/s total  (7866 tokens in 29.3 s; max ttft 1.14 s; errors 0 [])
+distinct 16 users: 255.7 tok/s total  (7845 tokens in 30.7 s; max ttft 1.17 s; errors 0 [])
+distinct 8 users: 215.8 tok/s total  (4096 tokens in 19.0 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 116.7 s = 172.9 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+0
+T3_ref2 done 16:05:39
+READY tfb/pc_16_262144 in 197 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 264.4 tok/s total  (7845 tokens in 29.7 s; max ttft 1.47 s; errors 0 [])
+distinct 16 users: 269.4 tok/s total  (7877 tokens in 29.2 s; max ttft 1.14 s; errors 0 [])
+distinct 16 users: 267.3 tok/s total  (7847 tokens in 29.4 s; max ttft 1.13 s; errors 0 [])
+distinct 8 users: 212.0 tok/s total  (4096 tokens in 19.3 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 114.1 s = 177.0 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+0
+T3_r1024 done 16:12:40

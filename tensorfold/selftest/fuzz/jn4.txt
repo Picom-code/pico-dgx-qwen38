@@ -1,0 +1,7 @@
+# night 11-14, E3: device check modes ON (certified head greedy + top-k, indexer select, delta states, DeltaNet producers, fused read-out, router bands, scratch guards).
+ENGINE chk|def|on||-e TF_FLASHNEXT_Q38_CERT=2 -e TF_FLASHNEXT_Q38_QSA_CERT=2 -e TF_FLASHNEXT_Q38_SNAP_DELTA=2 -e TF_FLASHNEXT_Q38_GDN_PROD=12 -e TF_FLASHNEXT_Q38_HCF_CHECK=1 -e TF_FLASHNEXT_Q38_HC_DN_TALL_CHECK=1 -e TF_FLASHNEXT_Q38_ROUTE_BAND_CHECK=1 -e TF_FLASHNEXT_Q38_SCRATCH_CHECK=1 -e TF_FLASHNEXT_Q38_QSA_STATS=1|PAR=2
+NEED=6 bash $RT/rj.sh k1 run $RT/matrix/cases1.jsonl $O/k1.jsonl chk mode=n not=long,long_out limit=260 dl=$DL
+NEED=6 bash $RT/rj.sh ks run $HOME/q38/runs/D_RT_N_on/sess.jsonl.cases $O/ks.jsonl chk order=fwd dl=$DL
+NEED=6 bash $RT/rj.sh k3 run $RT/matrix/cases3.jsonl $O/k3.jsonl chk mode=n not=long_out limit=260 dl=$DL
+NEED=6 bash $RT/rj.sh kL run $RT/matrix/cases1.jsonl $O/kL.jsonl chk mode=n sel=long limit=3 dl=$DL
+docker logs q38-run-D 2>&1 | grep -E 'q38 (cert|qsacert|hcf check|snapdelta|gdnprod|hcdn|routeband|scratch check)' | awk '{k=$1 $2 $3; l[k]=$0} END{for(k in l) print l[k]}' | cut -c1-300 > $O/checklines.txt; cat $O/checklines.txt; echo "log error lines: $(docker logs q38-run-D 2>&1 | grep -ciE 'panic|segfault|error\(|mismatch|abort')"

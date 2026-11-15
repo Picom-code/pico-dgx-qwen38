@@ -1,0 +1,37 @@
+Round 8 final, one user. spark-923b, DOCUMENTED PATH: recipe.sh prepare (patches 0101-0113) then recipe.sh start, vision on. ONE window (2026-11-13 20:34-21:27 UTC),
+both columns the same image. MEASURED. "levers off" = CERT=0 MANY=0 COPY_ROWS=16 FUSED=0 HALF=0 MTP_LAST=0 GDN_MANY=0 BEST_LANES=0 ATTN_LANES=0 LATE_SKIP=0 KEEP_INPASS=0
+LANE_REUSE=0 (= MiaAI-Lab's configuration on our build).
++-----------------------------------------------+------------------------+--------------------------+----------------------+
+| bench                                         | levers off             | recipe default (ours)    | change               |
++-----------------------------------------------+------------------------+--------------------------+----------------------+
+| first token, short prompt (ms)                | 184                    | 111                      | -40 %                |
+| 3-prompt chat, 9 runs (median)                | 47.6                   | 50.1                     | +5.3 %               |
+| 3-prompt code, 9 runs (median)                | 77.0                   | 84.7                     | +10.0 %              |
+| sparkDash-method prose T0                     | 56.6                   | 60.9                     | +7.6 %               |
+| sparkDash-method prose T0.7 thinking          | 55.1                   | 49.5                     | (sampled)            |
+| sparkDash-method code (task 0)                | 91.8                   | 99.1                     | +8.0 %               |
+| sparkDash-method code, 8 tasks                | 87.4                   | 94.0                     | +7.6 %               |
+| sparkDash-method structured                   | 105.7                  | 113.6                    | +7.5 %               |
+| held prompts, same 104, all                   | 58.01                  | 62.38                    | +7.5 %               |
+| held same 104: chat / code / math             | 49.79 / 78.92 / 73.98  | 53.44 / 85.72 / 79.28    | +7.3 / +8.6 / +7.2 % |
+| edit set (24 file rewrites), wall tok/s       | 137.2                  | 176.1                    | +28.4 %              |
+| edit set, decode tok/s; tokens a round        | 152.4; 12.59           | 198.1; 18.38             | +30.0 %              |
+| agent set (16 turns), wall; decode            | 54.2; 71.0             | 59.1; 76.0               | +9.0 %; +7.0 %       |
+| 4 users distinct / copies                     | 146.9 / 150.0          | 160.4 / 158.1            | +9.2 / +5.4 %        |
+| 4 users last first token (s)                  | 1.25                   | 0.29                     |                      |
+| 5 users distinct / copies                     | 162.9 / 167.6          | 175.0 / 192.3            | +7.4 / +14.7 %       |
+| 5 users last first token (s)                  | 1.66                   | 0.43                     |                      |
+| 16 users queued on 5 slots                    | 153.0 (37.7 s)         | 171.4 (33.6 s)           | +12.0 %              |
+| sparkDash-method wave 5 prose / code          | 132.7 / 214.0          | 135.2 / 225.6            |                      |
+| prefill 7.4K / 29K / 117K prompt (tok/s)      |                        | 2503 / 2519 / 2340       |                      |
+| needle 182K-token prompt                      |                        | 3/3 (2198 tok/s)         |                      |
+| 227,621-token prompt                          |                        | 3/3 (2134 tok/s)         |                      |
+| image                                         |                        | PASS (0.42 s)            |                      |
+| qeval (4 in flight)                           |                        | 33/35 (math 12/14, prose 5/5, reason 16/16) |   |
+| idle MemAvailable GiB / GPU MiB               | 38 / 78,438            | 37 / 79,527              |                      |
++-----------------------------------------------+------------------------+--------------------------+----------------------+
+IDENTITY default vs off: ident 51/51, held 107/107, edit 24/24, agent 16/16 texts identical.
+Not run this round (window time): the 320 held prompts in full and sparkDash 1.8.8 itself (round 6, patches 0101-0107: held-320 61.33; sparkDash 59.8 / 97.2 / 110.4).
+Round 6 on this path (window Q, patches 0101-0107): first token 182 ms, chat 51.1 / code 82.7, held same 107 62.26, edit set 173.4, agent set 57.3.
+Not lossless-comparable, for honesty: custom engine R v0.3.13 on an EXL3 re-quantised checkpoint measured 54.6 / 88.6 chat / code and held-320 65.66 on this box
+(first bake-off, 2026-11-12). Ours on the official checkpoint: 50.1 / 84.7 (3-prompt medians; single runs spread +-4), held-104 62.38. We still trail it for one user.

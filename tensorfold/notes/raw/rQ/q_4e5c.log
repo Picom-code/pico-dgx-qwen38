@@ -1,0 +1,54 @@
+READY tfb/pc_16_262144 in 198 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 248.7 tok/s total  (7866 tokens in 31.6 s; max ttft 1.36 s; errors 0 [])
+distinct 16 users: 257.3 tok/s total  (7844 tokens in 30.5 s; max ttft 1.13 s; errors 0 [])
+distinct 16 users: 267.7 tok/s total  (7753 tokens in 29.0 s; max ttft 1.12 s; errors 0 [])
+distinct 8 users: 213.1 tok/s total  (4096 tokens in 19.2 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 115.9 s = 174.1 tok/s total; errors 0
+Q3_r16 done 10:18:34
+READY tfb/pc_16_262144 in 202 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 257.7 tok/s total  (7878 tokens in 30.6 s; max ttft 1.40 s; errors 0 [])
+distinct 16 users: 264.7 tok/s total  (7866 tokens in 29.7 s; max ttft 1.03 s; errors 0 [])
+distinct 16 users: 263.4 tok/s total  (7879 tokens in 29.9 s; max ttft 1.13 s; errors 0 [])
+distinct 8 users: 210.2 tok/s total  (4096 tokens in 19.5 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 115.6 s = 174.6 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+Q3_r32 done 10:25:46
+READY tfb/pc_16_262144 in 201 s; MemAvailable 38 GiB; GPU MiB 77213
+distinct 16 users: 254.4 tok/s total  (7837 tokens in 30.8 s; max ttft 1.39 s; errors 0 [])
+distinct 16 users: 264.5 tok/s total  (7881 tokens in 29.8 s; max ttft 1.14 s; errors 0 [])
+distinct 16 users: 256.1 tok/s total  (7845 tokens in 30.6 s; max ttft 1.02 s; errors 0 [])
+distinct 8 users: 208.6 tok/s total  (4096 tokens in 19.6 s; max ttft 0.72 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 115.9 s = 174.1 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+Q3_r16b done 10:32:56
+READY tfb/pc_16_262144 in 196 s; MemAvailable 38 GiB; GPU MiB 77274
+waves of 16: 160 prompts, 31889 tokens in 233.1 s = 136.8 tok/s total; last first-token of a wave mean 1.87 s max 2.87 s (first 1.12 s); errors 0
+heldpar 4 in flight: 24 prompts, 19435 tokens in 89.0 s = 218.3 tok/s total; errors 0
+q38 hcf check: 160000 read-outs, 5504140 rows, 16864302996 words compared with the five-launch chain, 0 differ
+q38 hcf check: 180000 read-outs, 6368221 rows, 19511807096 words compared with the five-launch chain, 0 differ
+Q3_chk done 10:41:37
+READY tfb/nodraft in 202 s; MemAvailable 40 GiB; GPU MiB 75474
+prefill target 32000: prompt_tokens 29291  ttft 11.72 s  2498 tok/s
+prefill target 32000: prompt_tokens 29028  ttft 11.18 s  2597 tok/s
+chat 1 user: median 22.7 tok/s  mean 22.7  [22.69]
+code 1 user: median 23.2 tok/s  mean 23.2  [23.24]
+q38 gprof 1-row: 769 passes, 1.00 rows a pass, 43.077 ms a pass: embed 0.073 hc-attn-side 4.303 gdn 10.868 hc-mlp-side 4.851 moe 9.562 ple 4.725 head 5.423 qsa-attn 3.273
+q38 gprof 2-8-rows: 9 passes, 6.11 rows a pass, 58.497 ms a pass: embed 0.160 hc-attn-side 4.489 gdn 15.038 hc-mlp-side 5.034 moe 21.468 ple 3.073 head 4.284 qsa-attn 4.951
+q38 gprof 9+rows: 22 passes, 2653.05 rows a pass, 1032.040 ms a pass: embed 0.320 hc-attn-side 148.293 gdn 231.337 hc-mlp-side 91.479 moe 396.924 ple 12.775 head 0.001 qsa-attn 150.910
+Q3_gp done 10:46:01
+READY tfb/pc_16_262144 in 155 s; MemAvailable 38 GiB; GPU MiB 77213
+pool 150000x1+15: wall 74.5 s; errors 0 []; long prompt_tokens [136607] recall [3] ttft [71.2] s; shorts 15: 3783 tokens, 50.8 tok/s while they ran (74.4 s), last first token 1.99 s; lowest MemAvailable 27 GiB
+pool 100000x3+13: wall 128.0 s; errors 0 []; long prompt_tokens [91144, 90769, 91239] recall [3, 3, 3] ttft [97.2, 56.7, 127.3] s; shorts 13: 3236 tokens, 34.1 tok/s while they ran (94.8 s), last first token 1.01 s; lowest MemAvailable 22 GiB
+pool 200000x5+0: wall 409.4 s; errors 0 []; long prompt_tokens [182082, 181714, 181976, 182222, 181790] recall [3, 3, 3, 3, 3] ttft [364.8, 135.0, 307.5, 408.6, 233.6] s; shorts 0: 0 tokens, 0.0 tok/s while they ran (0.0 s), last first token 0.00 s; lowest MemAvailable 14 GiB
+Q3_mix done 10:58:50
+READY tfb/default in 189 s; MemAvailable 39 GiB; GPU MiB 76436
+heldpar 1 in flight: 160 prompts, 31340 tokens in 577.4 s = 54.3 tok/s total; errors 0
+drafted requests: n 142 tok/s 58.0  tok/round 3.385  drafts proposed/round 3.817  accepted/round 2.388  accept rate 0.626  ms/round 58.37  rows/round 4.82
+fit over drafted requests: ms/round = 42.08 + 4.27 x drafts verified per round  (x range 1.90..13.22)
+Q3_off done 11:11:38
+READY tfb/default in 192 s; MemAvailable 39 GiB; GPU MiB 77122
+heldpar 1 in flight: 160 prompts, 31340 tokens in 541.0 s = 57.9 tok/s total; errors 0
+drafted requests: n 142 tok/s 62.1  tok/round 3.389  drafts proposed/round 3.828  accepted/round 2.393  accept rate 0.625  ms/round 54.58  rows/round 4.83
+fit over drafted requests: ms/round = 40.35 + 3.72 x drafts verified per round  (x range 1.90..22.27)
+identical 160/160  mean shared-prefix fraction 1.000  differ: []
+Q3_on done 11:23:54

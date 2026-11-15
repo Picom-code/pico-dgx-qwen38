@@ -1,0 +1,10 @@
+ROUND 9 BASE (written by builder A, 2026-11-13 23:00 UTC)
+Base for every round-9 handoff patch = round-8 integration commit = patches 0101-0115:
+  git commit : 0b5cf9bba1ab2ddeb44b1b5acd0795ee0c6917e8  (branch integ2, Mac q38/wt/I2; same object store as q38/work/tf)
+  git tree   : 414713a2fc1ebe616b3e04b874aa17db8db123db
+  = MiaAI base 6a8e032 + repo tensorfold/patches/0101..0115 (TREE_EQUAL checked in round 8); private repo commit ac128b0.
+  923b binary of this tree: ~/q38/tfbin/I2 (sha 09108beff56b8be2).
+Make your branch:  cd ~/.hermes/cache/scratch/q38/work/tf && git worktree add -b r9-X ../../wt/X9 0b5cf9b
+Hand off: q38/handoff/{B,C,D}/r9-<lever>/  =  ONE cumulative patch `git diff 0b5cf9b HEAD` + NOTE.md (flags, default, measured before/after
+  with references first and last, identity proof, sha256 of the patch version that was BUILT AND MEASURED).
+Integration branch (A only): Mac q38/wt/I9, branch integ9.

@@ -1,0 +1,59 @@
+diff --git a/zig/src/core/lanes/engine.zig b/zig/src/core/lanes/engine.zig
+index 4704e74..91321b3 100644
+--- a/zig/src/core/lanes/engine.zig
++++ b/zig/src/core/lanes/engine.zig
+@@ -349,7 +349,7 @@ pub const Engine = struct {
+         const st = struct {
+             var on: i8 = -1;
+         };
+-        if (st.on < 0) st.on = if (std.c.getenv("TF_Q38_COPY_RESET")) |v| @intFromBool(v[0] == 'h') else 0;
++        if (st.on < 0) st.on = if (std.c.getenv("TF_FLASHNEXT_Q38_COPY_RESET") orelse std.c.getenv("TF_Q38_COPY_RESET")) |v| @intFromBool(v[0] == 'h') else 0;
+         return st.on == 1;
+     }
+ 
+diff --git a/zig/src/core/lanes/proposer.zig b/zig/src/core/lanes/proposer.zig
+index a5369c0..bec6aa9 100644
+--- a/zig/src/core/lanes/proposer.zig
++++ b/zig/src/core/lanes/proposer.zig
+@@ -100,7 +100,7 @@ pub const SuffixLookup = struct {
+     pub fn predict(s: *SuffixLookup, side: []const u32, prompt_len: usize) void {
+         s.side = side;
+         s.prompt_len = prompt_len;
+-        if (std.c.getenv("TF_Q38_PRED_MATCH")) |v| s.side_min = @max(1, std.fmt.parseInt(i64, std.mem.span(v), 10) catch 8);
++        if (std.c.getenv("TF_FLASHNEXT_Q38_PRED_MATCH") orelse std.c.getenv("TF_Q38_PRED_MATCH")) |v| s.side_min = @max(1, std.fmt.parseInt(i64, std.mem.span(v), 10) catch 8);
+     }
+ 
+     fn sideCopy(s: *SuffixLookup, history: []const u32, tail: []const u32, len: usize, key: Key, own: i64, max_draft: i64) !bool {
+diff --git a/zig/src/core/lanes/q38_copy.zig b/zig/src/core/lanes/q38_copy.zig
+index 4730a39..771d300 100644
+--- a/zig/src/core/lanes/q38_copy.zig
++++ b/zig/src/core/lanes/q38_copy.zig
+@@ -7,9 +7,11 @@ fn envInt(comptime name: [:0]const u8, default: i64) i64 {
+         var read: bool = false;
+         var value: i64 = 0;
+         const tag = name; // one cache a knob (a struct in a generic function is one type unless it names a comptime value)
++        // the same knob under the TF_FLASHNEXT_ prefix (MiaAI-Lab's start.sh passes only TENSORFOLD_* and TF_FLASHNEXT_* into the container)
++        const tag2 = "TF_FLASHNEXT_Q38_" ++ name["TF_Q38_".len..];
+     };
+     if (!st.read) {
+-        st.value = if (std.c.getenv(st.tag)) |v| std.fmt.parseInt(i64, std.mem.span(v), 10) catch default else default;
++        st.value = if (std.c.getenv(st.tag2) orelse std.c.getenv(st.tag)) |v| std.fmt.parseInt(i64, std.mem.span(v), 10) catch default else default;
+         st.read = true;
+     }
+     return st.value;
+diff --git a/zig/src/server/chat.zig b/zig/src/server/chat.zig
+index 7d79314..f7602f6 100644
+--- a/zig/src/server/chat.zig
++++ b/zig/src/server/chat.zig
+@@ -108,9 +108,9 @@ fn flag(f: Value, key: []const u8) ?bool {
+ /// TF_Q38_PREDICTION=0 ignores the field; TF_Q38_PRED_MAX caps its tokens (default 65536).
+ fn predictionIds(srv: *Server, cx: *Cx, field: ?Value) Failure![]const u32 {
+     const p = field orelse return &.{};
+-    if (std.c.getenv("TF_Q38_PREDICTION")) |v| if (v[0] == '0') return &.{};
++    if (std.c.getenv("TF_FLASHNEXT_Q38_PREDICTION") orelse std.c.getenv("TF_Q38_PREDICTION")) |v| if (v[0] == '0') return &.{};
+     var most: usize = 65536;
+-    if (std.c.getenv("TF_Q38_PRED_MAX")) |v| most = std.fmt.parseInt(usize, std.mem.span(v), 10) catch most;
++    if (std.c.getenv("TF_FLASHNEXT_Q38_PRED_MAX") orelse std.c.getenv("TF_Q38_PRED_MAX")) |v| most = std.fmt.parseInt(usize, std.mem.span(v), 10) catch most;
+     const content: Value = if (p == .object) (p.get("content") orelse return &.{}) else p;
+     var out: std.ArrayList(u32) = .empty;
+     const one = [_]Value{content};

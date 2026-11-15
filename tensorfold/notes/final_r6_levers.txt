@@ -1,0 +1,29 @@
+Window Q side lanes (kp21, test launcher, one user unless said). MEASURED.
+spark-3d24, short context copies (TF_FLASHNEXT_Q38_SHORT_COPY=M,C) on top of the stack; texts identical 24/24, 16/16, 80/80 in every pair:
++-------------+----------------------------+---------------------------+---------------------------+
+| setting     | edit decode tok/s (tok/rd) | agent decode (tok/round)  | chat decode (tok/round)   |
++-------------+----------------------------+---------------------------+---------------------------+
+| off (ref)   | 198.5 (18.38)              | 75.6 (4.647)              | 60.3 (3.281)              |
+| 3,7         | 198.7 (18.61)              | 76.2 (4.715)              | 60.3 (3.296)              |
+| 5,7         | 198.2 (18.54)              | 75.9 (4.696)              | 60.3 (3.292)              |
+| 3,15        | 201.2 (19.07)  +1.4 %      | 76.3 (4.755)  +0.9 %      | 60.2 (3.297)  -0.2 %      |
++-------------+----------------------------+---------------------------+---------------------------+
+=> exact, +0..1.4 % on copy-heavy sets, 0 on chat. Too small to tell from noise on one run; stays OFF by default (flag kept).
+MTP chain step (TF_HOSTPROF mtpstat, ms): MTP_LAST=0: d0 1.952, d1 1.713, d2 1.700, d3 1.689, d4 1.684, d5 1.677
+                                          MTP_LAST=1: d0 1.688, d1 1.695, d2 1.681, d3 1.673, d4 1.668, d5 1.660
+=> MTP_LAST saves 0.26 ms on the FIRST chain step of a round and ~0.02 ms on later ones = ~0.3 ms of a 55 ms round (+0.5 %); held tok/s 56.3 vs 56.4. Real but small; stays on.
+no-drafts configuration: cert only 23.3 tok/s (43.24 ms a step) -> whole stack 25.4 (39.59 ms), +9.2 %, texts 40/40 identical.
+spark-4e5c, one user, 160 held prompts x 256, test launcher: all levers off 58.0 decode tok/s (58.37 ms/round = 42.08 + 4.27 d) -> stack 62.1 (54.58 = 40.35 + 3.72 d): +7.0 %, texts 160/160 identical.
+GPU time by group (TF_FLASHNEXT_Q38_GPROF, no drafts, whole head), ms a pass:
++---------------------+---------+----------+------------------------------+
+| group               | 1 row   | 6.1 rows | prompt pass, 2653 rows       |
++---------------------+---------+----------+------------------------------+
+| GDN attention       | 10.87   | 15.04    | 231.3  (22.4 %)              |
+| QSA attention       | 3.27    | 4.95     | 150.9  (14.6 %)              |
+| hyper-conn, 2 sides | 9.15    | 9.52     | 239.8  (23.2 %)              |
+| MoE                 | 9.56    | 21.47    | 396.9  (38.5 %)              |
+| PLE (n-gram)        | 4.73    | 3.07     | 12.8   (1.2 %)               |
+| LM head             | 5.42    | 4.28     | 0.0                          |
+| total               | 43.08   | 58.50    | 1032.0 = 2571 rows/s         |
++---------------------+---------+----------+------------------------------+
+Prompt pass: 0.389 ms a row; MoE 0.150, hyper-connection 0.090, GDN 0.087, QSA 0.057 ms a row. Prefill 29K prompt: 2498 / 2597 tok/s.

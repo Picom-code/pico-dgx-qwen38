@@ -1,0 +1,45 @@
+c0ce3d45c3735f1e
+READY tfb/pc_16_262144 in 213 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 268.2 tok/s total  (7848 tokens in 29.3 s; max ttft 1.53 s; errors 0 [])
+distinct 16 users: 270.0 tok/s total  (7866 tokens in 29.1 s; max ttft 1.14 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 114.4 s = 176.5 tok/s total; errors 0
+q38 gprof 9+rows: 685 passes, 79.53 rows a pass, 197.878 ms a pass: embed 0.052 hc-attn-side 8.215 gdn 34.825 hc-mlp-side 7.260 moe 130.204 ple 1.254 head 7.525 qsa-attn 8.543
+XE2_gp_on done 14:53:18
+READY tfb/pc_16_262144 in 209 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 12 users: 245.2 tok/s total  (5799 tokens in 23.7 s; max ttft 1.17 s; errors 0 [])
+distinct 12 users: 240.7 tok/s total  (5797 tokens in 24.1 s; max ttft 0.94 s; errors 0 [])
+waves of 16: 96 prompts, 19495 tokens in 130.1 s = 149.8 tok/s total; last first-token of a wave mean 1.64 s max 2.25 s (first 1.20 s); errors 0
+XE2_on done 14:59:47
+READY tfb/pc_16_262144 in 211 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 12 users: 237.8 tok/s total  (5824 tokens in 24.5 s; max ttft 1.13 s; errors 0 [])
+distinct 12 users: 245.6 tok/s total  (5830 tokens in 23.7 s; max ttft 0.93 s; errors 0 [])
+waves of 16: 96 prompts, 19495 tokens in 132.5 s = 147.1 tok/s total; last first-token of a wave mean 1.64 s max 2.26 s (first 1.20 s); errors 0
+identical 96/96  mean shared-prefix fraction 1.000  differ: []
+XE2_off done 15:06:22
+x e lane done 15:06:22
+c0ce3d45c3735f1e
+READY tfb/pc_16_262144 in 203 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 262.5 tok/s total  (7845 tokens in 29.9 s; max ttft 1.41 s; errors 0 [])
+distinct 16 users: 259.5 tok/s total  (7872 tokens in 30.3 s; max ttft 1.14 s; errors 0 [])
+distinct 16 users: 258.4 tok/s total  (7878 tokens in 30.5 s; max ttft 1.13 s; errors 0 [])
+distinct 8 users: 214.1 tok/s total  (4096 tokens in 19.1 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 115.9 s = 174.2 tok/s total; errors 0
+XE3_ref done 14:54:01
+READY tfb/pc_16_262144 in 213 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 266.4 tok/s total  (7879 tokens in 29.6 s; max ttft 1.42 s; errors 0 [])
+distinct 16 users: 272.2 tok/s total  (7872 tokens in 28.9 s; max ttft 1.13 s; errors 0 [])
+distinct 16 users: 268.9 tok/s total  (7889 tokens in 29.3 s; max ttft 1.13 s; errors 0 [])
+distinct 8 users: 208.5 tok/s total  (4096 tokens in 19.6 s; max ttft 0.74 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 113.8 s = 177.3 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+0
+XE3_on done 15:01:19
+READY tfb/pc_16_262144 in 203 s; MemAvailable 39 GiB; GPU MiB 77213
+distinct 16 users: 255.2 tok/s total  (7879 tokens in 30.9 s; max ttft 1.31 s; errors 0 [])
+distinct 16 users: 257.4 tok/s total  (7828 tokens in 30.4 s; max ttft 1.13 s; errors 0 [])
+distinct 16 users: 257.2 tok/s total  (7845 tokens in 30.5 s; max ttft 1.14 s; errors 0 [])
+distinct 8 users: 207.7 tok/s total  (4096 tokens in 19.7 s; max ttft 0.73 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 116.2 s = 173.7 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+XE3_ref2 done 15:08:33
+x e lane done 15:08:33

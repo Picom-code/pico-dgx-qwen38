@@ -1,0 +1,87 @@
+prepare rc 0
+0106-q38-batched-prompt-passes-pool-admission-wide-copy-windows-and-round5-aids.patch
+[prepare.sh] Checkpoint OK: qwen4_exp, ModelOpt MIXED_PRECISION (MXFP8+NVFP4+W4A16_NVFP4), 375487 tensors in 21 shards
+[prepare.sh] Done. Start the server with ./start.sh (port 8888).
+tensorfold-qwen38:v1.1.4-eab8582 6 seconds ago
+READY recipe [CERT=0 MANY=0 COPY_ROWS=16] in 211 s; MemAvailable 37 GiB; GPU MiB 78215; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+edit 24 agent 16 files from /usr/lib/python3.12
+heldpar 1 in flight: 24 prompts, 19505 tokens in 141.6 s = 137.8 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 153.0  tok/round 12.592  drafts proposed/round 12.533  accepted/round 11.584  accept rate 0.924  ms/round 82.28  rows/round 13.53
+fit over drafted requests: ms/round = 53.06 + 2.33 x drafts verified per round  (x range 9.34..14.73)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 43.2 s = 54.5 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 71.4  tok/round 4.638  drafts proposed/round 5.527  accepted/round 3.648  accept rate 0.660  ms/round 64.95  rows/round 6.53
+fit over drafted requests: ms/round = 47.28 + 3.20 x drafts verified per round  (x range 3.91..7.39)
+O_off done 07:28:30
+READY recipe [] in 216 s; MemAvailable 38 GiB; GPU MiB 78901; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+edit 24 agent 16 files from /usr/lib/python3.12
+heldpar 1 in flight: 24 prompts, 19505 tokens in 115.4 s = 169.1 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 193.3  tok/round 18.384  drafts proposed/round 19.572  accepted/round 17.372  accept rate 0.888  ms/round 95.10  rows/round 20.57
+fit over drafted requests: ms/round = 55.03 + 2.05 x drafts verified per round  (x range 12.53..29.33)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 42.3 s = 55.8 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 73.6  tok/round 4.647  drafts proposed/round 5.639  accepted/round 3.658  accept rate 0.649  ms/round 63.19  rows/round 6.64
+fit over drafted requests: ms/round = 45.78 + 3.09 x drafts verified per round  (x range 3.91..7.71)
+q38 cert: MXFP8 copy of the head made (625 MiB), mean residual 0.0266 of a row's norm, check 0
+q38 cert: calls 40000 rows 217600 whole-head 3 tiles/call 52.8 runs/call 30.6 checked-rows 0 best-mismatch 0 value-mismatch 0 held 0
+q38: prompts of up to 256 tokens that wait together are prefilled in one pass
+q38 many: 3 prompts, 124 rows in one pass, 241.5 ms
+q38 many: 4 prompts, 169 rows in one pass, 293.4 ms
+q38 many: 2 prompts, 71 rows in one pass, 192.7 ms
+15
+O_on done 08:24:10
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 24/24  mean shared-prefix fraction 1.000  differ: []
+identical 16/16  mean shared-prefix fraction 1.000  differ: []
+READY recipe [USERS16=1] in 225 s; MemAvailable 38 GiB; GPU MiB 78992; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+distinct 1 users: 78.2 tok/s total  (512 tokens in 6.5 s; max ttft 0.27 s; errors 0 [])
+distinct 4 users: 154.4 tok/s total  (2048 tokens in 13.3 s; max ttft 0.59 s; errors 0 [])
+distinct 8 users: 213.9 tok/s total  (4096 tokens in 19.1 s; max ttft 0.85 s; errors 0 [])
+distinct 16 users: 257.3 tok/s total  (7878 tokens in 30.6 s; max ttft 1.42 s; errors 0 [])
+copies 16 users: 320.1 tok/s total  (8192 tokens in 25.6 s; max ttft 1.12 s; errors 0 [])
+distinct 16 users: 258.9 tok/s total  (7865 tokens in 30.4 s; max ttft 1.18 s; errors 0 [])
+copies 8 users: 236.9 tok/s total  (4096 tokens in 17.3 s; max ttft 0.71 s; errors 0 [])
+copies 4 users: 153.2 tok/s total  (2048 tokens in 13.4 s; max ttft 0.53 s; errors 0 [])
+    4       160.1     114.1      24.1                 5.03                        3.88                4.89          4.73
+    8       222.2     169.2      50.7                 5.34                        4.06                5.07          3.34
+    1        17.4     189.5       4.8                 3.75                        2.30                3.30         39.86
+   16       332.5     208.2      95.7                 4.98                        3.73                4.74          2.18
+    1        17.4     187.1       4.6                 3.59                        2.26                3.26         40.74
+    8       245.2     139.9      49.0                 5.13                        3.82                4.82          2.85
+    4       158.0     110.4      24.6                 5.16                        3.79                4.80          4.48
+waves of 16: 128 prompts, 26164 tokens in 177.3 s = 147.6 tok/s total; last first-token of a wave mean 1.71 s max 2.31 s (first 1.23 s); errors 0
+waves of 4: 64 prompts, 7466 tokens in 78.2 s = 95.4 tok/s total; last first-token of a wave mean 0.77 s max 1.77 s (first 0.42 s); errors 0
+pool 150000x1+15: wall 75.2 s; errors 0 []; long prompt_tokens [136607] recall [3] ttft [72.1] s; shorts 15: 3770 tokens, 50.1 tok/s while they ran (75.2 s), last first token 1.59 s; lowest MemAvailable 25 GiB
+ctx 250000: prompt_tokens 227621  recall 3/3  ttft 106.6 s  prefill 2134 tok/s  answer 'The vault code is MARLIN-7731, the name of the lead surveyor is Odalys Brenner, and the bridge inspection number is QX-90214.'
+q38 cert: MXFP8 copy of the head made (625 MiB), mean residual 0.0266 of a row's norm, check 0
+q38 cert: MXFP8 copy of the head made (625 MiB), mean residual 0.0266 of a row's norm, check 0
+q38: prompts of up to 256 tokens that wait together are prefilled in one pass
+q38 pool: 16 lanes share 25681 MiB (1605 MiB a lane at a 65536-token window); a full 262144-token stream takes 4877 MiB
+q38 many: 3 prompts, 122 rows in one pass, 314.1 ms
+q38 many: 14 prompts, 592 rows in one pass, 817.3 ms
+31
+O_mu done 08:37:56
+READY recipe [CERT=0 MANY=0 COPY_ROWS=16 PARALLEL=16 CONTEXT=65536 TF_FLASHNEXT_PRODUCT_STREAMS=16] in 219 s; MemAvailable 38 GiB; GPU MiB 78167; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+distinct 1 users: 76.2 tok/s total  (512 tokens in 6.7 s; max ttft 0.25 s; errors 0 [])
+distinct 4 users: 147.3 tok/s total  (2048 tokens in 13.9 s; max ttft 1.15 s; errors 0 [])
+distinct 8 users: 190.7 tok/s total  (4096 tokens in 21.5 s; max ttft 2.83 s; errors 0 [])
+distinct 16 users: 218.2 tok/s total  (7878 tokens in 36.1 s; max ttft 6.79 s; errors 0 [])
+copies 16 users: 246.1 tok/s total  (8192 tokens in 33.3 s; max ttft 6.51 s; errors 0 [])
+distinct 16 users: 221.2 tok/s total  (7878 tokens in 35.6 s; max ttft 6.84 s; errors 0 [])
+copies 8 users: 212.2 tok/s total  (4096 tokens in 19.3 s; max ttft 2.77 s; errors 0 [])
+copies 4 users: 151.1 tok/s total  (2048 tokens in 13.6 s; max ttft 1.21 s; errors 0 [])
+    1        79.1      66.0       6.6                 5.57                        4.21                5.22         10.05
+    4       151.1     117.9      24.2                 5.05                        3.87                4.88          4.87
+    1        27.5     150.3       5.6                 4.64                        3.13                4.13         26.67
+   16       258.0     197.7      67.5                 3.22                        2.73                3.74          2.93
+    1        17.8     167.3       3.6                 2.63                        1.97                2.98         46.11
+    8       217.2     155.5      48.2                 5.03                        3.75                4.76          3.22
+    4       153.3     111.5      24.0                 5.00                        3.74                4.75          4.65
+waves of 16: 128 prompts, 26164 tokens in 205.1 s = 127.6 tok/s total; last first-token of a wave mean 7.17 s max 7.54 s (first 0.29 s); errors 0
+waves of 4: 64 prompts, 7466 tokens in 85.1 s = 87.8 tok/s total; last first-token of a wave mean 1.32 s max 1.84 s (first 0.19 s); errors 0
+identical 128/128  mean shared-prefix fraction 1.000  differ: []
+identical 64/64  mean shared-prefix fraction 1.000  differ: []
+O_mia16 done 08:49:30

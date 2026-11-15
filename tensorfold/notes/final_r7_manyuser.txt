@@ -1,0 +1,36 @@
+Round 7 final, spark-923b, DOCUMENTED PATH (recipe.sh prepare with patches 0101-0109, recipe.sh start, vision on). Distinct coding prompts, 512 tokens, total tok/s (last first token). MEASURED.
++--------------------+--------------------------------+----------------------------------+--------------------------------------------+
+| users              | MiaAI config, 16 x 64K slots   | USERS16 as of round 6            | USERS16 now (recipe default: + GDN_MANY=2, |
+|                    | (window T)                     | (GDN_MANY=0, window T)           | BEST_LANES=1; window U, one hour later)    |
++--------------------+--------------------------------+----------------------------------+--------------------------------------------+
+| 1                  | 74.3 (0.25 s)                  | 82.1 (0.24 s)                    | 81.2 (0.20 s)                              |
+| 4                  | 148.4 (1.15 s)                 | 154.6 (0.58 s)                   | 151.5 (0.57 s)                             |
+| 8                  | 194.0 (2.84 s)                 | 213.8 (0.80 s)                   | 212.3 (0.75 s)                             |
+| 12                 | 221.7 (4.82 s)                 | 243.3 (0.93 s)                   | 247.9 (0.92 s)                             |
+| 16                 | 218.3 / 215.0 (6.85 / 6.76 s)  | 254.9 / 259.7 (1.29 / 1.14 s)    | 269.4 / 266.1 / 272.7 (1.30 / 1.13 / 1.12) |
+| 16 copies          | 244.8 (6.53 s)                 | 321.7 (1.09 s)                   | 336.8 (1.07 s)                             |
+| waves of 16 held   | 127.4, last first token 7.20 s | 147.9, 1.60 s                    | 151.5, 1.63 s                              |
+| waves of 4 held    | 87.5, 1.32 s                   | 96.2, 0.74 s                     | 97.2, 0.71 s                               |
++--------------------+--------------------------------+----------------------------------+--------------------------------------------+
+16 users: 269 against MiaAI's configuration 217 (+24 %; windows T and U, the same afternoon) ; same-window pairs: window T 261.5 (GDN lanes on) vs 216.7 = +20.7 %;
+window U BEST_LANES on vs off: 269.4 vs 267.2 (12 users 247.9 vs 242.2, copies 336.8 vs 331.3).
+Identity (texts): USERS16 vs MiaAI 16 x 64K waves-16 128/128 and waves-4 64/64; held 107 with 16 in flight 107/107 in every lever run on 4e5c; edit set 4 in flight 24/24; one user 54/54.
+USERS16 keeps the 262,144-token window: 136,607-token prompt + 15 short: recall 3/3, shorts' last first token 1.56 s; 227,621-token prompt 3/3 (2145 tok/s) (window T).
+
+Levers of round 7 at 16 users, test launcher on spark-4e5c (three runs each; held 107 with 16 in flight):
++-----------------------------------------+------------------------------------+---------------------+
+| run                                     | 16 users distinct                  | held 16 in flight   |
++-----------------------------------------+------------------------------------+---------------------+
+| window S ref / GDN groups of 8 / ref    | 260.1 / 269.2 / 256.6 (means)      | 174.2 / 177.3 / -   |
+| window T ref first, last                | 256.8, 262.2                       | 174.5, 172.9        |
+| window T GDN table of 16                | 263.1                              | 177.4               |
+| window T GDN groups of 8                | 263.3                              | 175.9               |
+| window U ref (GDN 16) first, last       | 264.0, 263.0                       | 178.1, 176.3        |
+| window U + BEST_LANES=1                 | 269.5                              | 178.2               |
++-----------------------------------------+------------------------------------+---------------------+
+GPROF 16 users (ms a pass at ~78 rows): stock 200.7 (GDN 39.4) -> GDN lanes 196.0-197.9 (GDN 34.3-34.8). KPROF: fn_row_best 0.487 -> 0.028 + 0.225 ms a profiled pass with BEST_LANES.
+
+One user is unchanged by round 7 (the levers act only above 8 lanes / in shared rounds). Window T on the 0101-0108 image: chat 51.1 / code 81.6 (3-prompt, 9 runs), first token 182 ms,
+held-107 63.1 tok/s decode (54.80 ms a round), edit set 173.3, agent set 57.1; texts equal to window Q's (edit 24/24, agent 16/16, held 107/107 equal or a prefix: 256 vs 384 tokens).
+The full one-user table is results/final_r6_923b.txt (window Q): levers off 47.1 / 78.4, held-107 58.40 -> recipe 51.1 / 82.7, 62.26 (+6.6 %), edit set 137.9 -> 173.4.
+Not lossless-comparable: custom engine R on a re-quantised EXL3 checkpoint measured 54.6 / 88.6 chat / code and held-320 65.66 on this box (first bake-off). We still trail it for one user.

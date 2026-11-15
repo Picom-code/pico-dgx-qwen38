@@ -1,0 +1,522 @@
+diff --git a/zig/kernels/cuda/flashnext_batch.cu b/zig/kernels/cuda/flashnext_batch.cu
+index 14f898b..0d52900 100644
+--- a/zig/kernels/cuda/flashnext_batch.cu
++++ b/zig/kernels/cuda/flashnext_batch.cu
+@@ -567,6 +567,8 @@ extern "C" __global__ void __launch_bounds__(256) fn_gdn_chain_tpr(const float*
+ 
+ // The prompt GDN block in one kernel a value head (front, chain, gated norm; their bits), no fp32 rows through memory.
+ #include "flashnext_gdn_fused.cuh"
++// q38 round 11 (TF_FLASHNEXT_Q38_GDN_PROD): the same kernel with two or three producer groups, and the check mode's compare.
++#include "q38_gdn_prod.cuh"
+ 
+ 
+ // ---- q38 certified LM head (TF_FLASHNEXT_Q38_CERT) ----
+diff --git a/zig/kernels/cuda/q38_gdn_prod.cuh b/zig/kernels/cuda/q38_gdn_prod.cuh
+new file mode 100644
+index 0000000..b0dcb99
+--- /dev/null
++++ b/zig/kernels/cuda/q38_gdn_prod.cuh
+@@ -0,0 +1,241 @@
++// Flash Next prompt GDN, fn_gdn_fused with G producer groups of 128 threads (q38 round 11, TF_FLASHNEXT_Q38_GDN_PROD=G).
++// Measured on GB10: fn_gdn_fused's chain (256 threads, the state in registers) needs 1.5 ms per 3,072 rows, its 128 producer
++// threads (conv + SiLU + norms of 16 rows a batch) need 2.7 ms: the chain waits for them. Here the producers are G groups:
++//   G = 2: A forms q and k (conv, SiLU, their norms); B forms v, g, beta and the gated norm of the batch before.
++//   G = 3: A forms q, B forms k, C forms v, g, beta and the gated norm.
++// The chain and the producers are separate scopes (the chain's 64 state registers are not live in producer code, so 512 or 640
++// threads fit a CTA without spills). Every value is fn_gdn_fused's own expression in its own order: conv_rows is the same
++// function, the norms' warp sums run on the same lanes; only which thread computes a value changes.
++namespace gdn_fused2 {
++using namespace fn_gdn;
++using gdn_fused::STEPS;
++using gdn_fused::TPR;
++using gdn_fused::CH;
++using gdn_fused::PR;
++using gdn_fused::ROW;
++using gdn_fused::STAGE;
++using gdn_fused::SMEM;
++using gdn_fused::conv_rows;
++
++template <int ID>
++__device__ __forceinline__ void gbar() {
++    if constexpr (ID == 1) asm volatile("bar.sync 1, 128;\n" ::: "memory");
++    else if constexpr (ID == 2) asm volatile("bar.sync 2, 128;\n" ::: "memory");
++    else asm volatile("bar.sync 3, 128;\n" ::: "memory");
++}
++
++// rows r0 .. r0 + n - 1's channel block `c0` (q: hk * DK, k: NK * DK + hk * DK) into x[.][which]: front_batch's conv part
++__device__ __forceinline__ void conv_x(const __nv_bfloat16* __restrict__ P, const __nv_bfloat16* __restrict__ cs,
++                                       const __nv_bfloat16* __restrict__ cw, int r0, int n, int c0, int which, int p,
++                                       float (*x)[2][DK]) {
++    float o[STEPS];
++    conv_rows(P, cs, cw, r0, n, c0 + p, o);
++#pragma unroll
++    for (int j = 0; j < STEPS; ++j) if (j < n) x[j][which][p] = o[j];
++}
++
++// front_batch's norm of row j's q (which 0) or k (which 1) by one warp: the same lanes, the same warp sum
++__device__ __forceinline__ void norm_qk(int j, int which, int lane, unsigned char* base, float (*x)[2][DK]) {
++    float v4[4], ss = 0.0f;
++#pragma unroll
++    for (int i = 0; i < 4; ++i) {
++        v4[i] = x[j][which][lane * 4 + i];
++        ss = ss + v4[i] * v4[i];
++    }
++    ss = warp_sum(ss);
++    float inv = 1.0f / sqrtf(ss + 1e-6f);
++    if (which == 0) inv = inv * (1.0f / sqrtf((float)DK));
++    float* dst = reinterpret_cast<float*>(base + j * ROW + (which == 0 ? DK * 4 : 0));   // stage: k first, then q
++#pragma unroll
++    for (int i = 0; i < 4; ++i) dst[lane * 4 + i] = v4[i] * inv;
++}
++
++// the rows' v, g and beta into the stage: front_batch's v / gate part
++__device__ __forceinline__ void front_v(const __nv_bfloat16* __restrict__ P, const __nv_bfloat16* __restrict__ cs,
++                                        const __nv_bfloat16* __restrict__ cw, const float* __restrict__ a_log,
++                                        const float* __restrict__ dt_bias, int r0, int n, int hv, int p, unsigned char* base) {
++    float o[STEPS];
++    conv_rows(P, cs, cw, r0, n, 2 * NK * DK + hv * DV + p, o);
++#pragma unroll
++    for (int j = 0; j < STEPS; ++j) if (j < n) reinterpret_cast<float*>(base + j * ROW + 2 * DK * 4)[p] = o[j];
++    if (p < n) {
++        const int r = r0 + p;
++        const float b = __bfloat162float(P[(size_t)r * PW + C + NV * DV + hv]);
++        const float a = __bfloat162float(P[(size_t)r * PW + C + NV * DV + NV + hv]);
++        float* gbp = reinterpret_cast<float*>(base + p * ROW + (2 * DK + DV) * 4);
++        gbp[0] = expf(-expf(a_log[hv]) * softplusf_(a + dt_bias[hv]));
++        gbp[1] = bf(sigmoidf_(b));
++    }
++}
++
++// gdn_fused::norm_rows on barrier ID
++template <int ID>
++__device__ __forceinline__ void norm_rows(const float (*ys)[DV], const __nv_bfloat16* __restrict__ P,
++                                          const __nv_bfloat16* __restrict__ norm_w, float eps, __nv_bfloat16* __restrict__ out,
++                                          float* __restrict__ xs, int r0, int n, int hv, int p, float* rinv) {
++    const int warp = p >> 5, lane = p & 31;
++    for (int j = warp; j < n; j += PR / 32) {
++        float ss = 0.0f;
++#pragma unroll
++        for (int i = 0; i < 4; ++i) {
++            const float y = ys[j][lane * 4 + i];
++            ss = ss + y * y;
++        }
++        ss = warp_sum(ss);
++        if (lane == 0) rinv[j] = 1.0f / sqrtf(ss / (float)DV + eps);
++    }
++    gbar<ID>();
++    float zs[STEPS];
++#pragma unroll
++    for (int j = 0; j < STEPS; ++j) zs[j] = j < n ? __bfloat162float(P[(size_t)(r0 + j) * PW + C + hv * DV + p]) : 0.0f;
++    const float nw = __bfloat162float(norm_w[p]);
++#pragma unroll
++    for (int j = 0; j < STEPS; ++j) {
++        if (j >= n) break;
++        const int r = r0 + j;
++        const float yn = bf(bf(ys[j][p] * rinv[j]) * nw);
++        const float z = zs[j];
++        const float o = bf(yn * sigmoidf_(z));
++        out[(size_t)r * NV * DV + hv * DV + p] = __float2bfloat16_rn(o);
++        const float gs = warp_sum(o);
++        if (lane == 0) xs[(size_t)r * (NV * DV / 32) + hv * (DV / 32) + warp] = gs;
++    }
++    gbar<ID>();
++}
++
++template <int G>
++__device__ __forceinline__ void producers(const __nv_bfloat16* __restrict__ P, const __nv_bfloat16* __restrict__ cs,
++                                          const __nv_bfloat16* __restrict__ cw, const float* __restrict__ a_log,
++                                          const float* __restrict__ dt_bias, int rows, const __nv_bfloat16* __restrict__ norm_w,
++                                          float eps, __nv_bfloat16* __restrict__ out, float* __restrict__ xs,
++                                          unsigned char* smem) {
++    unsigned char* stage = smem;
++    float (*ysb)[STEPS][DV] = reinterpret_cast<float (*)[STEPS][DV]>(smem + 2 * STAGE);
++    float (*xb)[2][DK] = reinterpret_cast<float (*)[2][DK]>(smem + 2 * STAGE + 2 * STEPS * DV * 4);
++    float* rinv = reinterpret_cast<float*>(smem + 2 * STAGE + 2 * STEPS * DV * 4 + STEPS * 2 * DK * 4);
++    const int hv = blockIdx.x, hk = hv / (NV / NK);
++    const int grp = (threadIdx.x - CH) / PR, p = (threadIdx.x - CH) % PR, warp = p >> 5, lane = p & 31;
++    const int batches = (rows + STEPS - 1) / STEPS;
++    auto fill = [&](int bi) {
++        const int r0 = bi * STEPS, n = min(STEPS, rows - r0);
++        unsigned char* base = stage + (bi & 1) * STAGE;
++        if (grp == G - 1) {
++            front_v(P, cs, cw, a_log, dt_bias, r0, n, hv, p, base);
++        } else if constexpr (G == 2) {
++            conv_x(P, cs, cw, r0, n, hk * DK, 0, p, xb);
++            conv_x(P, cs, cw, r0, n, NK * DK + hk * DK, 1, p, xb);
++            gbar<1>();
++            for (int task = warp; task < 2 * n; task += PR / 32) norm_qk(task >> 1, task & 1, lane, base, xb);
++        } else if (grp == 0) {
++            conv_x(P, cs, cw, r0, n, hk * DK, 0, p, xb);
++            gbar<1>();
++            for (int j = warp; j < n; j += PR / 32) norm_qk(j, 0, lane, base, xb);
++        } else {
++            conv_x(P, cs, cw, r0, n, NK * DK + hk * DK, 1, p, xb);
++            gbar<2>();
++            for (int j = warp; j < n; j += PR / 32) norm_qk(j, 1, lane, base, xb);
++        }
++    };
++    if (batches > 0) fill(0);
++    __syncthreads();
++    for (int bi = 0; bi < batches; ++bi) {
++        if (bi + 1 < batches) fill(bi + 1);
++        if (grp == G - 1 && bi >= 1) norm_rows<3>(ysb[(bi - 1) & 1], P, norm_w, eps, out, xs, (bi - 1) * STEPS, STEPS, hv, p, rinv);
++        __syncthreads();
++    }
++    if (grp == G - 1 && batches > 0)
++        norm_rows<3>(ysb[(batches - 1) & 1], P, norm_w, eps, out, xs, (batches - 1) * STEPS, rows - (batches - 1) * STEPS, hv, p, rinv);
++}
++
++// gdn_fused::run's chain threads, nothing else in scope
++__device__ __forceinline__ void chain(const float* state_in, float* state_out, int rows, float* __restrict__ ys_out,
++                                      unsigned char* smem) {
++    unsigned char* stage = smem;
++    float (*ysb)[STEPS][DV] = reinterpret_cast<float (*)[STEPS][DV]>(smem + 2 * STAGE);
++    const int hv = blockIdx.x;
++    const int batches = (rows + STEPS - 1) / STEPS;
++    constexpr int L = 32 / TPR;
++    const int row = threadIdx.x / TPR, t = threadIdx.x % TPR;
++    const size_t sbase = (size_t)hv * DV * DK + (size_t)row * DK;
++    float s[L][4];
++#pragma unroll
++    for (int l = 0; l < L; ++l)
++#pragma unroll
++        for (int i = 0; i < 4; ++i) s[l][i] = state_in[sbase + (l * TPR + t) * 4 + i];
++    __syncthreads();
++    for (int bi = 0; bi < batches; ++bi) {
++        const int r0 = bi * STEPS, n = min(STEPS, rows - r0);
++        const unsigned char* base = stage + (bi & 1) * STAGE;
++        for (int rr = 0; rr < n; ++rr) {
++            const unsigned char* d = base + rr * ROW;
++            const float vv = reinterpret_cast<const float*>(d + 2 * DK * 4)[row];
++            const float2 gbv = *reinterpret_cast<const float2*>(d + (2 * DK + DV) * 4);
++            const float g = gbv.x, beta = gbv.y;
++            float x[L];
++#pragma unroll
++            for (int l = 0; l < L; ++l) {
++                const float4 k4 = *reinterpret_cast<const float4*>(d + (l * TPR + t) * 16);
++                const float kk[4] = {k4.x, k4.y, k4.z, k4.w};
++                float kv = 0.0f;
++#pragma unroll
++                for (int i = 0; i < 4; ++i) {
++                    s[l][i] = s[l][i] * g;
++                    kv = kv + s[l][i] * kk[i];
++                }
++                x[l] = kv;
++            }
++            const float kv = gdn_tpr::tree<TPR>(x);
++            const float delta = (vv - kv) * beta;
++            // the same row through a pointer the compiler cannot match with `d`: k is read again here instead of being held in
++            // 64 registers across the tree (fn_gdn_fused holds it: 166 registers a thread, which caps a CTA at 384 threads)
++            const unsigned char* d2;
++            asm volatile("mov.u64 %0, %1;\n" : "=l"(d2) : "l"(d));
++#pragma unroll
++            for (int l = 0; l < L; ++l) {
++                const float4 k4 = *reinterpret_cast<const float4*>(d2 + (l * TPR + t) * 16);
++                const float4 q4 = *reinterpret_cast<const float4*>(d2 + DK * 4 + (l * TPR + t) * 16);
++                const float kk[4] = {k4.x, k4.y, k4.z, k4.w}, qq[4] = {q4.x, q4.y, q4.z, q4.w};
++                float o = 0.0f;
++#pragma unroll
++                for (int i = 0; i < 4; ++i) {
++                    s[l][i] = s[l][i] + kk[i] * delta;
++                    o = o + s[l][i] * qq[i];
++                }
++                x[l] = o;
++            }
++            const float o = bf(gdn_tpr::tree<TPR>(x));
++            if (t == 0) {
++                ysb[bi & 1][rr][row] = o;
++                if (ys_out) ys_out[((size_t)(r0 + rr) * NV + hv) * DV + row] = o;
++            }
++        }
++        __syncthreads();
++    }
++#pragma unroll
++    for (int l = 0; l < L; ++l)
++#pragma unroll
++        for (int i = 0; i < 4; ++i) state_out[sbase + (l * TPR + t) * 4 + i] = s[l][i];
++}
++}  // namespace gdn_fused2
++
++#define FN_GDN_FUSED_P(NAME, G)                                                                                              \
++    extern "C" __global__ void __launch_bounds__(gdn_fused::CH + G * gdn_fused::PR) NAME(                                     \
++        const __nv_bfloat16* __restrict__ P, const __nv_bfloat16* __restrict__ cs, const __nv_bfloat16* __restrict__ cw,     \
++        const float* __restrict__ a_log, const float* __restrict__ dt_bias, const float* state_in, float* state_out,          \
++        int rows, const __nv_bfloat16* __restrict__ norm_w, float eps, __nv_bfloat16* __restrict__ out,                      \
++        float* __restrict__ xs, float* __restrict__ ys_out) {                                                                \
++        extern __shared__ __align__(16) unsigned char smem[];                                                                \
++        if (threadIdx.x < gdn_fused::CH) gdn_fused2::chain(state_in, state_out, rows, ys_out, smem);                          \
++        else gdn_fused2::producers<G>(P, cs, cw, a_log, dt_bias, rows, norm_w, eps, out, xs, smem);                           \
++    }
++FN_GDN_FUSED_P(fn_gdn_fused_p2, 2)
++FN_GDN_FUSED_P(fn_gdn_fused_p3, 3)
++
++// Check mode (TF_FLASHNEXT_Q38_GDN_PROD=12 / 13): 32-bit words that differ between two buffers, added to *count.
++extern "C" __global__ void fn_q38_cmp_words(const uint32_t* __restrict__ a, const uint32_t* __restrict__ b, long long words,
++                                            unsigned int* count) {
++    unsigned int diff = 0;
++    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < words; i += (long long)gridDim.x * blockDim.x)
++        diff += a[i] != b[i];
++    if (diff) atomicAdd(count, diff);
++}
+diff --git a/zig/src/families/flashnext/cuda_batch_moe.zig b/zig/src/families/flashnext/cuda_batch_moe.zig
+index be6bb10..f2d44f6 100644
+--- a/zig/src/families/flashnext/cuda_batch_moe.zig
++++ b/zig/src/families/flashnext/cuda_batch_moe.zig
+@@ -56,6 +56,43 @@ pub const Xstat = struct {
+     }
+ };
+ 
++/// TF_FLASHNEXT_Q38_XPLAN=FILE (q38 measuring aid, off unless set): the expert plan of prompt passes of >= 1,024 rows, the first
++/// TF_FLASHNEXT_Q38_XPLAN_MAX (default 480) of them: one record a MoE block = u32 magic 0x58504C4E, rows, pairs an item, items,
++/// distinct experts, then the items [items][3] i32 (expert, first, count). It waits for the stream; values never change.
++pub const Xplan = struct {
++    var state: i8 = -1;
++    var fd: c_int = -1;
++    var left: usize = 480;
++    var host: [3 * 8192]i32 = undefined;
++
++    pub fn on() bool {
++        if (state < 0) {
++            state = 0;
++            if (std.c.getenv("TF_FLASHNEXT_Q38_XPLAN")) |e| {
++                if (std.c.getenv("TF_FLASHNEXT_Q38_XPLAN_MAX")) |m| left = std.fmt.parseInt(usize, std.mem.span(m), 10) catch left;
++                fd = open(e, 0x441, @as(c_int, 0o644));
++                if (fd >= 0) state = 1;
++                std.debug.print("q38: expert plans to {s} (fd {d}, max blocks {d})\n", .{ std.mem.span(e), fd, left });
++            }
++        }
++        return state == 1 and left > 0;
++    }
++
++    pub fn dump(self: anytype, plan: cuda.grouped.Plan, n: usize, tile: usize) !void {
++        const d = self.stream.d;
++        try self.stream.synchronize();
++        var c: [2]i32 = .{ 0, 0 };
++        try d.check(d.api.cuMemcpyDtoH_v2(&c, plan.counts, 8), "cuMemcpyDtoH");
++        const items: usize = @intCast(@max(0, c[0]));
++        if (items == 0 or items > host.len / 3) return;
++        try d.check(d.api.cuMemcpyDtoH_v2(&host, plan.items, items * 12), "cuMemcpyDtoH");
++        const head = [5]u32{ 0x58504C4E, @intCast(n), @intCast(tile), @intCast(items), @intCast(@max(0, c[1])) };
++        _ = write(fd, std.mem.asBytes(&head).ptr, 20);
++        _ = write(fd, std.mem.sliceAsBytes(host[0 .. items * 3]).ptr, items * 12);
++        left -|= 1;
++    }
++};
++
+ /// After a layer's experts, when something adds to or keeps its output: the slots' fp32 sum, adds, kept branch.
+ pub fn moeAdds(self: anytype, layer: usize, keep: LayerKeep) !void {
+     const add = self.addAt(layer);
+@@ -102,6 +139,7 @@ pub fn nativeRouted(self: anytype, native: anytype, plan: cuda.grouped.Plan) !vo
+     const dn = if (tile_ov) |*t| (if (t.cfg.appliesDown(n, native.world)) t else null) else null;
+     const gu_pairs: usize = if (gu) |t| t.cfg.pairs else 16;
+     try self.k.router.route(self.stream, s.picks, pairs, e, gu_pairs, plan);
++    if (n >= 1024 and Xplan.on()) try Xplan.dump(self, plan, n, gu_pairs);
+     const gu_items = cuda.grouped.maxItems(pairs, e, gu_pairs);
+     if (gu) |t| try t.run(self.stream, .up, up_in, layer, plan, s.moe_act, gu_items, experts_n) else try self.k.nvfp4.run(self.stream, .up, up_in, layer, plan, s.moe_act, gu_items, experts_n);
+     const dn_pairs: usize = if (dn) |t| t.cfg.pairs else 16;
+diff --git a/zig/src/families/flashnext/cuda_batch_state.zig b/zig/src/families/flashnext/cuda_batch_state.zig
+index e4dca87..d17c613 100644
+--- a/zig/src/families/flashnext/cuda_batch_state.zig
++++ b/zig/src/families/flashnext/cuda_batch_state.zig
+@@ -264,6 +264,19 @@ pub const Kernels = struct {
+         try k.chain_tpr.allowDynamicShared(chain_tpr_smem);
+         k.gdn_fused = try k.batch.function("fn_gdn_fused");
+         try k.gdn_fused.allowDynamicShared(gdn_fused_smem);
++        {
++            // q38 round 11 (TF_FLASHNEXT_Q38_GDN_PROD): fn_gdn_fused with more producer threads; optional, the same shared bytes
++            const gf = @import("cuda_gdn_fused.zig");
++            gf.p2 = k.batch.function("fn_gdn_fused_p2") catch null;
++            gf.p3 = k.batch.function("fn_gdn_fused_p3") catch null;
++            gf.cmp = k.batch.function("fn_q38_cmp_words") catch null;
++            if (gf.p2) |*f| f.allowDynamicShared(gdn_fused_smem) catch {
++                gf.p2 = null;
++            };
++            if (gf.p3) |*f| f.allowDynamicShared(gdn_fused_smem) catch {
++                gf.p3 = null;
++            };
++        }
+         k.gnorm = try k.batch.function("fn_gdn_norm");
+         return k;
+     }
+diff --git a/zig/src/families/flashnext/cuda_gdn_fused.zig b/zig/src/families/flashnext/cuda_gdn_fused.zig
+index fdec570..4e3c8e2 100644
+--- a/zig/src/families/flashnext/cuda_gdn_fused.zig
++++ b/zig/src/families/flashnext/cuda_gdn_fused.zig
+@@ -14,15 +14,92 @@ pub fn on() bool {
+ /// fn_gdn_fused's inputs: projection rows, conv window and taps, gate parameters, the state and where it goes.
+ pub const In = struct { proj: u64, conv: u64, cw: u64, a_log: u64, dt: u64, state: u64, state_out: u64, norm: u64 };
+ 
+-/// fn_gdn_front, fn_gdn_chain_tpr and fn_gdn_norm over `rows` rows in one launch (their bits): out and xs.
+-pub fn launch(f: cuda.Function, stream: cuda.Stream, in: In, rows: usize, out: u64, xs: u64) !void {
++/// q38 round 11, TF_FLASHNEXT_Q38_GDN_PROD=G (default 0 = fn_gdn_fused as it is): G = 2 / 3 runs fn_gdn_fused_p2 / _p3, the same
++/// arithmetic with G producer groups of 128 threads (kernels/cuda/q38_gdn_prod.cuh: the chain waited for its producers).
++/// 12 / 13 = check mode: fn_gdn_fused runs first into scratch, then the new kernel, and out, xs and the end state are compared
++/// on the device word by word (one line a 36 launches: "q38 gdnprod check").
++pub var p2: ?cuda.Function = null;
++pub var p3: ?cuda.Function = null;
++pub var cmp: ?cuda.Function = null;
++var prod_mode: i32 = -1;
++var chk_out: ?cuda.DeviceBuffer = null;
++var chk_xs: ?cuda.DeviceBuffer = null;
++var chk_st: ?cuda.DeviceBuffer = null;
++var chk_cnt: ?cuda.DeviceBuffer = null;
++var chk_launches: u64 = 0;
++var chk_words: u64 = 0;
++var chk_diff: u64 = 0;
++
++pub fn prod() i32 {
++    if (prod_mode < 0) {
++        prod_mode = 0;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_GDN_PROD")) |e| prod_mode = std.fmt.parseInt(i32, std.mem.span(e), 10) catch 0;
++        const g = @mod(prod_mode, 10);
++        if ((g != 2 and g != 3) or (g == 2 and p2 == null) or (g == 3 and p3 == null) or (prod_mode >= 10 and cmp == null)) prod_mode = 0;
++        if (prod_mode != 0) std.debug.print("q38 gdn prod: {d} producer groups{s}\n", .{ g, if (prod_mode >= 10) " (check mode: the stock kernel runs too)" else "" });
++    }
++    return prod_mode;
++}
++
++fn launchOne(f: cuda.Function, threads: u32, stream: cuda.Stream, in: In, rows: usize, out: u64, xs: u64, state_out: u64) !void {
+     var a: cuda.Args = .{};
+-    for ([_]u64{ in.proj, in.conv, in.cw, in.a_log, in.dt, in.state, in.state_out }) |v| a.add(v);
++    for ([_]u64{ in.proj, in.conv, in.cw, in.a_log, in.dt, in.state, state_out }) |v| a.add(v);
+     a.add(@as(c_int, @intCast(rows)));
+     a.add(in.norm);
+     a.add(eps);
+     for ([_]u64{ out, xs, 0 }) |v| a.add(v); // no fp32 readouts kept
+-    try cuda.launch.launch(f, .{ .grid = .{ .x = gdn.nv }, .block = .{ .x = parts.gdn_fused_threads }, .shared = parts.gdn_fused_smem }, stream, &a);
++    try cuda.launch.launch(f, .{ .grid = .{ .x = gdn.nv }, .block = .{ .x = threads }, .shared = parts.gdn_fused_smem }, stream, &a);
++}
++
++fn cmpWords(stream: cuda.Stream, a_ptr: u64, b_ptr: u64, words: usize, cnt: u64) !void {
++    var a: cuda.Args = .{};
++    a.add(a_ptr);
++    a.add(b_ptr);
++    a.add(@as(c_longlong, @intCast(words)));
++    a.add(cnt);
++    try cuda.launch.launch(cmp.?, .{ .grid = .{ .x = 96 }, .block = .{ .x = 256 } }, stream, &a);
++}
++
++fn check(f: cuda.Function, pf: cuda.Function, threads: u32, stream: cuda.Stream, in: In, rows: usize, out: u64, xs: u64) !void {
++    const d = stream.d;
++    const out_w = gdn.nv * 128 / 2; // bf16 [rows][nv * 128] as 32-bit words a row
++    const xs_w = gdn.nv * 128 / 32;
++    const st_w = gdn.nv * 128 * 128;
++    if (chk_out == null) {
++        chk_out = try cuda.DeviceBuffer.alloc(d, parts.max_chunk * out_w * 4);
++        chk_xs = try cuda.DeviceBuffer.alloc(d, parts.max_chunk * xs_w * 4);
++        chk_st = try cuda.DeviceBuffer.alloc(d, st_w * 4);
++        chk_cnt = try cuda.DeviceBuffer.alloc(d, 16);
++        try d.check(d.api.cuMemsetD8_v2(chk_cnt.?.ptr, 0, 16), "cuMemsetD8");
++    }
++    if (rows > parts.max_chunk) return launchOne(f, parts.gdn_fused_threads, stream, in, rows, out, xs, in.state_out);
++    try launchOne(f, parts.gdn_fused_threads, stream, in, rows, chk_out.?.ptr, chk_xs.?.ptr, chk_st.?.ptr);
++    try launchOne(pf, threads, stream, in, rows, out, xs, in.state_out);
++    try cmpWords(stream, out, chk_out.?.ptr, rows * out_w, chk_cnt.?.ptr);
++    try cmpWords(stream, xs, chk_xs.?.ptr, rows * xs_w, chk_cnt.?.ptr);
++    try cmpWords(stream, in.state_out, chk_st.?.ptr, st_w, chk_cnt.?.ptr);
++    chk_launches += 1;
++    chk_words += rows * (out_w + xs_w) + st_w;
++    if (chk_launches % 36 == 0) {
++        try stream.synchronize();
++        var c: [4]u32 = .{ 0, 0, 0, 0 };
++        try d.check(d.api.cuMemcpyDtoH_v2(&c, chk_cnt.?.ptr, 16), "cuMemcpyDtoH");
++        chk_diff = c[0];
++        std.debug.print("q38 gdnprod check launches={d} rows_last={d} words={d} diff={d}\n", .{ chk_launches, rows, chk_words, chk_diff });
++    }
++}
++
++/// fn_gdn_front, fn_gdn_chain_tpr and fn_gdn_norm over `rows` rows in one launch (their bits): out and xs.
++pub fn launch(f: cuda.Function, stream: cuda.Stream, in: In, rows: usize, out: u64, xs: u64) !void {
++    const mode = prod();
++    if (mode != 0) {
++        const g: u32 = @intCast(@mod(mode, 10));
++        const pf = if (g == 2) p2.? else p3.?;
++        const threads: u32 = 256 + g * 128;
++        if (mode >= 10) return check(f, pf, threads, stream, in, rows, out, xs);
++        return launchOne(pf, threads, stream, in, rows, out, xs, in.state_out);
++    }
++    return launchOne(f, parts.gdn_fused_threads, stream, in, rows, out, xs, in.state_out);
+ }
+ 
+ /// fn_gdn_norm over `rows` readouts ys: the gated norm into out, its sums into xs.
+diff --git a/zig/src/families/flashnext/cuda_glue.zig b/zig/src/families/flashnext/cuda_glue.zig
+index 68c6152..b5fd15d 100644
+--- a/zig/src/families/flashnext/cuda_glue.zig
++++ b/zig/src/families/flashnext/cuda_glue.zig
+@@ -528,7 +528,19 @@ pub const Glue = struct {
+ 
+     /// Router logits [rows, experts + 1] fp32: the experts' rows, then the shared expert's gate row (core route rows).
+     pub fn routerMany(g: *const Glue, s: cuda.Stream, x: u64, w: u64, out: u64, x_stride: usize, rows: usize) !void {
+-        try g.route.logits(s, x, x_stride, w, out, rows, wt.dims, wt.experts_n + 1);
++        const e = wt.experts_n + 1;
++        const band = RouteBand.rows();
++        if (band == 0 or rows <= band) return g.route.logits(s, x, x_stride, w, out, rows, wt.dims, e);
++        // q38 round 11 (TF_FLASHNEXT_Q38_ROUTE_BAND=N): the router launch runs its row tiles once for each of the 9 expert tiles, so a
++        // pass whose input rows do not fit the cache (6,144 rows = 31 MB) reads them from memory nine times. Launches of N rows keep
++        // a band's rows cached. Rows are independent in the kernel (a row's sums are its own), so the logits are the same bits.
++        if (RouteBand.check) try RouteBand.before(g, s, x, x_stride, w, rows, e);
++        var r0: usize = 0;
++        while (r0 < rows) : (r0 += band) {
++            const n = @min(band, rows - r0);
++            try g.route.logits(s, x + r0 * x_stride * 2, x_stride, w, out + r0 * e * 4, n, wt.dims, e);
++        }
++        if (RouteBand.check) try RouteBand.after(s, out, rows, e);
+     }
+ 
+     /// Each row's ten experts and the shared one: picks and weights [rows, 11] (core route rows).
+@@ -545,3 +557,55 @@ test "every entry point has its own bit" {
+ test "the attention tiles hold the model's heads" {
+     try std.testing.expect(wt.head_dim == tile_head_dim and wt.q_heads / wt.kv_heads <= tile_heads);
+ }
++
++/// q38 round 11, TF_FLASHNEXT_Q38_ROUTE_BAND=N (default 0 = one launch, as before; N a multiple of 128, 2048 proposed): rows a router
++/// launch of a prompt pass takes at most. TF_FLASHNEXT_Q38_ROUTE_BAND_CHECK=1: the single launch runs first into scratch and the
++/// banded logits are compared with it word by word on the device ("q38 routeband check" every 48 passes).
++pub const RouteBand = struct {
++    var band: i64 = -1;
++    pub var check: bool = false;
++    var ref: ?cuda.DeviceBuffer = null;
++    var cnt: ?cuda.DeviceBuffer = null;
++    var passes: u64 = 0;
++    var words: u64 = 0;
++
++    pub fn rows() usize {
++        if (band < 0) {
++            band = 0;
++            if (std.c.getenv("TF_FLASHNEXT_Q38_ROUTE_BAND")) |v| band = std.fmt.parseInt(i64, std.mem.span(v), 10) catch 0;
++            if (band < 128 or @mod(band, 128) != 0) band = 0;
++            if (std.c.getenv("TF_FLASHNEXT_Q38_ROUTE_BAND_CHECK")) |v| check = band != 0 and std.mem.eql(u8, std.mem.span(v), "1") and @import("cuda_gdn_fused.zig").cmp != null;
++            if (band != 0) std.debug.print("q38 route band: {d} rows a router launch{s}\n", .{ band, if (check) " (check mode: the single launch runs too)" else "" });
++        }
++        return @intCast(band);
++    }
++
++    fn before(g: *const Glue, s: cuda.Stream, x: u64, x_stride: usize, w: u64, n: usize, e: usize) !void {
++        const d = s.d;
++        const need = n * e * 4;
++        if (ref == null or ref.?.len < need) ref = try cuda.DeviceBuffer.alloc(d, @max(need, 16384 * e * 4));
++        if (cnt == null) {
++            cnt = try cuda.DeviceBuffer.alloc(d, 16);
++            try d.check(d.api.cuMemsetD8_v2(cnt.?.ptr, 0, 16), "cuMemsetD8");
++        }
++        try g.route.logits(s, x, x_stride, w, ref.?.ptr, n, wt.dims, e);
++    }
++
++    fn after(s: cuda.Stream, out: u64, n: usize, e: usize) !void {
++        const d = s.d;
++        var a: cuda.Args = .{};
++        a.add(out);
++        a.add(ref.?.ptr);
++        a.add(@as(c_longlong, @intCast(n * e)));
++        a.add(cnt.?.ptr);
++        try cuda.launch.launch(@import("cuda_gdn_fused.zig").cmp.?, .{ .grid = .{ .x = 96 }, .block = .{ .x = 256 } }, s, &a);
++        passes += 1;
++        words += n * e;
++        if (passes % 48 == 0) {
++            try s.synchronize();
++            var c: [4]u32 = .{ 0, 0, 0, 0 };
++            try d.check(d.api.cuMemcpyDtoH_v2(&c, cnt.?.ptr, 16), "cuMemcpyDtoH");
++            std.debug.print("q38 routeband check passes={d} rows_last={d} words={d} diff={d}\n", .{ passes, n, words, c[0] });
++        }
++    }
++};

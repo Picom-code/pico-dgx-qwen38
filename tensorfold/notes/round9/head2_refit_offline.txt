@@ -1,0 +1,40 @@
+dump rows 201179, QTOP lines 201179, requests 492 (expected fit 260 + fresh 123 + held)
+fitting rows 110919 -> /prof/r9_fit.mix
+OLD rotation (fitted on the held prompts, round 8)
+  fit   rows 110919: pick == full 4-bit head: block form 0.9705, top-64 form 0.9522, preview alone 0.6233; gate (p >= 0.4) flips 0.0213
+  fresh rows  59290: pick == full 4-bit head: block form 0.9633, top-64 form 0.9402, preview alone 0.6090; gate (p >= 0.4) flips 0.0243
+        fresh agent  rows  2627: block form 0.9360
+        fresh chat   rows 21352: block form 0.9810
+        fresh code   rows 11494: block form 0.9861
+        fresh lang   rows 13893: block form 0.9025
+        fresh math   rows  6753: block form 0.9941
+        fresh struct rows  3171: block form 0.9845
+  held  rows  30970: pick == full 4-bit head: block form 0.9888, top-64 form 0.9894, preview alone 0.7494; gate (p >= 0.4) flips 0.0070
+NEW rotation (fitted on the round-9 corpus rows only)
+  fit   rows 110919: pick == full 4-bit head: block form 0.9843, top-64 form 0.9809, preview alone 0.6876; gate (p >= 0.4) flips 0.0131
+  fresh rows  59290: pick == full 4-bit head: block form 0.9763, top-64 form 0.9645, preview alone 0.6379; gate (p >= 0.4) flips 0.0182
+        fresh agent  rows  2627: block form 0.9699
+        fresh chat   rows 21352: block form 0.9793
+        fresh code   rows 11494: block form 0.9895
+        fresh lang   rows 13893: block form 0.9512
+        fresh math   rows  6753: block form 0.9945
+        fresh struct rows  3171: block form 0.9845
+  held  rows  30970: pick == full 4-bit head: block form 0.9847, top-64 form 0.9828, preview alone 0.6859; gate (p >= 0.4) flips 0.0102
+draft rows 79591 head-input rows 110919 rank 512
+wrote /out/head2_r9.bin 30712024 bytes
+draft rows 79591 rotation read from /out/head2_rot_r9.rot rank 512
+wrote /out/head2_r9_fromrot.bin 30712024 bytes
+fce7c913060d45f2e43a82bb82a1535649c1682bd740cfcf588a7b27f28b1f99  /home/picom/q38/head2r9/head2_r9.b
+b695821a82e00d73f8ef825093b5ab2443a7618501d67605d7cf1bef21101cb9  /home/picom/q38/head2r9/head2_r9.b
+fce7c913060d45f2e43a82bb82a1535649c1682bd740cfcf588a7b27f28b1f99  /home/picom/q38/head2r9/head2_r9_f
+b695821a82e00d73f8ef825093b5ab2443a7618501d67605d7cf1bef21101cb9  /home/picom/q38/head2r9/head2_rot_
+127645d778d1d795baa2e0fc4999e1c0c4b71c9c0011b121eb4a790467eedeb4  /home/picom/q38/repo_tf/head2/head
+c1f89b717e2288f13e3412a2572a978ab9caf11890607b3e3fc958f84b0770a7  /home/picom/q38/hf/q38/head2_r512.
+total 70248
+drwxrwxr-x  2 picom picom     4096 Nov 13 18:06 .
+drwxrwxr-x 26 picom picom     4096 Nov 13 17:59 ..
+-rw-r--r--  1 root  root  30712024 Nov 13 18:06 head2_r9.bin
+-rw-r--r--  1 root  root   5242896 Nov 13 18:06 head2_r9.bin.rot
+-rw-r--r--  1 root  root  30712024 Nov 13 18:06 head2_r9_fromrot.bin
+-rw-r--r--  1 picom picom  5242896 Nov 13 18:06 head2_rot_r9.rot
+FROM_ROT_IDENTICAL

@@ -1,0 +1,169 @@
+diff --git a/zig/kernels/cuda/flashnext_batch.cu b/zig/kernels/cuda/flashnext_batch.cu
+index 0e6b39c..77d48d4 100644
+--- a/zig/kernels/cuda/flashnext_batch.cu
++++ b/zig/kernels/cuda/flashnext_batch.cu
+@@ -284,6 +284,8 @@ static __device__ __forceinline__ void gdn_rows_late(
+         }
+         if (lane == 0) *reinterpret_cast<float4*>(ys_out + ((size_t)r * NV + hv) * DV + row0) = make_float4(o4[0], o4[1], o4[2], o4[3]);
+     }
++    // q38 (TF_FLASHNEXT_Q38_LATE_SKIP): no end state asked for (the window's rows stay in the log for the next chain)
++    if (state_out == nullptr) return;
+ #pragma unroll
+     for (int j = 0; j < 4; ++j)
+ #pragma unroll
+diff --git a/zig/src/families/flashnext/cuda_batch.zig b/zig/src/families/flashnext/cuda_batch.zig
+index dda6f13..1dc3a1c 100644
+--- a/zig/src/families/flashnext/cuda_batch.zig
++++ b/zig/src/families/flashnext/cuda_batch.zig
+@@ -391,8 +391,9 @@ pub fn Pass(comptime Tri: type) type {
+             if (keep.log_k != 0 and self.lanes.len == 0) {
+                 // the window's rows go after the rows its log holds, which the chain takes first (TF_FLASHNEXT_KEEP_LATE)
+                 const np: usize = if (self.hooks.keep) |kp| kp.pend else 0;
++                const skip = if (self.hooks.keep) |kp| kp.skip_state else false;
+                 try self.gdnFrontLogged(lw, keep, np, s.proj, self.seq.conv[li].ptr, n, s.gq);
+-                try self.gdnChainLate(s.gq, keep, np, self.seq.state[li].ptr, keep.state_out, n, s.ys);
++                try self.gdnChainLate(s.gq, keep, np, self.seq.state[li].ptr, keep.state_out, n, s.ys, skip);
+             } else if (fused) {
+                 // the three in one kernel a value head: the same per-row op sequences, no fp32 rows through memory
+                 const st = self.seq.state[li].ptr;
+@@ -416,8 +417,9 @@ pub fn Pass(comptime Tri: type) type {
+                     try self.copy(lk.hist, l.seq.conv[li].ptr, (gdn.taps - 1) * gdn.conv_dim * 2);
+                     if (lk.log_k != 0) {
+                         const np: usize = if (l.keep) |kp| kp.pend else 0;
++                        const skip = if (l.keep) |kp| kp.skip_state else false;
+                         try self.gdnFrontLogged(lw, lk, np, proj, l.seq.conv[li].ptr, l.rows, s.gq + qk);
+-                        try self.gdnChainLate(s.gq + qk, lk, np, l.seq.state[li].ptr, lk.state_out, l.rows, s.ys + v);
++                        try self.gdnChainLate(s.gq + qk, lk, np, l.seq.state[li].ptr, lk.state_out, l.rows, s.ys + v, skip);
+                     } else {
+                         try self.gdnFront(lw, proj, l.seq.conv[li].ptr, l.rows, s.gq + qk, s.gk + qk, s.gv + v, s.ggb + gb);
+                         try self.gdnChain(s.gq + qk, s.gk + qk, s.gv + v, s.ggb + gb, l.seq.state[li].ptr, lk.state_out, l.rows, s.ys + v);
+@@ -468,7 +470,7 @@ pub fn Pass(comptime Tri: type) type {
+                         .log_v = lk.log_v,
+                         .log_gb = lk.log_gb,
+                         .state_in = st,
+-                        .state_out = if (lk.state_out != 0) lk.state_out else st,
++                        .state_out = if (kp.skip_state) 0 else if (lk.state_out != 0) lk.state_out else st, // q38: 0 = no end state
+                         .ys = s.ys + row0 * gdn.value_dim * 4,
+                         .rows = cint(l.rows),
+                         .np = cint(kp.pend),
+@@ -518,14 +520,14 @@ pub fn Pass(comptime Tri: type) type {
+         }
+ 
+         /// fn_gdn_rows_late over `rows` rows (q from `qn`) after the log's first `np`, from `state` to `state_out` (0: in place).
+-        fn gdnChainLate(self: *Self, qn: u64, lk: LayerKeep, np: usize, state: u64, state_out: u64, rows: usize, ys: u64) !void {
++        fn gdnChainLate(self: *Self, qn: u64, lk: LayerKeep, np: usize, state: u64, state_out: u64, rows: usize, ys: u64, skip: bool) !void {
+             var a: cuda.Args = .{};
+             a.add(qn);
+             a.add(lk.log_k);
+             a.add(lk.log_v);
+             a.add(lk.log_gb);
+             a.add(state);
+-            a.add(if (state_out != 0) state_out else state);
++            a.add(if (skip) @as(u64, 0) else if (state_out != 0) state_out else state); // q38: 0 = no end state (LATE_SKIP)
+             a.add(cint(rows));
+             a.add(ys);
+             a.add(cint(np));
+diff --git a/zig/src/families/flashnext/cuda_batch_state.zig b/zig/src/families/flashnext/cuda_batch_state.zig
+index 7a0d2cb..5491e11 100644
+--- a/zig/src/families/flashnext/cuda_batch_state.zig
++++ b/zig/src/families/flashnext/cuda_batch_state.zig
+@@ -116,6 +116,8 @@ pub const Keep = struct {
+     mixer: HcKeep = .{},
+     /// Rows of earlier windows kept but not yet taken by the DeltaNet states (the logs' first rows): this pass's chain takes them first.
+     pend: u32 = 0,
++    /// q38 (TF_FLASHNEXT_Q38_LATE_SKIP): this window's DeltaNet chains write no end state (its rows stay in the logs).
++    skip_state: bool = false,
+ };
+ 
+ /// A sequence of a training pass (Pass.spans): its first row and its rows.
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index a60b1f9..b658c22 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -105,6 +105,19 @@ pub fn q38AttnLanes() bool {
+     return std.mem.eql(u8, std.mem.span(v), "1");
+ }
+ 
++var late_skip_cache: usize = std.math.maxInt(usize);
++/// TF_FLASHNEXT_Q38_LATE_SKIP=T (q38; default 0: off; at most 32; needs TF_FLASHNEXT_KEEP_LATE): a drafted window whose rows plus the rows
++/// already waiting in the lane's DeltaNet log are at most T does not write its end states (36 layers x 3.1 MB a stream and pass).
++/// Kept whole, its rows wait in the log like a partly kept window's, and the next window's chain takes them first: the same steps in
++/// the same order on the same start state, so the same bits. Above T the pass writes the end states as before.
++pub fn q38LateSkip() usize {
++    if (late_skip_cache != std.math.maxInt(usize)) return late_skip_cache;
++    var t: usize = 0;
++    if (std.c.getenv("TF_FLASHNEXT_Q38_LATE_SKIP")) |v| t = std.fmt.parseInt(usize, std.mem.span(v), 10) catch 0;
++    late_skip_cache = @min(t, 32);
++    return late_skip_cache;
++}
++
+ var wide_rows_cache: usize = 0;
+ /// TF_FLASHNEXT_Q38_WIDE_ROWS=N (q38; default 64, the stock value; 64 to 256): rows a shared drafted verify pass holds at most
+ /// and the rows the lane core lets a round's drafts fill. With many streams a pass's cost grows slowly with its rows (the rows share
+diff --git a/zig/src/families/flashnext/cuda_mtp_draft.zig b/zig/src/families/flashnext/cuda_mtp_draft.zig
+index 26b46f0..44ce5e4 100644
+--- a/zig/src/families/flashnext/cuda_mtp_draft.zig
++++ b/zig/src/families/flashnext/cuda_mtp_draft.zig
+@@ -104,6 +104,8 @@ pub const Draft = struct {
+     spare: [linear_n]cuda.DeviceBuffer = undefined,
+     /// A window ran with the states written to `spare` and is not yet kept or rolled back.
+     open: bool = false,
++    /// q38 (TF_FLASHNEXT_Q38_LATE_SKIP): the open window wrote no end states; kept whole, its rows wait in the logs.
++    skip: bool = false,
+     keep: batch.Keep = .{},
+     /// With TF_FLASHNEXT_KEEP_LATE: the DeltaNet layers' logs, and the rows waiting in them for the states (also in `keep.pend`).
+     log: ?cuda.DeviceBuffer = null,
+@@ -207,6 +209,14 @@ pub const Draft = struct {
+     /// An open window kept whole: its end states become the sequence's (buffers swapped, nothing copied).
+     pub fn settle(d: *Draft, seq: *prompt.Seq) void {
+         if (!d.open) return;
++        if (d.skip) {
++            // q38: no end states were written: the window's rows are in the logs after the waiting ones, and wait with them
++            d.open = false;
++            d.skip = false;
++            d.pend += d.rows;
++            d.keep.pend = @intCast(d.pend);
++            return;
++        }
+         for (seq.state, &d.spare) |*a, *b| std.mem.swap(cuda.DeviceBuffer, a, b);
+         d.aim();
+         d.open = false;
+@@ -238,6 +248,8 @@ pub const Draft = struct {
+         d.drafted = 0;
+         d.rows = 0;
+         d.pend = 0;
++        d.skip = false;
++        d.keep.skip_state = false;
+     }
+ };
+ 
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index 74f5e61..dac4af1 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -577,6 +577,8 @@ pub fn Ops(comptime Tri: type) type {
+             // a window nobody rolls back chains in place: the rows still waiting for the states are taken first
+             if (!keeps) try o.flushLate(seq, d);
+             d.keep.pend = @intCast(d.pend);
++            d.skip = keeps and d.log != null and d.pend + n <= @import("cuda_knobs.zig").q38LateSkip();
++            d.keep.skip_state = d.skip;
+             if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.tail_at, seq.tail.ptr, ple_tail_n * wide * 2);
+             try o.e.forward(Tri, o.tri, seq, ids, .{ .logits = .all, .logits_out = d.logits.ptr, .keep = if (keeps) &d.keep else null, .streams = d.streams.ptr });
+             if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.nrow_at, o.e.batch_s.?.ple_nrow, n * wide * 2);
+@@ -604,6 +606,8 @@ pub fn Ops(comptime Tri: type) type {
+                 const keeps = n > 1;
+                 if (!keeps) try o.flushLate(seq, d);
+                 d.keep.pend = @intCast(d.pend);
++                d.skip = keeps and d.log != null and d.pend + n <= @import("cuda_knobs.zig").q38LateSkip();
++                d.keep.skip_state = d.skip;
+                 if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.tail_at, seq.tail.ptr, ple_tail_n * wide * 2);
+                 w.* = .{ .seq = seq, .ids = ids, .keep = if (keeps) &d.keep else null, .streams = d.streams.ptr, .logits = d.logits.ptr };
+             }
+@@ -775,6 +779,7 @@ pub fn Ops(comptime Tri: type) type {
+             }
+             d.rows = keep;
+             d.open = false;
++            d.skip = false;
+             if (late) {
+                 d.pend += keep;
+                 d.keep.pend = @intCast(d.pend);

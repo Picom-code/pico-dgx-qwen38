@@ -1,0 +1,20 @@
+Running timer as unit: q38-guard.timer
+Will run service as unit: q38-guard.service
+start 2026-11-13T16:22:11Z label U guard 70min
+service.sh: stopping (supervisor pid 1057886)
+service.sh: stopped (by service.sh stop)
+spark-923b MemAvailable 116 GiB after prod stop (7s)
+window U work done 16:49:43
+restore begin 2026-11-13T16:49:43Z
+spark-4e5c Mem:             121           4         116           0           1         116 disk_free 2.2T gpu_procs=0
+spark-3d24 Mem:             121           4         116           0           1         116 disk_free 2.1T gpu_procs=0
+spark-923b Mem:             121           6         114           0           2         115 disk_free 1.8T gpu_procs=0
+Running as unit: dsgx10-prod.service; invocation ID: 53fe44c6819041a09def6ec2c94c62ef
+health=200
+answer=391
+verify 2026-11-13T16:54:14Z health=200
+17*23 = 391
+session store: 12.00 GiB on every rank (at most 12.0; free device / available host memory before it, ranks 0-3: 16.37 / 24.04 28.07 / 28.66 28.22 / 28.79 26.60 / 27.48 GiB, less a margin of 2.0 and the Engram cache's 4.0)
+session store's disk tier: 28.2 GiB in /home/pico/dsgb10/spill/rank0.service.spill (at most 32.0; free space less 32 GiB, ranks 0-3: 32 32 32 32 GiB)
+image: Seven red dots are scattered across a white background.
+prod restored; outage 1924s  start 2026-11-13T16:22:11Z end 2026-11-13T16:54:15Z

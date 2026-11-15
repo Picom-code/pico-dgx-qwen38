@@ -1,0 +1,12 @@
+# night 11-14, E4: the many-user profile (USERS16=1, bf16 pool; 16 x 32,768 fits the head beside the 13 GiB reserve): every reply with N in flight against the SOLO knob-off reply.
+ENGINE u16|u16|on|||POOL=32768
+NEED=6 bash $RT/rj.sh u16 run $RT/matrix/cases1.jsonl $O/u16.jsonl u16 mode=n conc=16 order=shuf arrive=burst not=long,long_out decoys=2 dl=$DL
+NEED=6 bash $RT/rj.sh u8s run $RT/matrix/cases3.jsonl $O/u8s.jsonl u8s mode=s conc=8 order=shuf not=long_out limit=330 decoys=2 slow=10 dl=$DL
+NEED=6 bash $RT/rj.sh u4 run $RT/matrix/cases3.jsonl $O/u4.jsonl u4 mode=both conc=4 order=shuf not=long_out limit=120 pre=cancel dl=$DL
+NEED=6 bash $RT/rj.sh u3 run $HOME/q38/runs/D_RT_N_on/sess.jsonl.cases $O/u3.jsonl u3 mode=n conc=3 order=fwd dl=$DL
+docker logs q38-run-D 2>&1 | grep -E 'q38 (cert|qsacert|hcf check|snapdelta|gdnprod|hcdn|routeband|scratch check)' | awk '{k=$1 $2 $3; l[k]=$0} END{for(k in l) print l[k]}' | cut -c1-300 > $O/checklines.txt; cat $O/checklines.txt; echo "log error lines: $(docker logs q38-run-D 2>&1 | grep -ciE 'panic|segfault|error\(|mismatch|abort')"
+# E5: the recipe's own USERS16 pool (40,960) and the AGENTS profile: start logs for the knob audit + a short run each (skipped by the runner when they do not fit the head)
+ENGINE u16d|u16|on|||
+NEED=5 bash $RT/rj.sh u16d run $RT/matrix/cases3.jsonl $O/u16d.jsonl u16d mode=n conc=16 order=shuf arrive=burst not=long_out limit=120 dl=$DL
+ENGINE ag|def|on|AGENTS=1||
+NEED=5 bash $RT/rj.sh ag run $HOME/q38/runs/D_RT_N_on/sess.jsonl.cases $O/ag.jsonl ag mode=n conc=5 order=fwd dl=$DL

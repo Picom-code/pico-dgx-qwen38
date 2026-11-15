@@ -1,0 +1,28 @@
+Round 7 (2026-11-13 13:38 -> 17:00 UTC), levers and probes. MEASURED unless marked. Builds kp22-kp25; patches 0108-0109.
++----------------------------------------------+---------------------------------------------------------------+--------------------------------------+-----------+
+| lever / probe                                | result                                                        | identity                             | status    |
++----------------------------------------------+---------------------------------------------------------------+--------------------------------------+-----------+
+| DeltaNet lane batching for 9-16 streams      | GPROF 16 users: GDN 39.4 -> 34.3 ms, pass 200.7 -> 196-198 ms | held 16 in flight 107/107 (x5 runs), | SHIPPED   |
+| (GDN_MANY=2; stock batches at most 8 lanes   | 16 users distinct: window S 258.4 -> 269.2 (+4.2 %),          | waves 96/96, edit set 24/24,         | (default) |
+| and falls back to 5 launches A LANE a layer) | window T 259.5 -> 263.1 (+1.4 %), 923b 257.3 -> 261.5 (+1.6 %)| one user 54/54; checked run 22.9     |           |
+|                                              | held 16 in flight +1.3..2.1 %, waves of 16 +2.2 %             | billion words 0 differ               |           |
+| one launch for every lane's best draft       | see window U                                                  | see window U                         | window U  |
+| (BEST_LANES=1)                               |                                                               |                                      |           |
+| 128-row lane tiles (ROWS128=2048)            | engine: zero (GPROF groups unchanged). The microbench's +24   | 107/107                              | OFF       |
+|                                              | ..+83 % was an artefact (band argument 1 instead of 2)        |                                      | (zero)    |
+| expert kernels "168 -> 225 GB/s"             | microbench: they already read 220-230 GB/s from 5 rows up     | every variant's bits = stock         | DEAD      |
+|                                              | (1 row: 201); 16 users: 159 experts a layer at ~220 GB/s      |                                      | (no gap)  |
+| expert shared-memory tile at low row counts  | one user 54.64 -> 54.58 ms/round; 16 users inside noise       | 107/107                              | DEAD      |
+| native FP4 / FP8 decode (PTX ISA 9.2 cvt)    | microbench: 0 at 1 row, 5 rows, 97 rows, 1024 rows            | all 16.7 M E2M1 pairs + all E4M3     | DEAD      |
+|                                              |                                                               | pairs equal; kernel hashes equal     | (zero)    |
+| draft gate re-fit after the stack            | 0.4/8: 63.4, 0.35/8: 62.9, 0.3/6: 62.3 vs 0.4/6: 63.2 tok/s   | 107/107                              | DEAD      |
+| prefill (Q9)                                 | a prompt row = 0.389 ms = ~30 TFLOP/s of bf16 mma in every    | -                                    | no lever  |
+|                                              | group; chunk size and weight decode are not the limit         |                                      | found     |
+| dense kernels at 54-128 rows (ideas.md #1b)  | no second weight read in the engine (see ROWS128)             | -                                    | DEAD      |
+| lookup drafts replacing the chain (#4a)      | bound ~1 % from the SHORT_COPY data (ESTIMATE)                | -                                    | not built |
+| platform: cpu idle states / dma latency (#7) | needs a host power setting                                    | -                                    | not done  |
++----------------------------------------------+---------------------------------------------------------------+--------------------------------------+-----------+
+Round anatomy (kp21 stack):
+ one user (KPROF, serialised): round ~57 ms = routed experts 20.4 (35 %) + MXFP8 projections ~12 + fused hyper-connection 8.1 + certified head 2.4 + draft head 2.2 + other BF16 2.8 + small kernels.
+ 16 users (GPROF): 78.7 rows a pass, 200.7 ms: MoE 128.9 (64 %: 159 distinct experts a layer at ~220 GB/s), GDN 39.4, hyper-connection 15.2, QSA 8.5, head 7.5. The pass is the round.
+DeepSeek outages this round: R 1699 s, S 3632 s, T 3561 s, U (see PROGRESS). Each verified after: health 200, 17*23 = 391, session store 12.00 GiB, disk tier 28.2 GiB, image.

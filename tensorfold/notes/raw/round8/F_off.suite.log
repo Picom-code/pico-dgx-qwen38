@@ -1,0 +1,56 @@
+suite F_off mode full start 2026-11-13T20:34:01Z model Qwen3.8-Flash-Next
+idle after load: MemAvailable 38 GiB, GPU MiB 78438
+== ttft 20:34:02
+ttft short prompt: median 184 ms  [190, 177, 186, 179, 185, 184, 183]
+== c1 20:34:05
+chat 1 user: median 47.6 tok/s  mean 46.9  [45.71, 44.37, 48.41, 47.6, 44.77, 48.66, 51.08, 42.33, 48.89]
+code 1 user: median 77.0 tok/s  mean 76.8  [76.84, 81.69, 71.01, 78.46, 82.49, 71.37, 76.96, 81.76, 70.44]
+== sd 20:36:34
+sd-method prose T0 think-off: median 56.6  mean 56.7  [56.93, 56.65, 56.65, 56.7, 56.61]
+sd-method prose T0.7 think-on: median 55.1  mean 54.0  [50.8, 55.06, 58.22, 55.26, 50.47]
+sd-method code T0 think-off (task 0): median 91.8  mean 91.9  [91.75, 91.85, 91.67, 92.03, 92.22]
+sd-method code8 T0 think-off (tasks 0-7): median 87.4  mean 86.1  [91.94, 88.23, 85.8, 87.05, 88.06, 79.12, 87.68, 80.54]
+sd-method structured T0 think-off: median 105.7  mean 105.5  [105.12, 105.69, 105.07, 105.83, 105.67]
+== ident 20:38:28
+math:8 256 66.61
+math:9 4 46.31
+zh:0 204 24.51
+zh:1 58 30.91
+zh:2 256 30.07
+json:0 256 78.77
+json:1 34 79.63
+long:8k 256 56.7
+long:30k 256 49.18
+long:code 256 74.57
+long:qa 256 58.06
+ident saved /home/picom/q38/runs/F_off/ident_on.json n 51 median tps 59.5
+== distinct4 20:43:06
+distinct 4 users: 146.9 tok/s total  (2048 tokens in 13.9 s; max ttft 1.25 s; errors 0 [])
+== copies4 20:43:21
+copies 4 users: 150.0 tok/s total  (2048 tokens in 13.7 s; max ttft 1.22 s; errors 0 [])
+== distinct_max5 20:43:35
+distinct 5 users: 162.9 tok/s total  (2560 tokens in 15.7 s; max ttft 1.66 s; errors 0 [])
+== copies_max5 20:43:51
+copies 5 users: 167.6 tok/s total  (2560 tokens in 15.3 s; max ttft 1.61 s; errors 0 [])
+== distinct16_queued 20:44:06
+distinct 16 users: 153.0 tok/s total  (7890 tokens in 51.6 s; max ttft 37.65 s; errors 0 [])
+== distinct16_again 20:44:58
+distinct 5 users: 166.2 tok/s total  (2560 tokens in 15.4 s; max ttft 1.51 s; errors 0 [])
+== sdn1 20:45:14
+sd-method wave 1 prose T0.7 think-on: aggregate 50.8  per-request 50.8  ttft 309 ms  errors 0
+sd-method wave 1 code T0 think-off: aggregate 91.5  per-request 91.5  ttft 244 ms  errors 0
+== sdn4 20:45:22
+sd-method wave 4 prose T0.7 think-on: aggregate 115.1  per-request 28.8  ttft 721 ms  errors 0
+sd-method wave 4 code T0 think-off: aggregate 188.9  per-request 47.2  ttft 664 ms  errors 0
+== sdn5 20:45:39
+sd-method wave 5 prose T0.7 think-on: aggregate 132.7  per-request 26.5  ttft 906 ms  errors 0
+sd-method wave 5 code T0 think-off: aggregate 214.0  per-request 42.8  ttft 612 ms  errors 0
+== held 20:45:58
+held chat: 49.79 tok/s (tokens/decode-time)  mean-of-prompts 52.84  n 66
+held code: 78.92 tok/s (tokens/decode-time)  mean-of-prompts 85.57  n 25
+held math: 73.98 tok/s (tokens/decode-time)  mean-of-prompts 74.39  n 13
+held ALL: 58.01 tok/s  n 104
+min MemAvailable during suite: 31678 MiB; max GPU MiB 85408
+gpu temp C min/max during suite: 49/82 on spark-923b
+suite end 2026-11-13T20:53:44Z
+SUITE_DONE

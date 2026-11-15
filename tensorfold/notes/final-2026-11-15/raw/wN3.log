@@ -1,0 +1,21 @@
+### step agmia5 10:50:40 left 4280 s
+READY recipe [CERT=0 MANY=0 COPY_ROWS=16 FUSED=0 HALF=0 MTP_LAST=0 GDN_MANY=0 BEST_LANES=0 ATTN_LANES=0 LATE_SKIP=0 KEEP_INPASS=0 LANE_REUSE=0 HEAD2=0 R9=0 R10=0 R11=0 KV=fp8] in 208 s; MemAvailable 39 GiB; GPU MiB 78217; image pico-dgx-qwen38-tf:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoi
+env knobs: 44 -> TF_FLASHNEXT_Q38_CACHE_ELASTIC=0 TF_FLASHNEXT_Q38_CERT=0 TF_FLASHNEXT_Q38_LANE_REUSE=0 TF_FLASHNEXT_Q38_WINDOW_ROWS=16 
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 75.92 GiB; 5 streams at once, 4.85 GiB each at a 262144-token window (fp8 caches), of 30.9 GiB left after a 9.0 GiB reserve; prompts in passes of up to 3072 rows, a 6.6 GiB prompt cache; own glue kernels
+info: prompt cache: 16 tokens, resumed at 0, kept 2; 2 states, 220 MiB and 0 MiB spare of 6785 MiB (hits 0, misses 1, evicted 0, refused 0, failed 0)
+image 14204217aee6
+| 5 agents x 6 turns, system 56000 (0 shared), tool results 300-2000 turn | ok | prompt tok | resumed tok | new tok | first token s med / max |
+| 0 | 5 | 52048 | 0 | 52048 | 88.05 / 140.77 |
+| 1 | 5 | 52811 | 0 | 52811 | 55.51 / 126.08 |
+| 2 | 5 | 54466 | 0 | 53201 | 29.80 / 70.66 |
+| 3 | 5 | 55630 | 54459 | 1171 | 10.87 / 47.80 |
+| 4 | 5 | 56544 | 54698 | 1195 | 11.29 / 109.41 |
+| 5 | 5 | 57258 | 55372 | 940 | 7.70 / 50.69 |
+5 agents x 6 turns, system 56000 (0 shared), tool results 300-2000: 30/30 ok; follow-ups 25, resumed (over half the prompt from the cache) 15; cached share of follow-up prompt tokens 59.5 %; follow-up first token median 11.59 s max 126.08 s; sum of first-token waits 1234.8 s
+wall 373.0 s
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 75.92 GiB; 5 streams at once, 4.85 GiB each at a 262144-token window (fp8 caches), of 30.9 GiB left after a 9.0 GiB reserve; prompts in passes of up to 3072 rows, a 6.6 GiB prompt cache; own glue kernels
+info: prompt cache: 57882 tokens, resumed at 57412, kept 1; 6 states, 6668 MiB and 0 MiB spare of 6785 MiB (hits 15, misses 16, evicted 81, refused 0, failed 0)
+MemAvailable GiB 33
+crash lines: 0
+N_agmia5 done 11:00:24
+wN [agmia5] done 11:00:24

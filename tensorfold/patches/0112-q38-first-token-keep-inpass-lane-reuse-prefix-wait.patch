@@ -1,0 +1,985 @@
+diff --git a/zig/src/core/lane_host.zig b/zig/src/core/lane_host.zig
+index c5994d7..39dd3f7 100644
+--- a/zig/src/core/lane_host.zig
++++ b/zig/src/core/lane_host.zig
+@@ -77,6 +77,14 @@ pub const LaneHost = struct {
+     rounds: ?Rounds = null,
+     pieces: std.ArrayList(Rounds.Piece) = .empty,
+     finals: std.ArrayList(usize) = .empty,
++    prefix: @import("lane_host_prefix.zig").Wait = .{}, // a request's wait for a cut another prompt is filling (q38: from main, #1321)
++
++    var q38_plog: i8 = -1;
++    /// TF_FLASHNEXT_Q38_PLOG=1 (q38 measuring aid): a line a prompt pass with its queue and fill times.
++    pub fn q38Plog() bool {
++        if (q38_plog < 0) q38_plog = if (std.c.getenv("TF_FLASHNEXT_Q38_PLOG")) |v| @intFromBool(v[0] == '1') else 0;
++        return q38_plog == 1;
++    }
+ 
+     pub const ThreadInit = struct { ctx: *anyopaque, run: *const fn (ctx: *anyopaque) anyerror!void };
+ 
+@@ -85,7 +93,7 @@ pub const LaneHost = struct {
+     pub const Job = @import("lane_job.zig").Job;
+ 
+     pub fn init(gpa: Allocator, io: std.Io, core: *lanes.Engine, info_: Info) LaneHost {
+-        return .{ .gpa = gpa, .io = io, .core = core, .info_ = info_.ofLanes() };
++        return .{ .gpa = gpa, .io = io, .core = core, .info_ = info_.ofLanes(), .prefix = .fromEnv() };
+     }
+ 
+     pub fn start(h: *LaneHost) !void {
+@@ -413,6 +421,7 @@ pub const LaneHost = struct {
+         h.unlock();
+         rows_host.prefilled(h, job.request.prompt.len - job.stream.cached, done - began);
+         job.reported();
++        if (q38Plog()) std.debug.print("q38 plog host plen={d} cached={d} marks={d} queued_ms={d:.2} fill_ms={d:.2} t={d:.1}\n", .{ job.request.prompt.len, job.stream.cached, job.marks.len, @as(f64, @floatFromInt(began - job.submitted)) / 1e6, @as(f64, @floatFromInt(done - began)) / 1e6, @as(f64, @floatFromInt(done)) / 1e6 });
+         if (h.cache) |store| store.report(job.request.prompt.len, job.stream.cached, store.counts.kept - job.kept0);
+         emit(job, .{ .prefilled = job.stream.cached });
+         if (job.stream.prompt_logprobs != null) emit(job, .{ .prompt_logprobs = job.stream.prompt_rows.items });
+@@ -480,6 +489,7 @@ pub const LaneHost = struct {
+         job.started = false;
+         job.fill_began = false;
+         job.entry = null; // looked up again at its next admission
++        job.reached = 0;
+         h.gpa.free(job.marks);
+         job.marks = &.{};
+         h.gpa.free(job.key);
+@@ -561,7 +571,7 @@ pub const LaneHost = struct {
+                     continue;
+                 }
+                 if (rows_host.idle(h)) continue;
+-                if (h.cancels.items.len == 0 and (h.queued.items.len == 0 or h.admitted.items.len >= h.info_.lanes))
++                if (h.cancels.items.len == 0 and (h.queued.items.len == 0 or h.admitted.items.len >= h.info_.lanes or admit.holds(h)))
+                     h.wake.waitTimeout(h.io, &h.mutex, .{ .duration = .{ .raw = .fromMilliseconds(100), .clock = .awake } }) catch {};
+                 h.unlock();
+                 continue;
+diff --git a/zig/src/core/lane_host_admit.zig b/zig/src/core/lane_host_admit.zig
+index af9d897..8a340f7 100644
+--- a/zig/src/core/lane_host_admit.zig
++++ b/zig/src/core/lane_host_admit.zig
+@@ -3,22 +3,43 @@ const api = @import("engine_api.zig");
+ const LaneHost = @import("lane_host.zig").LaneHost;
+ const Job = LaneHost.Job;
+ const lanes = @import("lanes");
++const prefix = @import("lane_host_prefix.zig");
+ 
+ /// The queued job to admit (its index), or null to hold; the caller holds the lock and a lane is free.
++/// q38 (from main, #1321): a request that waits for a cut another prompt is filling stays queued, passed over.
+ pub fn pick(h: *LaneHost) ?usize {
+-    const a = h.info_.admit orelse return 0;
+-    if (!a.always and h.core.activeCount() == 0) return 0; // alone: the whole pool is free (kept prefixes give their blocks back)
+-    const head = h.queued.items[0];
+-    if (fits(a, head)) return 0;
++    prefix.release(h); // requests whose awaited cut is in (or will not come) go on first
++    const first = free(h, 0) orelse return null;
++    const a = h.info_.admit orelse return first;
++    if (!a.always and h.core.activeCount() == 0) return first; // alone: the whole pool is free (kept prefixes give their blocks back)
++    const head = h.queued.items[first];
++    if (fits(a, head)) return first;
+     if (head.waits_since == null) head.waits_since = h.admissions;
+     // it waits on the streams admitted before it waited: while one runs, later requests that fit go first; then none do
+     for (h.admitted.items) |j| if (j.seq < head.waits_since.?) {
+-        for (h.queued.items[1..], 1..) |j2, i| if (fits(a, j2)) return i;
++        var at = first + 1;
++        while (free(h, at)) |i| : (at = i + 1) if (fits(a, h.queued.items[i])) return i;
+         return null;
+     };
+     return null;
+ }
+ 
++/// The first queued job from `from` on that does not wait for another fill's cut (a job is asked before the pool counts its room).
++fn free(h: *LaneHost, from: usize) ?usize {
++    if (from >= h.queued.items.len) return null;
++    for (h.queued.items[from..], from..) |j, i| {
++        if (prefix.waiting(j) or prefix.waits(h, j)) continue;
++        return i;
++    }
++    return null;
++}
++
++/// Whether every queued request waits for a cut: an idle engine sleeps (lock held).
++pub fn holds(h: *LaneHost) bool {
++    for (h.queued.items) |j| if (!prefix.waiting(j)) return false;
++    return h.queued.items.len > 0;
++}
++
+ fn fits(a: api.Admit, job: *const Job) bool {
+     return a.fits(a.ctx, @intCast(job.request.prompt.len), job.request.max_tokens);
+ }
+diff --git a/zig/src/core/lane_host_prefix.zig b/zig/src/core/lane_host_prefix.zig
+new file mode 100644
+index 0000000..e96e180
+--- /dev/null
++++ b/zig/src/core/lane_host_prefix.zig
+@@ -0,0 +1,105 @@
++//! The prefix wait: a request whose prompt shares a cut another prompt is filling waits for that fill to keep it.
++//! q38: ported from TensorFold main (#1321, lane_host_prefix.zig). Here the wait is OFF unless TENSORFOLD_PREFIX_WAIT_MS is set
++//! (upstream: 60000 by default), so an unset environment runs as before.
++const std = @import("std");
++const api = @import("engine_api.zig");
++const LaneHost = @import("lane_host.zig").LaneHost;
++const Job = LaneHost.Job;
++
++/// A queued request's wait for `leader` (a filling job, while it is still named `id`) to stand at `at`, from `since`.
++pub const Waiting = struct { leader: ?*const Job = null, id: api.Id = 0, at: u32 = 0, since: i96 = 0, waited: bool = false };
++
++/// The wait's bound (TENSORFOLD_PREFIX_WAIT_MS, 0: off) and what it did.
++pub const Wait = struct {
++    ns: i96 = 0,
++    waits: u64 = 0, // requests that waited for another fill's cut
++    timeouts: u64 = 0, // of them, released at the bound with the cut not reached
++
++    pub const default_ms: u32 = 60_000;
++
++    pub fn fromEnv() Wait {
++        return fromText(std.mem.span(std.c.getenv("TENSORFOLD_PREFIX_WAIT_MS") orelse return .{}));
++    }
++
++    /// A bound from its text: whole milliseconds, 0 off; anything else is the default.
++    pub fn fromText(text: []const u8) Wait {
++        const t = std.mem.trim(u8, text, " \t");
++        if (t.len == 0 or t[0] < '0' or t[0] > '9') return .{ .ns = @as(i96, default_ms) * std.time.ns_per_ms };
++        const ms = std.fmt.parseInt(u32, t, 10) catch return .{ .ns = @as(i96, default_ms) * std.time.ns_per_ms };
++        return .{ .ns = @as(i96, ms) * std.time.ns_per_ms };
++    }
++};
++
++/// Whether queued `job` waits for another fill's cut (the lock held).
++pub fn waiting(job: *const Job) bool {
++    return job.prefix.leader != null;
++}
++
++/// Whether `job`, picked for a lane, waits instead: a fill short of a cut its lookup would resume (lock held).
++pub fn waits(h: *LaneHost, job: *Job) bool {
++    if (q38KnobFile("prefix_wait_ms")) |v| h.prefix.ns = @as(i96, v) * std.time.ns_per_ms; // q38 measuring aid: switched while running
++    if (job.prefix.waited or h.prefix.ns <= 0 or !h.core.fills()) return false; // a request waits once: no cycle
++    const store = h.cache orelse return false;
++    const r = job.request;
++    if (!keyed(r)) return false;
++    const spans = h.spans(r);
++    const have: u32 = if (store.find(r.cacheKey(), r.chunks, spans)) |e| e.at else 0;
++    const least = have +| @max(store.rules.min_gap, 1); // a cut this far past what is kept already
++    var best: Waiting = .{};
++    for (h.filling.items) |l| { // admitted fills never wait, so the oldest always runs
++        if (!l.started or l.prefilled != null or l.request.background or !keyed(l.request)) continue;
++        for (l.marks) |at| {
++            if (at <= l.reached or at < least or at <= best.at) continue;
++            if (store.wouldServe(r.cacheKey(), r.chunks, spans, l.request.cacheKey(), h.spans(l.request), at))
++                best = .{ .leader = l, .id = l.id, .at = at };
++        }
++    }
++    if (best.leader == null) return false;
++    best.since = std.Io.Clock.awake.now(h.io).toNanoseconds();
++    best.waited = true;
++    job.prefix = best;
++    h.prefix.waits += 1;
++    if (LaneHost.q38Plog()) std.debug.print("q38 plog prefix-wait plen={d} have={d} waits for cut {d} of a {d}-token fill (reached {d})\n", .{ r.prompt.len, have, best.at, best.leader.?.request.prompt.len, best.leader.?.reached });
++    return true;
++}
++
++/// A request whose states the cache keys by its tokens alone, as the host's lookup does (no pictures).
++fn keyed(r: *const api.Request) bool {
++    return r.embedding == null and r.prompt_logprobs == null and !r.untaught and r.images.len == 0 and r.cacheKey().len > 0;
++}
++
++/// Waiting requests go on in queue order: their fill stood at the cut, left the fills, or the bound passed (lock held).
++pub fn release(h: *LaneHost) void {
++    var now: ?i96 = null;
++    for (h.queued.items) |job| {
++        const w = job.prefix;
++        const leader = w.leader orelse continue;
++        const live = for (h.filling.items) |l| {
++            if (l == leader and l.id == w.id) break l; // the same job, not a later one at its address
++        } else null;
++        if (live) |l| if (l.reached < w.at and l.prefilled == null) {
++            const t = now orelse std.Io.Clock.awake.now(h.io).toNanoseconds();
++            now = t;
++            if (t - w.since < h.prefix.ns) continue;
++            h.prefix.timeouts += 1;
++        };
++        job.prefix.leader = null;
++    }
++}
++
++/// TF_FLASHNEXT_Q38_KNOBFILE=path (q38 measuring aid, off unless set): a small text file of `name=value` words, read again at every
++/// use, so one running engine can be switched between a lever's settings for paired timing. null: no file, or no such name.
++fn q38KnobFile(name: []const u8) ?i64 {
++    const path = std.c.getenv("TF_FLASHNEXT_Q38_KNOBFILE") orelse return null;
++    const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, @as(std.c.mode_t, 0));
++    if (fd < 0) return null;
++    defer _ = std.c.close(fd);
++    var buf: [256]u8 = undefined;
++    const n = std.c.pread(fd, &buf, buf.len, 0);
++    if (n <= 0) return null;
++    var it = std.mem.tokenizeAny(u8, buf[0..@intCast(n)], "\n \t");
++    while (it.next()) |w| {
++        if (w.len > name.len + 1 and std.mem.startsWith(u8, w, name) and w[name.len] == '=') return std.fmt.parseInt(i64, w[name.len + 1 ..], 10) catch null;
++    }
++    return null;
++}
+diff --git a/zig/src/core/lane_job.zig b/zig/src/core/lane_job.zig
+index 89fc701..85eec23 100644
+--- a/zig/src/core/lane_job.zig
++++ b/zig/src/core/lane_job.zig
+@@ -36,6 +36,8 @@ pub const Job = struct {
+     kept0: u64 = 0, // the store's kept count when the job looked it up
+     seq: u64 = 0, // its admission's number
+     waits_since: ?u64 = null, // the admissions count when it first waited at the head for pool room
++    reached: u32 = 0, // the furthest mark its prompt pass has stood at, kept or not (q38: from main, #1321)
++    prefix: @import("lane_host_prefix.zig").Waiting = .{}, // its wait for another fill's cut, while queued
+ 
+     /// Record first admission once, including a family planner and a background pass that later yields.
+     pub fn noteAdmission(job: *Job) void {
+@@ -50,6 +52,7 @@ pub const Job = struct {
+     /// The backend's prompt pass stands at a mark: the cache keeps the stream's state there.
+     pub fn kept(ptr: *anyopaque, s: *lanes.Stream, at: u32) void {
+         const job: *Job = @ptrCast(@alignCast(ptr));
++        job.reached = @max(job.reached, at); // a request waiting for this cut goes on, whether the store keeps it or not
+         job.reported(); // before a keep can evict the entry the pass restored
+         if (job.host.cache) |store| _ = store.keepBorn(job.cacheKey(), job.request.bornLen(), at, s, job.request.chunks, job.host.spans(job.request));
+     }
+diff --git a/zig/src/core/prompt_cache.zig b/zig/src/core/prompt_cache.zig
+index 1bc158b..dd60665 100644
+--- a/zig/src/core/prompt_cache.zig
++++ b/zig/src/core/prompt_cache.zig
+@@ -234,6 +234,13 @@ pub const Store = struct {
+         return best;
+     }
+ 
++    /// Whether the state another pass keeps at `at` of `kept` (`kept_spans`) would serve `prompt` as `find` does (q38: from main, #1321).
++    pub fn wouldServe(s: *const Store, prompt: []const u32, starts: []const u32, spans: []const modes.Span, kept: []const u32, kept_spans: []const modes.Span, at: u32) bool {
++        const n = @as(usize, at) + s.rules.lookahead;
++        if (at >= prompt.len or n > prompt.len or n > kept.len or !s.usable(at, starts)) return false;
++        return std.mem.eql(u32, prompt[0..n], kept[0..n]) and modes.equal(kept_spans, spans, at);
++    }
++
+     /// Find a kept token prefix with matching canonical spans through its position, leaving at least one row.
+     pub fn find(s: *Store, prompt: []const u32, starts: []const u32, spans: []const modes.Span) ?*Entry {
+         var best: ?*Entry = null;
+diff --git a/zig/src/core/prompt_cache_policy.zig b/zig/src/core/prompt_cache_policy.zig
+index fb07e97..6205d6b 100644
+--- a/zig/src/core/prompt_cache_policy.zig
++++ b/zig/src/core/prompt_cache_policy.zig
+@@ -10,6 +10,15 @@ pub fn victimBut(s: *const pc.Store, skip: ?*pc.Entry, prompt: []const u32, born
+         if ((now or extended(s, e)) and (best == null or e.used < s.entries.items[best.?].used)) best = i;
+     }
+     if (best) |i| return i;
++    // q38 (TF_FLASHNEXT_Q38_CACHE_SIBLINGS=1): next, a state that a LATER mark of the same request extends (one long prompt keeps
++    // several marks, each a whole copy; without this they push other conversations' only states out before one of their own)
++    if (q38Siblings()) {
++        for (s.entries.items, 0..) |e, i| {
++            if (e.borrowers > 0 or e.shared or e.branched or e == skip or isActiveRewind(s, e, prompt)) continue;
++            if (sibling(s, e) and (best == null or e.used < s.entries.items[best.?].used)) best = i;
++        }
++        if (best) |i| return i;
++    }
+     var oldest: ?usize = null;
+     for (s.entries.items, 0..) |e, i| if (e.borrowers == 0 and e != skip and (oldest == null or before(s, e, s.entries.items[oldest.?], prompt))) {
+         oldest = i;
+@@ -33,3 +42,17 @@ fn before(s: *const pc.Store, e: *const pc.Entry, o: *const pc.Entry, prompt: []
+ fn isActiveRewind(s: *const pc.Store, e: *const pc.Entry, prompt: []const u32) bool {
+     return !e.expired and e.at == s.active_rewind_at and e.tokens.len <= prompt.len and std.mem.eql(u32, e.tokens, prompt[0..e.tokens.len]);
+ }
++
++var q38_siblings: i8 = -1;
++/// TF_FLASHNEXT_Q38_CACHE_SIBLINGS=1 (q38; default off): eviction takes a prompt's earlier marks before any conversation's newest state.
++pub fn q38Siblings() bool {
++    if (q38_siblings < 0) q38_siblings = if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_SIBLINGS")) |v| @intFromBool(v[0] == '1') else 0;
++    return q38_siblings == 1;
++}
++
++/// q38: a later mark kept by the same request (the same prompt length at its keep) holds this state's tokens and more.
++fn sibling(s: *const pc.Store, e: *const pc.Entry) bool {
++    for (s.entries.items) |o| if (!o.expired and o != e and o.born == e.born and o.tokens.len > e.tokens.len and
++        std.mem.eql(u32, o.tokens[0..e.tokens.len], e.tokens)) return true;
++    return false;
++}
+diff --git a/zig/src/families/flashnext/cuda_batch.zig b/zig/src/families/flashnext/cuda_batch.zig
+index 1dc3a1c..d42e214 100644
+--- a/zig/src/families/flashnext/cuda_batch.zig
++++ b/zig/src/families/flashnext/cuda_batch.zig
+@@ -77,6 +77,7 @@ pub const Span = parts.Span;
+ pub const MoeAdd = parts.MoeAdd;
+ pub const pocket_stride = parts.pocket_stride;
+ pub const Hooks = parts.Hooks;
++pub const Mark = parts.Mark;
+ pub const Kernels = parts.Kernels;
+ pub const Scratch = parts.Scratch;
+ pub const SeqState = parts.SeqState;
+@@ -118,8 +119,8 @@ pub const Gprof = struct {
+     var total: u64 = 0;
+ 
+     pub fn on() bool {
+-        if (state < 0) state = if (std.c.getenv("TF_FLASHNEXT_Q38_GPROF")) |v| @intFromBool(v[0] == '1') else 0;
+-        return state == 1;
++        if (state < 0) state = if (std.c.getenv("TF_FLASHNEXT_Q38_GPROF")) |v| (if (v[0] == '1') @as(i8, 1) else if (v[0] == '2') @as(i8, 2) else 0) else 0;
++        return state >= 1;
+     }
+ 
+     /// An event in the stream here: the time since the last mark belongs to group `id` (255: the pass starts).
+@@ -146,10 +147,19 @@ pub const Gprof = struct {
+         const d = st.d;
+         d.check(d.api.cuEventSynchronize(evs[n - 1]), "cuEventSynchronize") catch return;
+         const b: usize = if (pass_rows == 1) 0 else if (pass_rows <= 8) 1 else 2;
++        var one: [groups.len]f64 = @splat(0);
+         for (1..n) |i| {
+             var ms: f32 = 0;
+             d.check(d.api.cuEventElapsedTime(&ms, evs[i - 1], evs[i]), "cuEventElapsedTime") catch continue;
+             sums[b][ids[i]] += ms;
++            one[ids[i]] += ms;
++        }
++        if (state == 2 and pass_rows >= 33) { // TF_FLASHNEXT_Q38_GPROF=2: also every pass of more than 32 rows (prompt chunks) by itself
++            var all1: f64 = 0;
++            for (one) |v| all1 += v;
++            std.debug.print("q38 gprof pass rows={d} ms={d:.2}:", .{ pass_rows, all1 });
++            for (groups, one) |name, v| std.debug.print(" {s} {d:.2}", .{ name, v });
++            std.debug.print("\n", .{});
+         }
+         passes[b] += 1;
+         rows[b] += pass_rows;
+@@ -364,6 +374,10 @@ pub fn Pass(comptime Tri: type) type {
+             try self.tri.pleGate(s.ple_keys, s.ple_vals, s.h, lw.nk.ptr, lw.nq.ptr, s.ple_gated, s.ple_pss, eps, n, dims, streams);
+             if (self.lanes.len == 0) {
+                 try self.tri.pleConv(s.ple_gated, s.ple_pss, lw.nc.ptr, self.seq.tail.ptr, lw.ple_cw.ptr, s.h, s.h, s.ple_nrow, eps, n, dims, streams, 4, 3);
++                if (self.markRow()) |mk| { // q38: the mark's n-gram tail = the window before the pass moved on by the mark's rows
++                    try self.copy(self.hooks.mark.tail, self.seq.tail.ptr, self.hooks.mark.tail_bytes);
++                    try self.shiftWindow(self.hooks.mark.tail, s.ple_nrow, wide, mk, ple_tail_n, wide);
++                }
+                 try self.shiftWindow(self.seq.tail.ptr, s.ple_nrow, wide, n, ple_tail_n, wide);
+                 return;
+             }
+@@ -377,6 +391,26 @@ pub fn Pass(comptime Tri: type) type {
+             }
+         }
+ 
++        /// q38: one segment of a lone pass's DeltaNet layer as a lone chunk of `rows` rows runs it: the fused kernel from 64 rows
++        /// (unless TF_FLASHNEXT_GDN_FUSED=0), else front, chain and gated norm; state in place, out and xs at the segment's rows.
++        fn gdnSegment(self: *Self, lw: *const Layer, proj: u64, conv: u64, st: u64, rows: usize, out: u64, xs: u64) !void {
++            const s = self.s;
++            if (rows >= 64 and gdn_fused.on()) {
++                const in: gdn_fused.In = .{ .proj = proj, .conv = conv, .cw = lw.cw.ptr, .a_log = lw.a_log.ptr, .dt = lw.dt.ptr, .state = st, .state_out = st, .norm = lw.norm.ptr };
++                return gdn_fused.launch(self.k.gdn_fused, self.stream, in, rows, out, xs);
++            }
++            try self.gdnFront(lw, proj, conv, rows, s.gq, s.gk, s.gv, s.ggb);
++            try self.gdnChain(s.gq, s.gk, s.gv, s.ggb, st, 0, rows, s.ys);
++            try gdn_fused.norm(self.k.gnorm, self.stream, s.ys, proj, lw.norm.ptr, out, xs, rows);
++        }
++
++        /// q38 (TF_FLASHNEXT_Q38_KEEP_INPASS): the rows before a prompt-cache mark inside this lone prompt pass; null: none.
++        pub fn markRow(self: *const Self) ?usize {
++            const mk = self.hooks.mark.row;
++            if (mk == 0 or mk >= self.rows or self.lanes.len != 0 or self.hooks.keep != null) return null;
++            return mk;
++        }
++
+         pub fn gdnBlock(self: *Self, lw: *const Layer, layer: usize, li: usize, keep: LayerKeep) !void {
+             const s = self.s;
+             const n = self.rows;
+@@ -387,7 +421,8 @@ pub fn Pass(comptime Tri: type) type {
+                 try self.copy(keep.hist, self.seq.conv[li].ptr, (gdn.taps - 1) * gdn.conv_dim * 2);
+             }
+             // every row's conv, norms and gates, the recurrence, then the gated norm: the one-block chain's bits
+-            const fused = self.lanes.len == 0 and n >= 64 and gdn_fused.on() and keep.log_k == 0;
++            const mk_row = self.markRow(); // q38: a mark inside this pass: the layer runs as two segments
++            const fused = self.lanes.len == 0 and n >= 64 and gdn_fused.on() and keep.log_k == 0 and mk_row == null;
+             if (keep.log_k != 0 and self.lanes.len == 0) {
+                 // the window's rows go after the rows its log holds, which the chain takes first (TF_FLASHNEXT_KEEP_LATE)
+                 const np: usize = if (self.hooks.keep) |kp| kp.pend else 0;
+@@ -399,6 +434,19 @@ pub fn Pass(comptime Tri: type) type {
+                 const st = self.seq.state[li].ptr;
+                 const in: gdn_fused.In = .{ .proj = s.proj, .conv = self.seq.conv[li].ptr, .cw = lw.cw.ptr, .a_log = lw.a_log.ptr, .dt = lw.dt.ptr, .state = st, .state_out = if (keep.state_out != 0) keep.state_out else st, .norm = lw.norm.ptr };
+                 try gdn_fused.launch(self.k.gdn_fused, self.stream, in, n, s.gout, s.gxs);
++            } else if (mk_row) |mk| {
++                // q38 (TF_FLASHNEXT_Q38_KEEP_INPASS): the rows before the mark and the rows after it as the cut pass's two chunks run
++                // them (each segment the fused kernel from 64 rows, else front + chain + norm), on the same inputs: the state after
++                // the first segment is copied to the mark's kept state, and the second segment's conv window is the mark's (the
++                // window before the pass moved on by the mark's rows), which is what the cut pass's second chunk reads
++                const st = self.seq.state[li].ptr;
++                const hm = self.hooks.mark;
++                const win = hm.conv + li * hm.conv_bytes;
++                try self.gdnSegment(lw, s.proj, self.seq.conv[li].ptr, st, mk, s.gout, s.gxs);
++                try self.copy(hm.state + li * hm.state_bytes, st, hm.state_bytes);
++                try self.copy(win, self.seq.conv[li].ptr, hm.conv_bytes);
++                try self.shiftWindow(win, s.proj, gdn.proj_width, mk, gdn.taps - 1, gdn.conv_dim);
++                try self.gdnSegment(lw, s.proj + mk * gdn.proj_width * 2, win, st, n - mk, s.gout + mk * gdn.value_dim * 2, s.gxs + mk * (gdn.value_dim / 32) * 4);
+             } else if (self.lanes.len == 0) {
+                 try self.gdnFront(lw, s.proj, self.seq.conv[li].ptr, n, s.gq, s.gk, s.gv, s.ggb);
+                 try self.gdnChain(s.gq, s.gk, s.gv, s.ggb, self.seq.state[li].ptr, keep.state_out, n, s.ys);
+@@ -429,7 +477,7 @@ pub fn Pass(comptime Tri: type) type {
+                     row0 += l.rows;
+                 }
+             }
+-            if (!fused) try gdn_fused.norm(self.k.gnorm, self.stream, s.ys, s.proj, lw.norm.ptr, s.gout, s.gxs, n);
++            if (!fused and mk_row == null) try gdn_fused.norm(self.k.gnorm, self.stream, s.ys, s.proj, lw.norm.ptr, s.gout, s.gxs, n);
+             if (self.lanes.len == 0) try self.shiftWindow(self.seq.conv[li].ptr, s.proj, gdn.proj_width, n, gdn.taps - 1, gdn.conv_dim);
+             self.out_slices = try self.lane(s.gout, s.gxs, lw.out, s.dummy, s.part, n, out_sk);
+         }
+diff --git a/zig/src/families/flashnext/cuda_batch_state.zig b/zig/src/families/flashnext/cuda_batch_state.zig
+index 5491e11..57daceb 100644
+--- a/zig/src/families/flashnext/cuda_batch_state.zig
++++ b/zig/src/families/flashnext/cuda_batch_state.zig
+@@ -149,8 +149,14 @@ pub const Hooks = struct {
+     streams: u64 = 0,
+     /// A training pass's adds to each layer's MoE output, in place of the model's own (Model.pocket).
+     moe_add: ?MoeAdd = null,
++    /// q38 (TF_FLASHNEXT_Q38_KEEP_INPASS): a prompt-cache mark inside this lone pass; row 0: none.
++    mark: Mark = .{},
+ };
+ 
++/// q38: a prompt-cache mark `row` rows into a lone prompt pass, and where its kept state's fixed pieces go on the device:
++/// `conv` and `state` (one piece a DeltaNet layer, in order), `tail` (the n-gram tail window).
++pub const Mark = struct { row: usize = 0, conv: u64 = 0, state: u64 = 0, tail: u64 = 0, conv_bytes: usize = 0, state_bytes: usize = 0, tail_bytes: usize = 0 };
++
+ /// The kernels the pass launches besides the captured Triton ones, loaded once.
+ pub const Kernels = struct {
+     qmm: cuda.Module,
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index b658c22..48f4d6b 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -151,6 +151,57 @@ pub fn lhash() bool {
+     return lhash_cache == 1;
+ }
+ 
++var plog_cache: i8 = -1;
++/// TF_FLASHNEXT_Q38_PLOG=1 (q38 measuring aid; values never change): one line a prompt chunk (rows, wall ms of the chunk with a
++/// wait for the GPU at its end, ms of the cache keep after it) and one at a lane's opening and at its first token.
++pub fn plog() bool {
++    if (plog_cache < 0) plog_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_PLOG")) |v| @intFromBool(v[0] == '1') else 0;
++    return plog_cache == 1;
++}
++
++/// TF_FLASHNEXT_Q38_KNOBFILE=path (q38 measuring aid, off unless set): a small text file of `name=value` words, read again at every
++/// use, so one running engine can be switched between a lever's settings for paired timing. null: no file, or no such name.
++pub fn q38KnobFile(name: []const u8) ?i64 {
++    const path = std.c.getenv("TF_FLASHNEXT_Q38_KNOBFILE") orelse return null;
++    const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, @as(std.c.mode_t, 0));
++    if (fd < 0) return null;
++    defer _ = std.c.close(fd);
++    var buf: [256]u8 = undefined;
++    const n = std.c.pread(fd, &buf, buf.len, 0);
++    if (n <= 0) return null;
++    var it = std.mem.tokenizeAny(u8, buf[0..@intCast(n)], "\n \t");
++    while (it.next()) |w| {
++        if (w.len > name.len + 1 and std.mem.startsWith(u8, w, name) and w[name.len] == '=') return std.fmt.parseInt(i64, w[name.len + 1 ..], 10) catch null;
++    }
++    return null;
++}
++
++var keep_inpass_cache: i64 = -1;
++/// TF_FLASHNEXT_Q38_KEEP_INPASS=N (q38; default 0: off): a prompt-cache mark INSIDE a lone prompt pass of at most N rows no longer
++/// cuts the pass there. The pass runs through; the mark's kept state is filled on the way: each DeltaNet layer's recurrence is
++/// launched over the rows before the mark, its state copied, then over the rest (the kernels and bytes of the cut pass's two
++/// chunks); the conv windows and the n-gram tail are the pre-pass windows moved on by the mark's rows; the attention caches' first
++/// rows are copied after the pass. A new short prompt then costs one pass instead of two (upstream TensorFold #1866 has the same
++/// idea inside its fused DeltaNet kernel; this is our own form on this tree's kernels).
++pub fn q38KeepInpass() usize {
++    if (q38KnobFile("keep_inpass")) |v| return @intCast(@max(0, v));
++    if (keep_inpass_cache < 0) keep_inpass_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_KEEP_INPASS")) |e| (std.fmt.parseInt(i64, std.mem.span(e), 10) catch 0) else 0;
++    return @intCast(@max(0, keep_inpass_cache));
++}
++
++var lane_reuse_cache: i64 = -1;
++/// TF_FLASHNEXT_Q38_LANE_REUSE=N (q38; default 0: off; at most 16): a released stream's fixed-size device buffers are kept for the
++/// next stream instead of freed and allocated again: the sequence's 36 DeltaNet conv windows, 36 DeltaNet states and n-gram tail
++/// (73 allocations, 110 MiB) and the MTP draft head's ~45 buffers (rows, scores, rollback copies, 36 spare states) with its host
++/// array. Up to N idle sets wait (N = the streams served at once covers a burst); each is zero-filled on the compute stream before
++/// the stream's first pass, so a reused buffer reads as a fresh one did. A lane's opening goes from ~23 ms to under 1 ms on a GB10.
++/// (Upstream TensorFold reuses a lane's fixed parts as TF_FLASHNEXT_LANE_PARTS, #1763; this is our form on this tree.)
++pub fn q38LaneReuse() usize {
++    if (q38KnobFile("lane_reuse")) |v| return @intCast(@min(16, @max(0, v)));
++    if (lane_reuse_cache < 0) lane_reuse_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_LANE_REUSE")) |e| (std.fmt.parseInt(i64, std.mem.span(e), 10) catch 0) else 0;
++    return @intCast(@min(16, @max(0, lane_reuse_cache)));
++}
++
+ var pool_ctx_cache: i64 = -1;
+ /// TF_FLASHNEXT_Q38_POOL_CTX=N (q38; default 0: off): the streams' memory is a POOL of --parallel windows of N tokens instead of
+ /// --parallel windows of --context tokens. A stream allocates caches for its own prompt + max_tokens (as it always did), a request
+diff --git a/zig/src/families/flashnext/cuda_lanes.zig b/zig/src/families/flashnext/cuda_lanes.zig
+index 87711f3..4b1f76d 100644
+--- a/zig/src/families/flashnext/cuda_lanes.zig
++++ b/zig/src/families/flashnext/cuda_lanes.zig
+@@ -13,6 +13,7 @@ const ple_reader = @import("cuda_ple_reader.zig");
+ const planStop = @import("cuda_prompt_chunks.zig").planStop;
+ const round_costs = @import("cuda_round_costs.zig");
+ const snap = @import("cuda_snap.zig");
++const batch = @import("cuda_batch.zig");
+ const ranks = @import("cuda_rank_engine.zig");
+ const config = @import("cuda_config.zig");
+ const Glue = @import("cuda_glue.zig").Glue;
+@@ -137,6 +138,8 @@ pub fn Namespace(comptime Tri: type) type {
+             ahead_to: usize = 0,
+             /// q38: the device bytes this stream's caches took from the pool.
+             bytes: u64 = 0,
++            /// q38 (TF_FLASHNEXT_Q38_KEEP_INPASS): the state a pass filled at a mark inside it, until the cache takes it.
++            prepared: ?*snap.Snap = null,
+         };
+ 
+         const Ops = mtp.Ops(Tri);
+@@ -336,10 +339,13 @@ pub fn Namespace(comptime Tri: type) type {
+                         return error.LaneMemory; // the lane host puts the request back at the queue's head until a stream ends
+                     }
+                 }
++                const plog_on = @import("cuda_knobs.zig").plog();
++                const tp0: i64 = if (plog_on) plogUs(self) else 0;
+                 gop.value_ptr.* = .{ .seq = (if (self.ranks) |r| r.create(cap) else self.engine.newSeq(cap)) catch |err| {
+                     self.lanes.removeByPtr(gop.key_ptr);
+                     return err;
+                 } };
++                const tp1: i64 = if (plog_on) plogUs(self) else 0;
+                 const l = gop.value_ptr;
+                 l.bytes = pool_need;
+                 self.held_bytes += pool_need;
+@@ -349,6 +355,7 @@ pub fn Namespace(comptime Tri: type) type {
+                     self.lanes.removeByPtr(gop.key_ptr);
+                 }
+                 if (drafting) l.draft = try mtp.Draft.initFor(mtp.headFormat(self.engine.kv, cap, @min(self.context + mtp.max_rows, prompt.max_tokens), self.head.?.ids.len, self.engine.chunk), self.gpa, self.engine.driver, self.stream, cap, self.head.?.ids.len, self.engine.chunk);
++                if (plog_on) std.debug.print("q38 plog openparts cap={d} seq_ms={d:.2} draft_ms={d:.2}\n", .{ cap, @as(f64, @floatFromInt(tp1 - tp0)) / 1000.0, @as(f64, @floatFromInt(plogUs(self) - tp1)) / 1000.0 });
+                 if (s.images.len != 0) {
+                     const v = self.vision orelse return error.VisionNotEnabled;
+                     l.seq.media = try v.state(ids, s.images);
+@@ -397,18 +404,63 @@ pub fn Namespace(comptime Tri: type) type {
+                 const ids = s.prompt();
+                 const at = l.filled orelse return true;
+                 if (s.isCancelled()) return error.Cancelled;
+-                const stop = planStop(self.engine.chunk, ids.len, at, s.reuse.marks, ple_reader.prefillTail());
++                var stop = planStop(self.engine.chunk, ids.len, at, s.reuse.marks, ple_reader.prefillTail());
++                const plog = @import("cuda_knobs.zig").plog();
++                const t0: i64 = if (plog) plogUs(self) else 0;
++                // q38 (TF_FLASHNEXT_Q38_KEEP_INPASS): a mark that would cut this chunk short stays inside it when the uncut chunk
++                // is small enough; its kept state is filled on the way (one mark a pass: a second one cuts the pass as before)
++                var inpass: ?*snap.Snap = null;
++                var mkh: batch.Mark = .{};
++                const limit = @import("cuda_knobs.zig").q38KeepInpass();
++                if (limit > 0 and self.ranks == null and l.seq.media == null and s.reuse.hook != null and stop < ids.len) {
++                    if (std.mem.indexOfScalar(u32, s.reuse.marks, @intCast(stop))) |mi| {
++                        const whole = planStop(self.engine.chunk, ids.len, at, s.reuse.marks[mi + 1 ..], ple_reader.prefillTail());
++                        if (whole > stop and whole - at <= limit) {
++                            var hist = l.seq.history;
++                            for (ids[at..stop]) |t| {
++                                hist[0] = hist[1];
++                                hist[1] = t;
++                            }
++                            const p = try snap.prepare(self.gpa, self.engine.driver, &l.seq, if (l.draft) |*d| d else null, stop, hist);
++                            inpass = p;
++                            mkh = .{ .row = stop - at, .conv = snap.layout.convAt(p), .state = snap.layout.stateAt(p), .tail = snap.layout.tailAt(p), .conv_bytes = snap.layout.conv, .state_bytes = snap.layout.state, .tail_bytes = snap.layout.tail };
++                            stop = whole;
++                        }
++                    }
++                }
++                errdefer if (inpass) |p| snap.drop(self.gpa, self.stream, p);
+                 if (ple_reader.warmAhead()) self.warmNext(l, ids, at, stop);
+                 const last = stop == ids.len;
+                 if (l.draft) |*d| {
+-                    try self.ops().prefillChunk(&l.seq, d, ids, at, stop);
++                    try self.ops().prefillChunkMark(&l.seq, d, ids, at, stop, mkh);
+                 } else if (self.ranks) |r| {
+                     try r.forward(Tri, self.tri(), &l.seq, ids[at..stop], .{ .logits = if (last) .last else .none });
+-                } else try self.engine.forward(Tri, self.tri(), &l.seq, ids[at..stop], .{ .logits = if (last) .last else .none });
++                } else try self.engine.forward(Tri, self.tri(), &l.seq, ids[at..stop], .{ .logits = if (last) .last else .none, .mark = mkh });
+                 l.filled = if (last) null else stop;
+-                if (!last and std.mem.indexOfScalar(u32, s.reuse.marks, @intCast(stop)) != null) {
++                if (inpass) |p| {
++                    // the mark's attention rows, then the cache takes the state as it is (snapSave); a state the cache did not take is dropped
++                    try snap.finish(self.stream, &l.seq, if (l.draft) |*d| d else null, p);
++                    l.prepared = p;
++                    inpass = null;
++                    if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(p.at));
++                    if (l.prepared) |left| {
++                        snap.drop(self.gpa, self.stream, left);
++                        l.prepared = null;
++                    }
++                }
++                var t1: i64 = 0;
++                if (plog) {
++                    self.stream.synchronize() catch {};
++                    t1 = plogUs(self);
++                }
++                const cut = !last and std.mem.indexOfScalar(u32, s.reuse.marks, @intCast(stop)) != null;
++                if (cut) {
+                     if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(stop));
+                 }
++                if (plog) {
++                    const t2 = plogUs(self);
++                    std.debug.print("q38 plog chunk pid={x} plen={d} at={d} stop={d} rows={d} ms={d:.2} keep_ms={d:.2} cut={d} inpass={d} marks={d} t={d:.1}\n", .{ std.hash.Wyhash.hash(7, std.mem.sliceAsBytes(ids)) & 0xffffff, ids.len, at, stop, stop - at, @as(f64, @floatFromInt(t1 - t0)) / 1000.0, @as(f64, @floatFromInt(t2 - t1)) / 1000.0, @intFromBool(cut), mkh.row, s.reuse.marks.len, @as(f64, @floatFromInt(t2)) / 1000.0 });
++                }
+                 return last;
+             }
+         };
+@@ -485,16 +537,36 @@ pub fn Namespace(comptime Tri: type) type {
+             self.held_bytes -|= l.bytes;
+             l.bytes = 0;
+             if (l.draft) |*d| d.deinit();
+-            if (self.ranks) |r| r.drop(&l.seq) else l.seq.deinit(self.gpa);
++            if (self.ranks) |r| r.drop(&l.seq) else {
++                self.engine.giveFixed(&l.seq);
++                l.seq.deinit(self.gpa);
++            }
+         }
+ 
+         fn of(ptr: *anyopaque) *Cuda {
+             return @ptrCast(@alignCast(ptr));
+         }
+ 
++        /// q38 PLOG: microseconds on the awake clock.
++        fn plogUs(self: *Cuda) i64 {
++            return @intCast(@divTrunc(std.Io.Clock.awake.now(self.engine.io).toNanoseconds(), 1_000));
++        }
++
++        /// q38 PLOG: `open` with its time and what it resumed.
++        fn openLogged(self: *Cuda, s: *lanes.Stream) !*Lane {
++            if (!@import("cuda_knobs.zig").plog()) return self.open(s);
++            const t0 = plogUs(self);
++            const l = try self.open(s);
++            const t1 = plogUs(self);
++            std.debug.print("q38 plog open pid={x} plen={d} resumed={d} reuse_at={d} failed={d} marks={d} ms={d:.2} t={d:.1} first_marks:", .{ std.hash.Wyhash.hash(7, std.mem.sliceAsBytes(s.prompt())) & 0xffffff, s.prompt().len, s.cached, s.reuse.at, @intFromBool(s.reuse_failed), s.reuse.marks.len, @as(f64, @floatFromInt(t1 - t0)) / 1000.0, @as(f64, @floatFromInt(t1)) / 1000.0 });
++            for (s.reuse.marks[0..@min(s.reuse.marks.len, 12)]) |m| std.debug.print(" {d}", .{m});
++            std.debug.print("\n", .{});
++            return l;
++        }
++
+         fn prefillFn(ptr: *anyopaque, s: *lanes.Stream) anyerror!void {
+             const self = of(ptr);
+-            const l = try self.open(s);
++            const l = try openLogged(self, s);
+             while (!try self.step(s, l)) {}
+         }
+ 
+@@ -510,7 +582,7 @@ pub fn Namespace(comptime Tri: type) type {
+         /// One chunk of the stream's prompt between the other streams' rounds; the first call opens its caches.
+         fn prefillStepFn(ptr: *anyopaque, s: *lanes.Stream) anyerror!bool {
+             const self = of(ptr);
+-            const l = if (self.lanes.getPtr(s)) |x| (if (x.filled != null) x else try self.open(s)) else try self.open(s);
++            const l = if (self.lanes.getPtr(s)) |x| (if (x.filled != null) x else try openLogged(self, s)) else try openLogged(self, s);
+             return self.step(s, l);
+         }
+ 
+@@ -519,6 +591,13 @@ pub fn Namespace(comptime Tri: type) type {
+             const l = try self.lane(s);
+             if (l.filled != null or position != l.seq.fed) return error.PositionMismatch;
+             lhashPrint("first", s, l);
++            if (@import("cuda_knobs.zig").plog()) {
++                const t0 = plogUs(self);
++                const tok = try self.tokenAt(&l.seq, s, position, &.{});
++                const t1 = plogUs(self);
++                std.debug.print("q38 plog first pid={x} plen={d} ms={d:.2} t={d:.1}\n", .{ std.hash.Wyhash.hash(7, std.mem.sliceAsBytes(s.prompt())) & 0xffffff, s.prompt().len, @as(f64, @floatFromInt(t1 - t0)) / 1000.0, @as(f64, @floatFromInt(t1)) / 1000.0 });
++                return self.take(tok);
++            }
+             return self.take(try self.tokenAt(&l.seq, s, position, &.{}));
+         }
+ 
+@@ -716,6 +795,10 @@ pub fn Namespace(comptime Tri: type) type {
+             const self = of(ptr);
+             const s: *lanes.Stream = @ptrCast(@alignCast(owner orelse return error.NoStream));
+             const l = try self.lane(s);
++            if (l.prepared) |p| if (p.at == at) { // q38: the state its chunk filled on the way through the mark
++                l.prepared = null;
++                return p;
++            };
+             if (l.seq.fed != at) return error.NotAtMark;
+             if (self.ranks) |r| {
+                 if (l.draft != null) return error.TensorRankDraftSnapshotUnavailable;
+diff --git a/zig/src/families/flashnext/cuda_mtp_draft.zig b/zig/src/families/flashnext/cuda_mtp_draft.zig
+index 44ce5e4..a402230 100644
+--- a/zig/src/families/flashnext/cuda_mtp_draft.zig
++++ b/zig/src/families/flashnext/cuda_mtp_draft.zig
+@@ -158,24 +158,24 @@ pub const Draft = struct {
+         errdefer d.ikc.free();
+         d.pooled = try cuda.DeviceBuffer.alloc(driver, prompt.pooledBytes(cap));
+         errdefer d.pooled.free();
+-        d.streams = try cuda.DeviceBuffer.alloc(driver, d.rows_cap * wide * 2);
++        d.streams = try q38Take(driver, stream, d.rows_cap * wide * 2);
+         errdefer d.streams.free();
+-        d.out = try cuda.DeviceBuffer.alloc(driver, wide * 2);
++        d.out = try q38Take(driver, stream, wide * 2);
+         errdefer d.out.free();
+-        d.logits = try cuda.DeviceBuffer.alloc(driver, max_rows * vocab * 2);
++        d.logits = try q38Take(driver, stream, max_rows * vocab * 2);
+         errdefer d.logits.free();
+-        d.dlogits = try cuda.DeviceBuffer.alloc(driver, draft_n * 2);
++        d.dlogits = try q38Take(driver, stream, draft_n * 2);
+         errdefer d.dlogits.free();
+-        d.best = try cuda.DeviceBuffer.alloc(driver, max_rows * 16);
++        d.best = try q38Take(driver, stream, max_rows * 16);
+         errdefer d.best.free();
+-        d.saved = try cuda.DeviceBuffer.alloc(driver, saved_bytes);
++        d.saved = try q38Take(driver, stream, saved_bytes);
+         errdefer d.saved.free();
+         var made: usize = 0;
+         errdefer for (d.spare[0..made]) |*b| b.free();
+-        while (made < linear_n) : (made += 1) d.spare[made] = try cuda.DeviceBuffer.alloc(driver, state_n * 4);
+-        if (lateOn()) d.log = try cuda.DeviceBuffer.alloc(driver, linear_n * late_layer_bytes);
++        while (made < linear_n) : (made += 1) d.spare[made] = try q38Take(driver, stream, state_n * 4);
++        if (lateOn()) d.log = try q38Take(driver, stream, linear_n * late_layer_bytes);
+         errdefer if (d.log) |*b| b.free();
+-        d.host = try gpa.alloc(u16, @max(max_rows * vocab, draft_n));
++        d.host = try q38TakeHost(gpa, @max(max_rows * vocab, draft_n));
+         errdefer gpa.free(d.host);
+         errdefer cuda.completion.drain(driver, stream, "Flash Next draft fills did not drain before rollback");
+         // zeroed on the compute stream, ahead of the passes that read them
+@@ -226,16 +226,16 @@ pub const Draft = struct {
+ 
+     pub fn deinit(d: *Draft) void {
+         if (d.stream) |stream| cuda.completion.drain(stream.d, stream, "Flash Next draft work did not drain before release");
+-        d.gpa.free(d.host);
+-        for (&d.spare) |*b| b.free();
+-        if (d.log) |*b| b.free();
++        q38GiveHost(d.gpa, d.host);
++        for (&d.spare) |*b| q38Give(b);
++        if (d.log) |*b| q38Give(b);
+         if (d.conv_table) |*b| b.free();
+-        d.saved.free();
+-        d.best.free();
+-        d.dlogits.free();
+-        d.logits.free();
+-        d.out.free();
+-        d.streams.free();
++        q38Give(&d.saved);
++        q38Give(&d.best);
++        q38Give(&d.dlogits);
++        q38Give(&d.logits);
++        q38Give(&d.out);
++        q38Give(&d.streams);
+         d.pooled.free();
+         d.ikc.free();
+         d.vc.free();
+@@ -260,3 +260,54 @@ test "a head cache in fp8 takes 1,056 + 256 bytes a position, its pooled blocks
+     }
+     try std.testing.expectEqual(@as(usize, 1056 + 256), Draft.bytesFor(.fp8, 6, 1, 1) - Draft.bytesFor(.fp8, 5, 1, 1));
+ }
++
++// ---- q38 (TF_FLASHNEXT_Q38_LANE_REUSE=N): a released stream's fixed-size draft buffers wait here for the next stream ----
++// Each stream's Draft allocated ~45 fixed-size device buffers (the head's rows, scores, rollback copies, 36 spare DeltaNet states)
++// and one host array, and freed them at its end: 16 ms of every request's lane opening on a GB10. With the flag they are kept by
++// size (at most N streams' worth idle: N x `q38_set_bytes`) and handed to the next stream zero-filled on its compute stream, ahead
++// of every pass that reads them. Engine thread only. Off: allocated and freed as before.
++const q38_set_bytes: usize = 512 << 20;
++var q38_pool: [1024]?cuda.DeviceBuffer = @splat(null);
++var q38_pool_bytes: usize = 0;
++var q38_hosts: [16]?[]u16 = @splat(null);
++
++fn q38Take(driver: *cuda.Driver, stream: cuda.Stream, len: usize) !cuda.DeviceBuffer {
++    if (@import("cuda_knobs.zig").q38LaneReuse() > 0) for (&q38_pool) |*slot| if (slot.*) |b| {
++        if (b.len != len) continue;
++        slot.* = null;
++        q38_pool_bytes -= len;
++        var x = b;
++        errdefer x.free();
++        try x.fill8(0, stream.handle);
++        return x;
++    };
++    return cuda.DeviceBuffer.alloc(driver, len);
++}
++
++fn q38Give(b: *cuda.DeviceBuffer) void {
++    const sets = @import("cuda_knobs.zig").q38LaneReuse();
++    if (sets > 0 and q38_pool_bytes + b.len <= sets * q38_set_bytes) for (&q38_pool) |*slot| if (slot.* == null) {
++        slot.* = b.*;
++        q38_pool_bytes += b.len;
++        return;
++    };
++    b.free();
++}
++
++fn q38TakeHost(gpa: std.mem.Allocator, len: usize) ![]u16 {
++    if (@import("cuda_knobs.zig").q38LaneReuse() > 0) for (&q38_hosts) |*slot| if (slot.*) |h| {
++        if (h.len != len) continue;
++        slot.* = null;
++        return h;
++    };
++    return gpa.alloc(u16, len);
++}
++
++fn q38GiveHost(gpa: std.mem.Allocator, h: []u16) void {
++    const sets = @import("cuda_knobs.zig").q38LaneReuse();
++    for (q38_hosts[0..sets]) |*slot| if (slot.* == null) {
++        slot.* = h;
++        return;
++    };
++    gpa.free(h);
++}
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index dac4af1..e9cc382 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -112,12 +112,18 @@ pub fn Ops(comptime Tri: type) type {
+ 
+         /// Prompt rows [at, stop): the pass with its streams kept, then the head over each row with a known next token.
+         pub fn prefillChunk(o: Self, seq: *prompt.Seq, d: *Draft, ids: []const u32, at: usize, stop: usize) !void {
++            return o.prefillChunkMark(seq, d, ids, at, stop, .{});
++        }
++
++        /// q38: prefillChunk with a prompt-cache mark inside the chunk (TF_FLASHNEXT_Q38_KEEP_INPASS; one GPU only).
++        pub fn prefillChunkMark(o: Self, seq: *prompt.Seq, d: *Draft, ids: []const u32, at: usize, stop: usize, mark: batch.Mark) !void {
+             if (stop > d.cap or stop <= at or stop - at > d.rows_cap) return error.PromptTooLong;
+             if (seq.fed != at or d.len != at or d.drafted != 0) return error.PositionMismatch;
++            if (mark.row != 0 and o.main != null) return error.UnsupportedRankOperation;
+             d.media = if (seq.media) |*m| m.view() else null;
+             try o.flushLate(seq, d);
+             const last = stop == ids.len;
+-            try o.forwardMain(seq, ids[at..stop], .{ .logits = if (last) .last else .none, .streams = d.streams.ptr });
++            try o.forwardMain(seq, ids[at..stop], .{ .logits = if (last) .last else .none, .streams = d.streams.ptr, .mark = mark });
+             const head_to = @min(stop, ids.len - 1);
+             if (head_to > at) try o.forwardHeadPieces(d, ids[at + 1 .. head_to + 1], d.streams.ptr, false, knobs.headPiece());
+             if (last) d.prompt_last = d.streams.ptr + (stop - 1 - at) * wide * 2;
+diff --git a/zig/src/families/flashnext/cuda_prompt.zig b/zig/src/families/flashnext/cuda_prompt.zig
+index 5f6b023..14682b3 100644
+--- a/zig/src/families/flashnext/cuda_prompt.zig
++++ b/zig/src/families/flashnext/cuda_prompt.zig
+@@ -126,6 +126,9 @@ pub fn pooledBytes(cap: usize) usize {
+ const round_graph = @import("cuda_round_graph.zig");
+ 
+ /// One loaded checkpoint: the embedding table, every layer, the mixer and head, and the batched pass's scratch.
++/// q38: one stream's fixed-size device buffers (DeltaNet conv windows and states, the n-gram tail).
++pub const Fixed = struct { conv: []cuda.DeviceBuffer, state: []cuda.DeviceBuffer, tail: cuda.DeviceBuffer };
++
+ pub const Engine = struct {
+     gpa: std.mem.Allocator,
+     io: std.Io,
+@@ -149,6 +152,8 @@ pub const Engine = struct {
+     /// Rows a batched chunk takes at most (chunkRows).
+     chunk: usize,
+     round_graph: round_graph.Cache = .{},
++    /// q38 (TF_FLASHNEXT_Q38_LANE_REUSE): released streams' fixed buffers waiting for the next stream.
++    q38_fixed: [16]?Fixed = @splat(null),
+     image_factory: ?*@import("cuda_images.zig").Vision = null,
+     collective: ?*@import("cuda_collective.zig").Collective = null,
+     /// Each layer's Living Weights pocket, from a taught folder's shards or the learner: every pass adds it.
+@@ -254,6 +259,15 @@ pub const Engine = struct {
+ 
+     pub fn deinit(e: *Engine) void {
+         e.round_graph.clear();
++        for (&e.q38_fixed) |*slot| if (slot.*) |f| {
++            freeBufs(f.conv);
++            freeBufs(f.state);
++            e.gpa.free(f.conv);
++            e.gpa.free(f.state);
++            var t = f.tail;
++            t.free();
++            slot.* = null;
++        };
+         e.pockets.deinit();
+         if (e.batch_s) |*bs| bs.free(e.gpa);
+         if (e.scores) |*b| b.free();
+@@ -331,17 +345,46 @@ pub const Engine = struct {
+         // One rollback owns every published array, and drains before releasing any destination.
+         errdefer seq.deinit(e.gpa);
+         seq.logits = try e.gpa.alloc(u8, vocab * 2);
+-        seq.conv = try zeros(e.gpa, e.driver, e.stream.*, linear_n, (gdn.taps - 1) * gdn.conv_dim * 2);
+-        seq.state = try zeros(e.gpa, e.driver, e.stream.*, linear_n, state_n * 4);
++        // q38 (TF_FLASHNEXT_Q38_LANE_REUSE): a released stream's fixed buffers, zero-filled as fresh ones are
++        var reused = false;
++        if (knobs.q38LaneReuse() > 0) for (&e.q38_fixed) |*slot| if (slot.*) |f| {
++            slot.* = null;
++            seq.conv = f.conv;
++            seq.state = f.state;
++            seq.tail = f.tail;
++            for (seq.conv) |*b| try b.fill8(0, e.stream.handle);
++            for (seq.state) |*b| try b.fill8(0, e.stream.handle);
++            reused = true;
++            break;
++        };
++        if (!reused) {
++            seq.conv = try zeros(e.gpa, e.driver, e.stream.*, linear_n, (gdn.taps - 1) * gdn.conv_dim * 2);
++            seq.state = try zeros(e.gpa, e.driver, e.stream.*, linear_n, state_n * 4);
++        }
+         seq.kc = try zeros(e.gpa, e.driver, e.stream.*, attn_n, cap * e.kv.keyRow());
+         seq.vc = try zeros(e.gpa, e.driver, e.stream.*, attn_n, cap * e.kv.valueRow());
+         seq.ikc = try zeros(e.gpa, e.driver, e.stream.*, attn_n, cap * index_dim * 2);
+         seq.pooled = try zeros(e.gpa, e.driver, e.stream.*, attn_n, pooledBytes(cap));
+-        seq.tail = try cuda.DeviceBuffer.alloc(e.driver, ple_tail_n * wide * 2);
++        if (!reused) seq.tail = try cuda.DeviceBuffer.alloc(e.driver, ple_tail_n * wide * 2);
+         try seq.tail.fill8(0, e.stream.handle);
+         return seq;
+     }
+ 
++    /// q38 (TF_FLASHNEXT_Q38_LANE_REUSE): before `seq.deinit`, its fixed buffers go to an idle set for the next stream (at most
++    /// the flag's N sets; its queued work drains first). Without the flag, or with every set taken, nothing moves.
++    pub fn giveFixed(e: *Engine, seq: *Seq) void {
++        const sets = knobs.q38LaneReuse();
++        if (sets == 0 or seq.conv.len != linear_n or seq.state.len != linear_n or seq.tail.ptr == 0) return;
++        for (e.q38_fixed[0..sets]) |*slot| if (slot.* == null) {
++            if (seq.stream) |stream| cuda.completion.drain(stream.d, stream, "Flash Next sequence work did not drain before reuse");
++            slot.* = .{ .conv = seq.conv, .state = seq.state, .tail = seq.tail };
++            seq.conv = &.{};
++            seq.state = &.{};
++            seq.tail = .{ .d = e.driver, .ptr = 0, .len = 0 };
++            return;
++        };
++    }
++
+     /// Run `ids` on from `seq.fed` and leave the next token's scores in `seq.logits`.
+     pub fn predict(e: *Engine, comptime Tri: type, tri: Tri, seq: *Seq, ids: []const u32) !void {
+         return e.forward(Tri, tri, seq, ids, .{});
+@@ -387,7 +430,7 @@ pub const Engine = struct {
+     /// The batched pass over `ids` from `seq.fed` in chunks of at most `chunk` rows; a window's hooks take one chunk.
+     pub fn forward(e: *Engine, comptime Tri: type, tri: Tri, seq: *Seq, ids: []const u32, hooks: batch.Hooks) !void {
+         if (ids.len == 0 or seq.fed + ids.len > seq.cap) return error.UnexpectedTensor;
+-        if ((hooks.keep != null or hooks.logits == .all) and ids.len > e.chunk) return error.UnexpectedTensor;
++        if ((hooks.keep != null or hooks.logits == .all or hooks.mark.row != 0) and ids.len > e.chunk) return error.UnexpectedTensor;
+         const s = try e.reserve(@min(ids.len, e.chunk));
+         const scores = try e.reserveScores(seq.cap, s.cap);
+         var p: batch.Pass(Tri) = .{
+diff --git a/zig/src/families/flashnext/cuda_snap.zig b/zig/src/families/flashnext/cuda_snap.zig
+index 80e39a0..2b6abd6 100644
+--- a/zig/src/families/flashnext/cuda_snap.zig
++++ b/zig/src/families/flashnext/cuda_snap.zig
+@@ -62,8 +62,47 @@ fn attnPieces(format: Kv, kc: []cuda.DeviceBuffer, vc: []cuda.DeviceBuffer, ikc:
+     };
+ }
+ 
++/// q38 (TF_FLASHNEXT_Q38_KEEP_INPASS): where a kept state's fixed pieces sit in its buffer, and their sizes.
++pub const layout = struct {
++    pub const conv = conv_bytes;
++    pub const state = state_bytes;
++    pub const tail = tail_bytes;
++    pub fn convAt(snap: *const Snap) u64 {
++        return snap.buf.ptr;
++    }
++    pub fn stateAt(snap: *const Snap) u64 {
++        return snap.buf.ptr + wt.linear_n * conv_bytes;
++    }
++    pub fn tailAt(snap: *const Snap) u64 {
++        return snap.buf.ptr + wt.linear_n * (conv_bytes + state_bytes) + wt.attn_n * attnBytes(snap.kv, snap.at);
++    }
++};
++
++/// q38: an empty state for `at` tokens of `seq` (with the head's rows when `d`), for a pass that fills its DeltaNet pieces and
++/// n-gram tail on the way (cuda_batch.zig markRow); `finish` then copies the attention rows.
++pub fn prepare(gpa: std.mem.Allocator, driver: *const cuda.Driver, seq: *prompt.Seq, d: ?*Draft, at: usize, history: [2]i64) !*Snap {
++    const head_kv: Kv = if (d) |h| h.kv else .bf16;
++    const snap = try gpa.create(Snap);
++    errdefer gpa.destroy(snap);
++    snap.* = .{ .buf = try cuda.DeviceBuffer.alloc(driver, bytesWith(seq.kv, if (d != null) head_kv else null, at)), .at = at, .history = history, .head = d != null, .kv = seq.kv, .head_kv = head_kv };
++    return snap;
++}
++
++/// q38: a prepared state's attention rows (and the head's), once the pass that ran through its mark has written them.
++pub fn finish(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, snap: *Snap) !void {
++    if (seq.fed < snap.at) return error.NotAtMark;
++    if (d) |h| if (h.len < snap.at) return error.NotAtMark;
++    try moveSome(stream, seq, d, snap.buf.ptr, snap.at, .save, true);
++    try stream.synchronize();
++}
++
+ /// Each piece of the sequence (and the head's cache, with `d`) to or from its place in the buffer at `base`.
+ fn move(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: u64, at: usize, way: Way) !void {
++    return moveSome(stream, seq, d, base, at, way, false);
++}
++
++/// `move`; `attn_only`: the conv windows, DeltaNet states and n-gram tail are left as the buffer holds them.
++fn moveSome(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: u64, at: usize, way: Way, attn_only: bool) !void {
+     const dr = stream.d;
+     var off: u64 = 0;
+     var pieces: [11]Piece = undefined;
+@@ -76,10 +115,10 @@ fn move(stream: cuda.Stream, seq: *prompt.Seq, d: ?*Draft, base: u64, at: usize,
+         pieces[7..11].* = attnPieces(h.kv, (&h.kc)[0..1], (&h.vc)[0..1], (&h.ikc)[0..1], (&h.pooled)[0..1], at);
+         count = 11;
+     }
+-    for (pieces[0..count]) |p| for (p.bufs) |b| {
++    for (pieces[0..count], 0..) |p, pi| for (p.bufs) |b| {
+         if (p.n == 0) continue;
+         const dst, const src = if (way == .save) .{ base + off, b.ptr } else .{ b.ptr, base + off };
+-        try dr.check(dr.api.cuMemcpyDtoDAsync_v2(dst, src, p.n, stream.handle), "cuMemcpyDtoDAsync");
++        if (!(attn_only and (pi == 0 or pi == 1 or pi == 6))) try dr.check(dr.api.cuMemcpyDtoDAsync_v2(dst, src, p.n, stream.handle), "cuMemcpyDtoDAsync");
+         off += p.n;
+     };
+     std.debug.assert(off == bytesWith(seq.kv, if (d) |h| h.kv else null, at));

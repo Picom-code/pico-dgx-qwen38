@@ -1,0 +1,33 @@
++-------------------------------------------------------+--------------------+-------------------+-----------------------+----------------------------------+------------------+
+| bench                                                 | levers off (first) | levers off (last) | recipe default (ours) | custom engine R v0.3.13, EXL3 re-quantised | ours vs mean off |
++-------------------------------------------------------+--------------------+-------------------+-----------------------+----------------------------------+------------------+
+| first token, short prompt (ms)                        | 208                | 208               | 119                   | 119                              | -42.8 %          |
+| 3-prompt chat, 9 runs (median)                        | 47.0               | 46.7              | 51.5                  | 55.3                             | +9.9 %           |
+| 3-prompt code, 9 runs (median)                        | 76.8               | 77.9              | 86.9                  | 90.4                             | +12.3 %          |
+| sparkDash-method prose T0                             | 56.8               | 56.5              | 61.8                  | 66.8                             | +9.1 %           |
+| sparkDash-method code (task 0)                        | 92.0               | 91.5              | 122.6                 | 110.2                            | +33.6 %          |
+| sparkDash-method code, 8 tasks                        | 87.7               | 87.1              | 106.1                 | 108.4                            | +21.4 %          |
+| sparkDash-method structured                           | 105.7              | 105.0             | 169.2                 | 153.3                            | +60.6 %          |
+| sparkDash 1.8.8 itself, prose (median)                | 56.3               | 56.2              | 61.0                  | 66.8                             | +8.4 %           |
+| sparkDash 1.8.8 itself, code (median)                 | 91.6               | 91.6              | 121.4                 | 110.7                            | +32.5 %          |
+| sparkDash 1.8.8 itself, structured (median)           | 105.0              | 104.5             | 167.5                 | 154.1                            | +59.9 %          |
+| ALL 320 held prompts, all                             | 57.34              | 57.12             | 65.51                 | 64.36                            | +14.5 %          |
+|   held 320: chat                                      | 49.97              | 49.84             | 56.20                 | 56.68                            | +12.6 %          |
+|   held 320: code                                      | 74.51              | 74.26             | 87.66                 | 82.01                            | +17.8 %          |
+|   held 320: math                                      | 72.68              | 71.86             | 86.98                 | 81.68                            | +20.4 %          |
+| edit set (24 file rewrites), wall tok/s               | 136.5              | 136.6             | -                     | -                                |                  |
+| agent set (16 turns), wall tok/s                      | 53.7               | 53.6              | -                     | -                                |                  |
+| seeded sampled T0.7, 24 held chat prompts             | 46.33              | 46.29             | 51.72                 | -                                | +11.7 %          |
+| seeded sampled T0.7 with thinking, 24 prompts         | 47.51              | -                 | 52.58                 | -                                | +10.7 %          |
+| seeded sparkDash-method prose T0.7 thinking, 6 rounds | 51.54              | -                 | 57.12                 | -                                | +10.8 %          |
+| prefill 7.4K / 29K / 117K prompt (tok/s)              | 2384 / 2437 / 2292 | -                 | 2508 / 2544 / 2466    | -                                |                  |
+| needle 182K-token prompt: first token s               | 82.7               | -                 | 75.4                  | -                                | -8.8 %           |
+|   recall                                              | 3/3                | -                 | 3/3                   | -                                |                  |
+| 227,621-token prompt: first token s                   | 107.7              | -                 | 94.3                  | -                                | -12.4 %          |
+|   recall                                              | 3/3                | -                 | 3/3                   | -                                |                  |
+| image                                                 | PASS ttft 0.47 s   | -                 | PASS ttft 0.52 s      | -                                |                  |
+| qeval (4 in flight)                                   | 33/35              | -                 | 33/35                 | -                                |                  |
+| 4 users distinct, default profile (tok/s)             | 151.9              | 137.3             | 151.9                 | -                                |                  |
+| min MemAvailable MiB during the suite                 | 30096              | 34556             | 8394                  | 27786                            |                  |
+| max GPU MiB during the suite                          | 85437              | 81572             | 107914                | 86344                            |                  |
++-------------------------------------------------------+--------------------+-------------------+-----------------------+----------------------------------+------------------+

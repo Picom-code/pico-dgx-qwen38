@@ -1,0 +1,240 @@
+### step off 04:46:28 left 7079 s
+READY recipe [CERT=0 MANY=0 COPY_ROWS=16 FUSED=0 HALF=0 MTP_LAST=0 GDN_MANY=0 BEST_LANES=0 ATTN_LANES=0 LATE_SKIP=0 KEEP_INPASS=0 LANE_REUSE=0 HEAD2=0 R9=0 R10=0 R11=0] in 178 s; MemAvailable 39 GiB; GPU MiB 78217; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+env knobs: 44 -> TF_FLASHNEXT_Q38_CACHE_ELASTIC=0 TF_FLASHNEXT_Q38_CERT=0 TF_FLASHNEXT_Q38_LANE_REUSE=0 TF_FLASHNEXT_Q38_WINDOW_ROWS=16 
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 75.92 GiB; 3 streams at once, 7.99 GiB each at a 262144-token window, of 30.5 GiB left after a 9.0 GiB reserve; prompts in passes of up to 3072 rows, a 6.5 GiB prompt cache; own glue kernels
+info: prompt cache: 16 tokens, resumed at 0, kept 2; 2 states, 220 MiB and 0 MiB spare of 6636 MiB (hits 0, misses 1, evicted 0, refused 0, failed 0)
+image b052a3f158ad
+heldpar 1 in flight: 24 prompts, 19495 tokens in 139.3 s = 140.0 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 155.6  tok/round 12.586  drafts proposed/round 12.531  accepted/round 11.578  accept rate 0.924  ms/round 80.87  rows/round 13.53
+fit over drafted requests: ms/round = 51.77 + 2.32 x drafts verified per round  (x range 9.03..14.73)
+heldpar 1 in flight: 16 prompts, 2631 tokens in 46.6 s = 56.4 tok/s total; errors 0
+== agent
+drafted requests: n 11 tok/s 71.9  tok/round 4.545  drafts proposed/round 5.329  accepted/round 3.562  accept rate 0.669  ms/round 63.18  rows/round 6.33
+fit over drafted requests: ms/round = 46.12 + 3.20 x drafts verified per round  (x range 3.67..7.46)
+sq s07off: 46.32 tok/s (tokens/decode-time)  mean-of-prompts 48.89 sd 9.35  n 23  errors 0  ttft median 205 ms
+sq s07on: 49.80 tok/s (tokens/decode-time)  mean-of-prompts 50.86 sd 5.83  n 24  errors 0  ttft median 200 ms
+sq sd prose T0.7 think-on: mean 49.58 median 49.81 min 43.9 max 55.3  n 6  [48.7, 50.9, 43.9, 55.3, 53.8, 44.8]
+/home/picom/q38/runs/N_off/pred0.jsonl
+  numbered     n  16  tokens  13240  wall tok/s   77.62  after-first-chunk tok/s   83.13  mean first chunk 0.706 s
+  plain        n  24  tokens  19495  wall tok/s  140.40  after-first-chunk tok/s  155.78  mean first chunk 0.571 s
+  toolwrite    n  16  tokens   5376  wall tok/s  100.78  after-first-chunk tok/s  139.15  mean first chunk 0.919 s
+  ALL          n  56  tokens  38111  wall tok/s  105.06  after-first-chunk tok/s  117.97
+/home/picom/q38/runs/N_off/pred1.jsonl
+  numbered     n  16  tokens  13240  wall tok/s  140.62  after-first-chunk tok/s  159.68  mean first chunk 0.703 s
+  plain        n  24  tokens  19495  wall tok/s  142.16  after-first-chunk tok/s  158.02  mean first chunk 0.574 s
+  toolwrite    n  16  tokens   5376  wall tok/s  101.57  after-first-chunk tok/s  138.46  mean first chunk 0.881 s
+  ALL          n  56  tokens  38111  wall tok/s  134.09  after-first-chunk tok/s  155.48
+pred1 vs pred0: identical 56/56 (only in A 0, only in B 0)
+/home/picom/q38/runs/N_off/loop0.jsonl
+  loop_fix     n  46  tokens   4382  wall tok/s   64.89  after-first-chunk tok/s   96.26  mean first chunk 0.478 s
+  ALL          n  46  tokens   4382  wall tok/s   64.89  after-first-chunk tok/s   96.26
+/home/picom/q38/runs/N_off/loop1.jsonl
+  loop_fix     n  46  tokens   4382  wall tok/s   73.58  after-first-chunk tok/s  110.93  mean first chunk 0.436 s
+  ALL          n  46  tokens   4382  wall tok/s   73.58  after-first-chunk tok/s  110.93
+loop1 vs loop0: identical 46/46 (only in A 0, only in B 0)
+distinct 3 users: 131.7 tok/s total  (1536 tokens in 11.7 s; max ttft 0.83 s; errors 0 [])
+MemAvailable GiB 32
+crash lines: 0
+N_off done 05:57:41
+-- off vs the wrap-up run of the same image (F11_off)
+ident_on.json F11_off vs N_off: identical 51/51  mean shared-prefix fraction 1.000  differ: []
+held.jsonl F11_off vs N_off: identical 320/320  mean shared-prefix fraction 1.000  differ: []
+edit.jsonl F11_off vs N_off: identical 24/24  mean shared-prefix fraction 1.000  differ: []
+agent.jsonl F11_off vs N_off: identical 16/16  mean shared-prefix fraction 1.000  differ: []
+sq07off: cmp: identical 24/24  A 45.13 -> B 46.32 tok/s (+2.64 %)  per-prompt ratio +2.68 % +- 0.12 (95 %)  identical-only +2.68 % n 23
+sq07on: cmp: identical 24/24  A 48.32 -> B 49.80 tok/s (+3.06 %)  per-prompt ratio +3.05 % +- 0.10 (95 %)  identical-only +3.05 % n 24
+sqsd: cmp: identical 6/6  A 47.78 -> B 49.22 tok/s (+3.02 %)  per-prompt ratio +3.03 % +- 0.15 (95 %)  identical-only +3.03 % n 6
+pred0: identical 56/56 (only in A 0, only in B 0)
+pred1: identical 56/56 (only in A 0, only in B 0)
+loop0: identical 46/46 (only in A 0, only in B 0)
+loop1: identical 46/46 (only in A 0, only in B 0)
+### step on 05:57:41 left 6466 s
+READY recipe [] in 202 s; MemAvailable 37 GiB; GPU MiB 80117; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+env knobs: 68 -> TF_FLASHNEXT_CHUNK=4608 TF_FLASHNEXT_Q38_CACHE_ELASTIC=1 TF_FLASHNEXT_Q38_CERT=1 TF_FLASHNEXT_Q38_HEAD2=/root/.cache/huggingface/q38/head2_r9.bin TF_FLASHNEXT_Q38_LANE_REUSE=3 TF_FLASHNEXT_Q38_SNAP_DELTA=1 TF_FLASHNEXT_Q38_WINDOW_ROWS=128 
+q38 qsa knobs: cert=1 cert_min=1 slack=100.0e-6 half=1 list=4096 rows=1 loop=0 stats=0
+q38 elastic: the prompt cache takes 4961 MiB at start-up and up to 23850 MiB more of the 3 lanes' room while streams leave it
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 76.85 GiB; 3 streams at once, 8.39 GiB each at a 262144-token window, of 30.0 GiB left after a 9.0 GiB reserve; prompts in passes of up to 4608 rows, a 4.8 GiB prompt cache; own glue kernels
+info: prompt cache: 16 tokens, resumed at 0, kept 2; 2 states, 220 MiB and 0 MiB spare of 27996 MiB (hits 0, misses 1, evicted 0, refused 0, failed 0)
+image b052a3f158ad
+heldpar 1 in flight: 24 prompts, 19495 tokens in 85.8 s = 227.3 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 264.9  tok/round 28.796  drafts proposed/round 37.241  accepted/round 27.778  accept rate 0.746  ms/round 108.71  rows/round 38.24
+fit over drafted requests: ms/round = 62.58 + 1.24 x drafts verified per round  (x range 17.23..90.21)
+heldpar 1 in flight: 16 prompts, 2631 tokens in 40.9 s = 64.3 tok/s total; errors 0
+== agent
+drafted requests: n 11 tok/s 82.1  tok/round 4.875  drafts proposed/round 5.954  accepted/round 3.908  accept rate 0.656  ms/round 59.39  rows/round 6.95
+fit over drafted requests: ms/round = 40.47 + 3.18 x drafts verified per round  (x range 3.63..10.63)
+sq s07off: 51.09 tok/s (tokens/decode-time)  mean-of-prompts 53.40 sd 8.97  n 23  errors 0  ttft median 138 ms
+sq s07on: 54.41 tok/s (tokens/decode-time)  mean-of-prompts 55.62 sd 6.72  n 24  errors 0  ttft median 135 ms
+sq sd prose T0.7 think-on: mean 54.22 median 54.98 min 47.4 max 60.8  n 6  [53.9, 56.1, 47.4, 60.8, 58.8, 48.4]
+/home/picom/q38/runs/N_on/pred0.jsonl
+  numbered     n  16  tokens  13240  wall tok/s   95.20  after-first-chunk tok/s  102.55  mean first chunk 0.623 s
+  plain        n  24  tokens  19495  wall tok/s  259.23  after-first-chunk tok/s  265.38  mean first chunk 0.073 s
+  toolwrite    n  16  tokens   5376  wall tok/s  149.25  after-first-chunk tok/s  224.15  mean first chunk 0.752 s
+  ALL          n  56  tokens  38111  wall tok/s  152.26  after-first-chunk tok/s  168.22
+/home/picom/q38/runs/N_on/pred1.jsonl
+  numbered     n  16  tokens  13240  wall tok/s  295.94  after-first-chunk tok/s  303.99  mean first chunk 0.074 s
+  plain        n  24  tokens  19495  wall tok/s  271.42  after-first-chunk tok/s  278.22  mean first chunk 0.073 s
+  toolwrite    n  16  tokens   5376  wall tok/s  197.71  after-first-chunk tok/s  223.36  mean first chunk 0.195 s
+  ALL          n  56  tokens  38111  wall tok/s  265.11  after-first-chunk tok/s  276.78
+pred1 vs pred0: identical 56/56 (only in A 0, only in B 0)
+/home/picom/q38/runs/N_on/loop0.jsonl
+  loop_fix     n  46  tokens   4382  wall tok/s   82.53  after-first-chunk tok/s  126.56  mean first chunk 0.402 s
+  ALL          n  46  tokens   4382  wall tok/s   82.53  after-first-chunk tok/s  126.56
+/home/picom/q38/runs/N_on/loop1.jsonl
+  loop_fix     n  46  tokens   4382  wall tok/s   96.80  after-first-chunk tok/s  155.24  mean first chunk 0.370 s
+  ALL          n  46  tokens   4382  wall tok/s   96.80  after-first-chunk tok/s  155.24
+loop1 vs loop0: identical 46/46 (only in A 0, only in B 0)
+chat      no prediction   106.8 tok/s  with prediction   423.2 tok/s  texts identical 4/4  non-200 0
+responses no prediction   105.8 tok/s  with prediction   424.5 tok/s  texts identical 4/4  non-200 0
+messages  no prediction   105.7 tok/s  with prediction   423.9 tok/s  texts identical 4/4  non-200 0
+chat      malformed predictions: 13/13 answered 200 with the reference text []; recall:false ok True
+responses malformed predictions: 13/13 answered 200 with the reference text []; recall:false ok True
+messages  malformed predictions: 13/13 answered 200 with the reference text []; recall:false ok True
+distinct 3 users: 140.2 tok/s total  (1536 tokens in 11.0 s; max ttft 0.44 s; errors 0 [])
+q38 cert gather: calls 20000 tiles/call 12.6
+q38 cert: calls 20000 rows 87562 whole-head 0 tiles/call 16.6 runs/call 8.8 checked-rows 0 best-mismatch 0 value-mismatch 0 held 0
+q38 cert gather: calls 20000 tiles/call 12.6
+q38 cert topk: wide passes not tried 25
+q38 cert topk: calls 516 whole-head 0 tiles/call 288.8 runs/call 49.6 topk-rows-checked 0 topk-mismatch 0 bound-violations 0 of 0 K entries
+q38 cert gather: calls 25000 tiles/call 11.8
+q38 cert gather: calls 30000 tiles/call 11.2
+q38 cert gather: calls 35000 tiles/call 10.8
+q38 cert gather: calls 40000 tiles/call 10.8
+q38 cert: calls 40000 rows 236713 whole-head 0 tiles/call 13.0 runs/call 8.1 checked-rows 0 best-mismatch 0 value-mismatch 0 held 0
+q38 cert gather: calls 40000 tiles/call 10.8
+q38 cert topk: calls 516 whole-head 0 tiles/call 288.8 runs/call 49.6 topk-rows-checked 0 topk-mismatch 0 bound-violations 0 of 0 K entries
+q38 cert gather: calls 45000 tiles/call 26.8
+q38 cert gather: calls 50000 tiles/call 26.1
+MemAvailable GiB 15
+crash lines: 0
+q38 head2: on, rank 512, block form, re-score 933 of 79591 rows
+N_on done 07:03:46
+-- on vs off (same window)
+ident_on.json N_off vs N_on: identical 51/51  mean shared-prefix fraction 1.000  differ: []
+held.jsonl N_off vs N_on: identical 320/320  mean shared-prefix fraction 1.000  differ: []
+edit.jsonl N_off vs N_on: identical 24/24  mean shared-prefix fraction 1.000  differ: []
+agent.jsonl N_off vs N_on: identical 16/16  mean shared-prefix fraction 1.000  differ: []
+sq07off: cmp: identical 24/24  A 46.32 -> B 51.09 tok/s (+10.29 %)  per-prompt ratio +9.57 % +- 1.22 (95 %)  identical-only +9.57 % n 23
+sq07on: cmp: identical 24/24  A 49.80 -> B 54.41 tok/s (+9.26 %)  per-prompt ratio +9.32 % +- 0.87 (95 %)  identical-only +9.32 % n 24
+sqsd: cmp: identical 6/6  A 49.22 -> B 53.75 tok/s (+9.21 %)  per-prompt ratio +9.29 % +- 0.94 (95 %)  identical-only +9.29 % n 6
+pred0: identical 56/56 (only in A 0, only in B 0)
+pred1: identical 56/56 (only in A 0, only in B 0)
+loop0: identical 46/46 (only in A 0, only in B 0)
+loop1: identical 46/46 (only in A 0, only in B 0)
+### step off2 07:03:46 left 6975 s
+READY recipe [CERT=0 MANY=0 COPY_ROWS=16 FUSED=0 HALF=0 MTP_LAST=0 GDN_MANY=0 BEST_LANES=0 ATTN_LANES=0 LATE_SKIP=0 KEEP_INPASS=0 LANE_REUSE=0 HEAD2=0 R9=0 R10=0 R11=0] in 215 s; MemAvailable 39 GiB; GPU MiB 78217; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+env knobs: 44 -> TF_FLASHNEXT_Q38_CACHE_ELASTIC=0 TF_FLASHNEXT_Q38_CERT=0 TF_FLASHNEXT_Q38_LANE_REUSE=0 TF_FLASHNEXT_Q38_WINDOW_ROWS=16 
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 75.92 GiB; 3 streams at once, 7.99 GiB each at a 262144-token window, of 31.0 GiB left after a 9.0 GiB reserve; prompts in passes of up to 3072 rows, a 7.1 GiB prompt cache; own glue kernels
+info: prompt cache: 16 tokens, resumed at 0, kept 2; 2 states, 220 MiB and 0 MiB spare of 7230 MiB (hits 0, misses 1, evicted 0, refused 0, failed 0)
+image b052a3f158ad
+heldpar 1 in flight: 24 prompts, 19495 tokens in 141.0 s = 138.2 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 153.8  tok/round 12.586  drafts proposed/round 12.531  accepted/round 11.578  accept rate 0.924  ms/round 81.86  rows/round 13.53
+fit over drafted requests: ms/round = 52.44 + 2.35 x drafts verified per round  (x range 9.03..14.73)
+heldpar 1 in flight: 16 prompts, 2631 tokens in 47.2 s = 55.7 tok/s total; errors 0
+== agent
+drafted requests: n 11 tok/s 71.1  tok/round 4.545  drafts proposed/round 5.329  accepted/round 3.562  accept rate 0.669  ms/round 63.91  rows/round 6.33
+fit over drafted requests: ms/round = 46.12 + 3.34 x drafts verified per round  (x range 3.67..7.46)
+sq s07off: 45.85 tok/s (tokens/decode-time)  mean-of-prompts 48.39 sd 9.25  n 23  errors 0  ttft median 208 ms
+sq s07on: 49.26 tok/s (tokens/decode-time)  mean-of-prompts 50.31 sd 5.78  n 24  errors 0  ttft median 206 ms
+sq sd prose T0.7 think-on: mean 48.97 median 49.30 min 43.3 max 54.6  n 6  [48.1, 50.5, 43.3, 54.6, 53.0, 44.3]
+/home/picom/q38/runs/N_off2/pred0.jsonl
+  numbered     n  16  tokens  13240  wall tok/s   76.77  after-first-chunk tok/s   82.20  mean first chunk 0.713 s
+  plain        n  24  tokens  19495  wall tok/s  138.60  after-first-chunk tok/s  153.81  mean first chunk 0.579 s
+  toolwrite    n  16  tokens   5376  wall tok/s   99.58  after-first-chunk tok/s  137.50  mean first chunk 0.931 s
+  ALL          n  56  tokens  38111  wall tok/s  103.81  after-first-chunk tok/s  116.58
+/home/picom/q38/runs/N_off2/pred1.jsonl
+  numbered     n  16  tokens  13240  wall tok/s  139.05  after-first-chunk tok/s  157.93  mean first chunk 0.711 s
+  plain        n  24  tokens  19495  wall tok/s  140.47  after-first-chunk tok/s  156.13  mean first chunk 0.580 s
+  toolwrite    n  16  tokens   5376  wall tok/s  100.52  after-first-chunk tok/s  137.05  mean first chunk 0.891 s
+  ALL          n  56  tokens  38111  wall tok/s  132.57  after-first-chunk tok/s  153.72
+pred1 vs pred0: identical 56/56 (only in A 0, only in B 0)
+/home/picom/q38/runs/N_off2/loop0.jsonl
+  loop_fix     n  46  tokens   4382  wall tok/s   64.08  after-first-chunk tok/s   95.05  mean first chunk 0.485 s
+  ALL          n  46  tokens   4382  wall tok/s   64.08  after-first-chunk tok/s   95.05
+/home/picom/q38/runs/N_off2/loop1.jsonl
+  loop_fix     n  46  tokens   4382  wall tok/s   72.62  after-first-chunk tok/s  109.48  mean first chunk 0.442 s
+  ALL          n  46  tokens   4382  wall tok/s   72.62  after-first-chunk tok/s  109.48
+loop1 vs loop0: identical 46/46 (only in A 0, only in B 0)
+MemAvailable GiB 32
+crash lines: 0
+N_off2 done 08:12:44
+-- off2 vs off
+ident_on.json N_off vs N_off2: identical 51/51  mean shared-prefix fraction 1.000  differ: []
+held.jsonl N_off vs N_off2: identical 320/320  mean shared-prefix fraction 1.000  differ: []
+edit.jsonl N_off vs N_off2: identical 24/24  mean shared-prefix fraction 1.000  differ: []
+agent.jsonl N_off vs N_off2: identical 16/16  mean shared-prefix fraction 1.000  differ: []
+sq07off: cmp: identical 24/24  A 46.32 -> B 45.85 tok/s (-1.01 %)  per-prompt ratio -1.02 % +- 0.12 (95 %)  identical-only -1.02 % n 23
+sq07on: cmp: identical 24/24  A 49.80 -> B 49.26 tok/s (-1.09 %)  per-prompt ratio -1.08 % +- 0.11 (95 %)  identical-only -1.08 % n 24
+sqsd: cmp: identical 6/6  A 49.22 -> B 48.60 tok/s (-1.25 %)  per-prompt ratio -1.24 % +- 0.20 (95 %)  identical-only -1.24 % n 6
+pred0: identical 56/56 (only in A 0, only in B 0)
+pred1: identical 56/56 (only in A 0, only in B 0)
+loop0: identical 46/46 (only in A 0, only in B 0)
+loop1: identical 46/46 (only in A 0, only in B 0)
+-- on vs off2
+ident_on.json N_off2 vs N_on: identical 51/51  mean shared-prefix fraction 1.000  differ: []
+held.jsonl N_off2 vs N_on: identical 320/320  mean shared-prefix fraction 1.000  differ: []
+edit.jsonl N_off2 vs N_on: identical 24/24  mean shared-prefix fraction 1.000  differ: []
+agent.jsonl N_off2 vs N_on: identical 16/16  mean shared-prefix fraction 1.000  differ: []
+sq07off: cmp: identical 24/24  A 45.85 -> B 51.09 tok/s (+11.42 %)  per-prompt ratio +10.70 % +- 1.24 (95 %)  identical-only +10.70 % n 23
+sq07on: cmp: identical 24/24  A 49.26 -> B 54.41 tok/s (+10.47 %)  per-prompt ratio +10.52 % +- 0.90 (95 %)  identical-only +10.52 % n 24
+sqsd: cmp: identical 6/6  A 48.60 -> B 53.75 tok/s (+10.59 %)  per-prompt ratio +10.66 % +- 0.89 (95 %)  identical-only +10.66 % n 6
+pred0: identical 56/56 (only in A 0, only in B 0)
+pred1: identical 56/56 (only in A 0, only in B 0)
+loop0: identical 46/46 (only in A 0, only in B 0)
+loop1: identical 46/46 (only in A 0, only in B 0)
+### step chk 08:12:45 left 2836 s
+READY recipe [CERT=2 QSA_CERT=2 TF_FLASHNEXT_Q38_QSA_STATS=1 GDN_PROD=12 TF_FLASHNEXT_Q38_ROUTE_BAND_CHECK=1 TF_FLASHNEXT_Q38_SCRATCH_CHECK=1 TF_FLASHNEXT_Q38_HC_DN_TALL_CHECK=1 SNAP_DELTA=2 TF_FLASHNEXT_Q38_PLOG=1] in 226 s; MemAvailable 36 GiB; GPU MiB 80419; image pico-dgx-qwen38-tf:v1.1.4-eab858
+env knobs: 73 -> TF_FLASHNEXT_CHUNK=4608 TF_FLASHNEXT_Q38_CACHE_ELASTIC=1 TF_FLASHNEXT_Q38_CERT=2 TF_FLASHNEXT_Q38_HEAD2=/root/.cache/huggingface/q38/head2_r9.bin TF_FLASHNEXT_Q38_LANE_REUSE=3 TF_FLASHNEXT_Q38_SNAP_DELTA=2 TF_FLASHNEXT_Q38_WINDOW_ROWS=128 
+q38 qsa knobs: cert=2 cert_min=1 slack=100.0e-6 half=1 list=4096 rows=1 loop=0 stats=1
+q38 elastic: the prompt cache takes 4200 MiB at start-up and up to 23850 MiB more of the 3 lanes' room while streams leave it
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 76.91 GiB; 3 streams at once, 8.39 GiB each at a 262144-token window, of 29.3 GiB left after a 9.0 GiB reserve; prompts in passes of up to 4608 rows, a 4.1 GiB prompt cache; own glue kernels
+info: prompt cache: 16 tokens, resumed at 0, kept 2; 2 states, 220 MiB and 0 MiB spare of 27235 MiB (hits 0, misses 1, evicted 0, refused 0, failed 0)
+image b052a3f158ad
+prefill target 32000: prompt_tokens 29234  ttft 13.48 s  2169 tok/s
+prefill target 128000: prompt_tokens 117023  ttft 57.34 s  2041 tok/s
+ctx 250000: prompt_tokens 227621  recall 3/3  ttft 123.9 s  prefill 1838 tok/s  answer 'The vault code is MARLIN-7731, the name of the lead surveyor is Odalys Brenner, and the bridge inspection number is QX-90214.'
+sd-method prose T0 think-off: median 63.5  mean 63.5  [63.5]
+sd-method prose T0.7 think-on: median 42.0  mean 42.0  [42.03]
+sd-method code T0 think-off (task 0): median 108.3  mean 108.3  [108.32]
+sd-method code8 T0 think-off (tasks 0-7): median 98.2  mean 99.4  [108.18, 104.82, 98.95, 93.51, 97.94, 97.86, 98.45, 95.84]
+sd-method structured T0 think-off: median 149.4  mean 149.4  [149.39]
+sq s07off: 42.61 tok/s (tokens/decode-time)  mean-of-prompts 45.17 sd 8.24  n 11  errors 0  ttft median 159 ms
+ident saved /home/picom/q38/runs/N_chk/ident_on.json n 51 median tps 62.8
+| 2 agents x 4 turns, system 20000 (0 shared), tool results 300-2000 turn | ok | prompt tok | resumed tok | new tok | first token s med / max |
+| 0 | 2 | 19392 | 0 | 19392 | 14.46 / 19.52 |
+| 1 | 2 | 20463 | 19385 | 1078 | 1.29 / 1.58 |
+| 2 | 2 | 22078 | 20456 | 1621 | 1.60 / 2.07 |
+| 3 | 2 | 23389 | 22071 | 1318 | 1.27 / 1.45 |
+2 agents x 4 turns, system 20000 (0 shared), tool results 300-2000: 8/8 ok; follow-ups 6, resumed (over half the prompt from the cache) 6; cached share of follow-up prompt tokens 93.9 %; follow-up first token median 1.29 s max 2.07 s; sum of first-token waits 37.2 s
+wall 34.8 s
+  toolwrite    n   8  tokens   2641  wall tok/s  182.68  after-first-chunk tok/s  306.71  mean first chunk 0.731 s
+  ALL          n  28  tokens  18778  wall tok/s  266.09  after-first-chunk tok/s  359.44
+q38 cert: calls 1000 rows 5698 whole-head 0 tiles/call 186.1 runs/call 31.7 checked-rows 5698 best-mismatch 0 value-mismatch 0 held 27573120
+q38 cert: calls 2000 rows 9418 whole-head 0 tiles/call 186.9 runs/call 32.7 checked-rows 9418 best-mismatch 0 value-mismatch 0 held 52718272
+q38 cert: calls 3000 rows 13876 whole-head 0 tiles/call 127.5 runs/call 24.2 checked-rows 13876 best-mismatch 0 value-mismatch 0 held 55271616
+q38 cert: calls 4000 rows 20043 whole-head 0 tiles/call 97.6 runs/call 19.8 checked-rows 20043 best-mismatch 0 value-mismatch 0 held 58569536
+q38 cert: calls 5000 rows 24753 whole-head 0 tiles/call 79.6 runs/call 17.1 checked-rows 24753 best-mismatch 0 value-mismatch 0 held 60923072
+q38 cert gather: calls 5000 tiles/call 45.1
+q38 cert: SM8 copy of the head made (625 MiB), mean residual 0.0087 of a row's norm, check 1, top-k up to 20
+q38 cert topk: calls 515 whole-head 0 tiles/call 354.3 runs/call 56.3 topk-rows-checked 1816 topk-mismatch 0 bound-violations 0 of 1276352 K entries
+q38 cert topk: calls 994 whole-head 0 tiles/call 367.6 runs/call 59.1 topk-rows-checked 3457 topk-mismatch 0 bound-violations 0 of 5544672 K entries
+q38 cert topk: wide passes not tried 10
+q38 gdnprod check launches=6120 rows_last=972 words=74198370816 diff=0
+q38 qsacert first rows=6657316 between=170899152 fallback=0 max_between=93 redone=0 checked=6657316 list_diff=0 exact_bit_diff=0 bound_viol=0 max_ratio=0.64728 listed=5040698 list_miss=0
+q38 qsa knobs: cert=2 cert_min=1 slack=100.0e-6 half=1 list=4096 rows=1 loop=0 stats=1
+q38 routeband check passes=5808 rows_last=2235 words=13447117152 diff=0
+q38 scratch check passes=5760 cap=4608 full_rows=3072 bad=0
+q38 scratch trim: slices kept for 3072 rows, head_local for 256 (check mode: guard words after every trimmed buffer)
+q38 snapdelta keep at=974 from=2 own_kib=142152 whole_kib=142211 chain=2 orphan_mib=255 keeps=124 shared=119 kept_mib=30969 whole_mib=37757 check_bytes=25252078592 check_diff=0
+mismatch-like lines: 10
+crash lines: 0
+q38 head2: on, rank 512, block form, re-score 933 of 79591 rows
+N_chk done 08:27:48
+chk ident vs N_on: identical 51/51  mean shared-prefix fraction 1.000  differ: []
+chk ident vs N_off: identical 51/51  mean shared-prefix fraction 1.000  differ: []
+chk seeded sampled (12) vs on: cmp: identical 12/12  A 52.44 -> B 42.61 tok/s (-18.76 %)  per-prompt ratio -18.85 % +- 0.29 (95 %)  identical-only -18.85 % n 11
+chk rewrite(held) vs on: identical 28/28 (only in A 28, only in B 0)
+wN [off on off2 chk] done 08:27:48

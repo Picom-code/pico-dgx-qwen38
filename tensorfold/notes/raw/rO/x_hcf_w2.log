@@ -1,0 +1,54 @@
+8267bbfc0a55e941
+READY tfb/default in 163 s; MemAvailable 40 GiB; GPU MiB 75472
+ident saved /home/pico/q38/runs/XH_ref/ident.json n 51 median tps 22.9
+heldpar 1 in flight: 54 prompts, 10137 tokens in 442.3 s = 22.9 tok/s total; errors 0
+no-draft requests: n 97 tok/s 23.2  tok/round 1.004  drafts proposed/round 0.000  accepted/round 0.000  accept rate 0.000  ms/round 43.21  rows/round 1.00
+XH_ref done 07:42:45
+READY tfb/default in 203 s; MemAvailable 38 GiB; GPU MiB 77122
+ident saved /home/pico/q38/runs/XH_chk3/ident.json n 51 median tps 57.8
+heldpar 1 in flight: 54 prompts, 10137 tokens in 187.4 s = 54.1 tok/s total; errors 0
+q38 hcf check: 97 read-outs, 194 rows, 594416 words compared with the five-launch chain, 0 differ
+q38 hcf check: 720000 read-outs, 3284280 rows, 10062798848 words compared with the five-launch chain, 0 differ
+0
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+XH_chk3 done 07:54:02
+READY tfb/default in 193 s; MemAvailable 38 GiB; GPU MiB 77122
+ident saved /home/pico/q38/runs/XH_f3/ident.json n 51 median tps 62.8
+heldpar 1 in flight: 54 prompts, 10137 tokens in 173.4 s = 58.5 tok/s total; errors 0
+drafted requests: n 97 tok/s 61.7  tok/round 3.446  drafts proposed/round 3.907  accepted/round 2.447  accept rate 0.626  ms/round 55.88  rows/round 4.91
+fit over drafted requests: ms/round = 40.18 + 4.02 x drafts verified per round  (x range 1.48..13.22)
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+XH_f3 done 08:04:38
+READY tfb/default in 193 s; MemAvailable 39 GiB; GPU MiB 77122
+heldpar 1 in flight: 54 prompts, 10137 tokens in 174.8 s = 58.0 tok/s total; errors 0
+drafted requests: n 49 tok/s 62.2  tok/round 3.527  drafts proposed/round 3.928  accepted/round 2.535  accept rate 0.646  ms/round 56.67  rows/round 4.93
+fit over drafted requests: ms/round = 41.77 + 3.79 x drafts verified per round  (x range 2.24..13.22)
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+XH_f1 done 08:10:47
+READY tfb/default in 168 s; MemAvailable 38 GiB; GPU MiB 77122
+heldpar 1 in flight: 54 prompts, 10137 tokens in 175.8 s = 57.7 tok/s total; errors 0
+drafted requests: n 49 tok/s 61.9  tok/round 3.527  drafts proposed/round 3.928  accepted/round 2.535  accept rate 0.646  ms/round 56.94  rows/round 4.93
+fit over drafted requests: ms/round = 42.02 + 3.80 x drafts verified per round  (x range 2.24..13.22)
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+XH_ref2 done 08:16:34
+READY tfb/default in 170 s; MemAvailable 38 GiB; GPU MiB 77122
+heldpar 1 in flight: 54 prompts, 10137 tokens in 172.7 s = 58.7 tok/s total; errors 0
+drafted requests: n 49 tok/s 63.0  tok/round 3.527  drafts proposed/round 3.928  accepted/round 2.535  accept rate 0.646  ms/round 55.94  rows/round 4.93
+fit over drafted requests: ms/round = 41.23 + 3.74 x drafts verified per round  (x range 2.24..13.22)
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+XH_f3s3 done 08:22:19
+READY tfb/default in 170 s; MemAvailable 38 GiB; GPU MiB 77122
+heldpar 1 in flight: 54 prompts, 10137 tokens in 175.8 s = 57.7 tok/s total; errors 0
+drafted requests: n 49 tok/s 61.9  tok/round 3.527  drafts proposed/round 3.928  accepted/round 2.535  accept rate 0.646  ms/round 56.96  rows/round 4.93
+fit over drafted requests: ms/round = 42.10 + 3.78 x drafts verified per round  (x range 2.24..13.22)
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+XH_f3s6 done 08:28:08
+READY tfb/p16 in 173 s; MemAvailable 36 GiB; GPU MiB 77165
+heldpar 16 in flight: 107 prompts, 20185 tokens in 130.6 s = 154.5 tok/s total; errors 0
+q38 hcf check: 97 read-outs, 194 rows, 594416 words compared with the five-launch chain, 0 differ
+q38 hcf check: 60000 read-outs, 2643336 rows, 8099017732 words compared with the five-launch chain, 0 differ
+0
+XH_chk16 done 08:33:13
+x hcf lane done 08:33:13

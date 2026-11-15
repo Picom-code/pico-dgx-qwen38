@@ -1,0 +1,148 @@
+6e5348973a3e2165
+BUILD_OK kp19 6e5348973a3e2165 97 fatbins
+READY tfb/default in 201 s; MemAvailable 39 GiB; GPU MiB 77122
+heldpar 1 in flight: 54 prompts, 10137 tokens in 175.6 s = 57.7 tok/s total; errors 0
+drafted requests: n 49 tok/s 62.0  tok/round 3.527  drafts proposed/round 3.928  accepted/round 2.535  accept rate 0.646  ms/round 56.89  rows/round 4.93
+fit over drafted requests: ms/round = 41.94 + 3.81 x drafts verified per round  (x range 2.24..13.22)
+XB_ref done 08:10:32
+READY tfb/default in 201 s; MemAvailable 38 GiB; GPU MiB 77122
+heldpar 1 in flight: 54 prompts, 10137 tokens in 174.4 s = 58.1 tok/s total; errors 0
+drafted requests: n 49 tok/s 62.4  tok/round 3.527  drafts proposed/round 3.928  accepted/round 2.535  accept rate 0.646  ms/round 56.49  rows/round 4.93
+fit over drafted requests: ms/round = 41.60 + 3.79 x drafts verified per round  (x range 2.24..13.22)
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+XB_half done 08:16:49
+READY tfb/default in 205 s; MemAvailable 39 GiB; GPU MiB 77122
+heldpar 1 in flight: 54 prompts, 10137 tokens in 173.1 s = 58.6 tok/s total; errors 0
+drafted requests: n 49 tok/s 62.9  tok/round 3.527  drafts proposed/round 3.928  accepted/round 2.535  accept rate 0.646  ms/round 56.09  rows/round 4.93
+fit over drafted requests: ms/round = 41.17 + 3.80 x drafts verified per round  (x range 2.24..13.22)
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+XB_half_hcf done 08:23:09
+READY tfb/p16 in 203 s; MemAvailable 39 GiB; GPU MiB 77165
+heldpar 16 in flight: 107 prompts, 20185 tokens in 121.5 s = 166.2 tok/s total; errors 0
+q38 hcf check: 97 read-outs, 1453 rows, 4451856 words compared with the five-launch chain, 0 differ
+q38 hcf check: 60000 read-outs, 3086875 rows, 9457982868 words compared with the five-launch chain, 0 differ
+0
+XB_chk16 done 08:28:35
+READY tfb/p16 in 204 s; MemAvailable 39 GiB; GPU MiB 77165
+distinct 16 users: 262.4 tok/s total  (7847 tokens in 29.9 s; max ttft 1.56 s; errors 0 [])
+distinct 16 users: 262.5 tok/s total  (7879 tokens in 30.0 s; max ttft 1.18 s; errors 0 [])
+distinct 8 users: 212.1 tok/s total  (4096 tokens in 19.3 s; max ttft 0.75 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 116.7 s = 172.9 tok/s total; errors 0
+XB_mu done 08:35:20
+READY tfb/p16 in 205 s; MemAvailable 39 GiB; GPU MiB 77165
+distinct 16 users: 265.7 tok/s total  (7879 tokens in 29.7 s; max ttft 1.66 s; errors 0 [])
+distinct 16 users: 263.3 tok/s total  (7837 tokens in 29.8 s; max ttft 1.20 s; errors 0 [])
+distinct 8 users: 212.3 tok/s total  (4096 tokens in 19.3 s; max ttft 0.75 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 117.1 s = 172.4 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+XB_et64 done 08:42:03
+READY tfb/p16 in 212 s; MemAvailable 38 GiB; GPU MiB 77165
+distinct 16 users: 258.3 tok/s total  (7845 tokens in 30.4 s; max ttft 1.48 s; errors 0 [])
+distinct 16 users: 258.3 tok/s total  (7753 tokens in 30.0 s; max ttft 1.17 s; errors 0 [])
+distinct 8 users: 213.4 tok/s total  (4096 tokens in 19.2 s; max ttft 0.75 s; errors 0 [])
+heldpar 16 in flight: 107 prompts, 20185 tokens in 115.8 s = 174.4 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+XB_et128 done 08:48:55
+Error response from daemon: No such container: q38-run-tf
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/urllib/request.py", line 1344, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+  File "/usr/lib/python3.12/http/client.py", line 1365, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1411, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1360, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1120, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.12/http/client.py", line 1064, in send
+    self.connect()
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/pico/q38/kit/qk.py", line 289, in <module>
+    main()
+  File "/home/pico/q38/kit/qk.py", line 196, in main
+    req("hi", 8)
+  File "/home/pico/q38/kit/qk.py", line 131, in req
+    with urllib.request.urlopen(r, timeout=timeout) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1347, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 111] Connection refused>
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/urllib/request.py", line 1344, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+  File "/usr/lib/python3.12/http/client.py", line 1365, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1411, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1360, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1120, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.12/http/client.py", line 1064, in send
+    self.connect()
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/pico/q38/kit/qk.py", line 289, in <module>
+    main()
+  File "/home/pico/q38/kit/qk.py", line 196, in main
+    req("hi", 8)
+  File "/home/pico/q38/kit/qk.py", line 131, in req
+    with urllib.request.urlopen(r, timeout=timeout) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1347, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 111] Connection refused>
+XB_c3072 done 08:49:33
+READY tfb/default in 188 s; MemAvailable 38 GiB; GPU MiB 78044

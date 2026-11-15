@@ -1,0 +1,500 @@
+diff --git a/zig/src/core/engine_api.zig b/zig/src/core/engine_api.zig
+index 0f0acd0..62aa2c4 100644
+--- a/zig/src/core/engine_api.zig
++++ b/zig/src/core/engine_api.zig
+@@ -104,6 +104,8 @@ pub const Request = struct {
+     /// q38 round 10: the client's `prediction` as token ids (its parts separated by 0xFFFF_FFFF): text the reply is expected to repeat.
+     /// Drafts only: its tokens are proposed to the verify window and kept only where they equal the model's own.
+     prediction: []const u32 = &.{},
++    /// q38 round 11: false keeps this request out of Recall's record: it does not draft from it and its prompt and reply are not added.
++    recall: bool = true,
+ 
+     /// The prompt as the prompt cache matches it: an image request's placeholders stand for their images.
+     pub fn cacheKey(r: *const Request) []const u32 {
+diff --git a/zig/src/core/lane_host_recall.zig b/zig/src/core/lane_host_recall.zig
+index 96ad2ae..1c021b8 100644
+--- a/zig/src/core/lane_host_recall.zig
++++ b/zig/src/core/lane_host_recall.zig
+@@ -23,7 +23,7 @@ pub fn attach(ctx: *anyopaque, store: *Store) void {
+ /// A drafted request's reader of the record (null: no record, or a request that drafts nothing).
+ pub fn reader(h: *LaneHost, job: *Job) ?*lanes.recall.Reader {
+     const store = h.recall orelse return null;
+-    if (!job.request.drafts) return null;
++    if (!job.request.drafts or !job.request.recall) return null;
+     job.recall.reader = .{ .gpa = h.gpa, .shared = &store.shared };
+     job.recall.reading = true;
+     return &job.recall.reader;
+@@ -31,7 +31,7 @@ pub fn reader(h: *LaneHost, job: *Job) ?*lanes.recall.Reader {
+ 
+ /// Its prompt and reply go in unless it is a background pass (a reply prefilled again) or a lesson's untaught request.
+ fn writes(job: *const Job) bool {
+-    return !job.request.background and !job.request.untaught;
++    return !job.request.background and !job.request.untaught and job.request.recall;
+ }
+ 
+ /// The prompt pass ended: what came before its resume point an earlier request read already.
+diff --git a/zig/src/core/lanes/engine.zig b/zig/src/core/lanes/engine.zig
+index ecad84c..05a82b4 100644
+--- a/zig/src/core/lanes/engine.zig
++++ b/zig/src/core/lanes/engine.zig
+@@ -12,6 +12,7 @@ const shape = @import("shape.zig");
+ const plan_lanes = @import("plan_lanes.zig");
+ const fill = @import("fill.zig");
+ const trail = @import("trail.zig");
++const q38_copy = @import("q38_copy.zig");
+ const lone_costs = @import("lone_costs.zig");
+ const open = @import("open.zig");
+ const handover = @import("handover.zig");
+@@ -47,6 +48,7 @@ pub const Engine = struct {
+     accepted: u64 = 0,
+     shared_rounds: u64 = 0,
+     alone: bool = true, // this step has one live stream: its copies may take their ramp
++    live_n: usize = 1, // q38 round 11: this step's live streams (a shared round's copy width is capped by the pass's rows a stream)
+     lone_kept: [2][lone_costs.bands]?lone_costs.Kept = @splat(@splat(null)), // the newest lone calibrations, greedy then sampled, a band each
+     steps: u64 = 0,
+     arena: std.heap.ArenaAllocator, // a round's temporaries
+@@ -136,6 +138,7 @@ pub const Engine = struct {
+             live.shrinkRetainingCapacity(kept);
+         }
+         e.alone = live.items.len == 1;
++        e.live_n = @max(1, live.items.len);
+         if (!e.alone) for (live.items) |s| {
+             s.shared_round = true;
+         };
+@@ -324,6 +327,8 @@ pub const Engine = struct {
+         };
+         if (st.on < 0) st.on = if (std.c.getenv("TF_STEP_LOG")) |v| (if (v[0] == '1') @as(i8, 1) else if (v[0] == '2') @as(i8, 2) else 0) else 0;
+         if (st.on == 0) return;
++        // round 11: a copy window's source (context, the client's prediction, Recall) and the match that let it in
++        if (p.kind == .copy) std.debug.print("QCOPY {s} {d}\n", .{ if (p.recalled) "recall" else if (q38_copy.last_side) "pred" else "ctx", q38_copy.last_match });
+         std.debug.print("QSTEP {s} {d} {d}\n", .{ @tagName(p.kind), rows, kept });
+         if (st.on >= 2) {
+             // the window's draft tokens, then the tokens the round commits (kept drafts and the bonus token)
+@@ -406,8 +411,11 @@ pub const Engine = struct {
+                     if (p.recalled) {
+                         if (s.recall) |r| r.observe(@intCast(own), @intCast(own_kept), s.rounds);
+                     } else if (s.proposer) |pr| pr.observe(@intCast(own), @intCast(own_kept));
+-                    if (e.alone) {
+-                        const width = s.copy_width orelse e.cfg.first_copy;
++                    s.copy_last = if (own_kept == own) 0 else if (own_kept >= 4) 1 else 2;
++                    if (e.alone or q38_copy.shared()) {
++                        // round 11: with TF_Q38_COPY_FIRST a window may have been wider than the stream's width: grow from what was offered
++                        const had = s.copy_width orelse e.cfg.first_copy;
++                        const width = if (q38_copy.first()) @max(had, @as(u32, @intCast(own))) else had;
+                         // q38 round 10 (TF_Q38_COPY_RESET=half; default: back to the first width): a copy that broke halves the next one
+                         const back = if (copyResetHalf()) @max(e.cfg.first_copy, width / 2) else e.cfg.first_copy;
+                         s.copy_width = if (own_kept == own) @min(e.cfg.max_copy, 2 * width + 1) else back;
+diff --git a/zig/src/core/lanes/proposer.zig b/zig/src/core/lanes/proposer.zig
+index bb82dd0..a5369c0 100644
+--- a/zig/src/core/lanes/proposer.zig
++++ b/zig/src/core/lanes/proposer.zig
+@@ -139,13 +139,16 @@ pub const SuffixLookup = struct {
+                     end = e;
+                 }
+             }
+-            if (match < s.side_min) match = 0;
++            const low = @import("q38_copy.zig").low_match;
++            if (match < (if (low > 0) @min(low, s.side_min) else s.side_min)) match = 0;
+         };
+         if (match == 0 or (own >= s.params.min_match and own > match)) return false;
+         var count = @min(s.side.len - end, @as(usize, @intCast(max_draft)));
+         if (std.mem.indexOfScalar(u32, s.side[end..][0..count], gap)) |g| count = g;
+         if (count == 0) return false;
+         try s.out.appendSlice(s.gpa, s.side[end..][0..count]);
++        @import("q38_copy.zig").last_match = match;
++        @import("q38_copy.zig").last_side = true;
+         s.last_match = @max(match, side_pass);
+         s.last_end = 0;
+         s.last_side = true;
+@@ -275,6 +278,8 @@ pub const SuffixLookup = struct {
+             }
+         }
+         if (s.side.len > 0 and try s.sideCopy(history, tail, len, key, best_len, max_draft)) return s.out.items;
++        @import("q38_copy.zig").last_match = best_len;
++        @import("q38_copy.zig").last_side = false;
+         s.last_match = best_len;
+         s.last_end = best_end;
+         if (best_len < s.params.min_match) return s.out.items;
+diff --git a/zig/src/core/lanes/q38_copy.zig b/zig/src/core/lanes/q38_copy.zig
+new file mode 100644
+index 0000000..4730a39
+--- /dev/null
++++ b/zig/src/core/lanes/q38_copy.zig
+@@ -0,0 +1,58 @@
++//! q38 round 11: knobs and measuring aids of the copy drafts (context copies, a client's `prediction`, Recall). Drafts only: none of this
++//! can change a reply, every copied token is kept only where it equals the model's own.
++const std = @import("std");
++
++fn envInt(comptime name: [:0]const u8, default: i64) i64 {
++    const st = struct {
++        var read: bool = false;
++        var value: i64 = 0;
++        const tag = name; // one cache a knob (a struct in a generic function is one type unless it names a comptime value)
++    };
++    if (!st.read) {
++        st.value = if (std.c.getenv(st.tag)) |v| std.fmt.parseInt(i64, std.mem.span(v), 10) catch default else default;
++        st.read = true;
++    }
++    return st.value;
++}
++
++/// TF_Q38_COPY_OFF=1 (measuring aid): no copy window at all (the head's chain everywhere), for chain-only logs that copy policies are replayed on.
++pub fn off() bool {
++    return envInt("TF_Q38_COPY_OFF", 0) == 1;
++}
++
++/// TF_Q38_COPY_MATCH=N (0: the lane core's 8): matching tokens a context copy needs.
++pub fn match() i64 {
++    return envInt("TF_Q38_COPY_MATCH", 0);
++}
++
++/// TF_Q38_COPY_FIRST=1 (default off): a lone stream's copy window starts wider when the match that lets it in is long and no broken copy is
++/// pending: 63 tokens from a 16-token match, 127 from a 32-token match (within the window's rows), instead of 15 then doubling. Read off a
++/// replay of logged agent and rewrite requests: such copies keep 59-80 tokens on average, a 4-7 token match keeps 4.
++pub fn first() bool {
++    return envInt("TF_Q38_COPY_FIRST", 0) == 1;
++}
++
++/// TF_Q38_COPY_REENTER=N (0: off): after a copy that broke late (4 or more of its tokens kept) a match of N tokens is enough for the next copy
++/// (the reply left the source for an edit and is back in it), instead of the 8 a first copy needs.
++pub fn reenter() i64 {
++    return envInt("TF_Q38_COPY_REENTER", 0);
++}
++
++/// TF_Q38_COPY_SHARED=1 (default off): with several streams in flight a stream's copy window keeps the lone stream's ramp (15, then doubled after
++/// each copy that landed whole, back to 15 after a break) up to the pass's rows a live stream, instead of staying at 15. For several
++/// agents rewriting files at once.
++pub fn shared() bool {
++    return envInt("TF_Q38_COPY_SHARED", 0) >= 1;
++}
++
++/// 1: the cap is an even share of the pass (rows / live streams - 1); 2: the rows left when every other live stream takes a 16-row window.
++pub fn sharedMode() i64 {
++    return envInt("TF_Q38_COPY_SHARED", 0);
++}
++
++/// Set by the round loop before it asks the proposer: the match a copy out of the prediction needs this time (0: its own rule).
++pub var low_match: i64 = 0;
++
++/// The last proposal's real match length and source, for TF_STEP_LOG's QCOPY line (engine thread only).
++pub var last_match: i64 = 0;
++pub var last_side: bool = false;
+diff --git a/zig/src/core/lanes/stream.zig b/zig/src/core/lanes/stream.zig
+index afd2e80..284559b 100644
+--- a/zig/src/core/lanes/stream.zig
++++ b/zig/src/core/lanes/stream.zig
+@@ -226,6 +226,7 @@ pub const Stream = struct {
+     proposal_depth: ?u32 = null, // null: legacy; otherwise the last routed request, zero until it succeeds
+     granted: ?u32 = null,
+     copy_width: ?u32 = null,
++    copy_last: u8 = 0, // q38 round 11: what its last copy did: 0 none yet or landed whole, 1 broke with 4 or more kept, 2 broke earlier
+ 
+     pub fn init(gpa: Allocator, spec: Spec) !Stream {
+         var s: Stream = .{
+diff --git a/zig/src/core/lanes/windows.zig b/zig/src/core/lanes/windows.zig
+index 135f87e..8fd60db 100644
+--- a/zig/src/core/lanes/windows.zig
++++ b/zig/src/core/lanes/windows.zig
+@@ -11,6 +11,7 @@ const fill = @import("fill.zig");
+ const shape = @import("shape.zig");
+ const ev = @import("events.zig");
+ const trail = @import("trail.zig");
++const q38_copy = @import("q38_copy.zig");
+ const Engine = @import("engine.zig").Engine;
+ const Stream = @import("stream.zig").Stream;
+ const Value = ev.Value;
+@@ -207,14 +208,37 @@ fn headTrunk(e: *Engine, s: *Stream, p: Plan, levels: usize) !?fill.Trunk {
+ /// A copy from the context backed by `enter_match` ids (Python `_copy_proposal`), else Recall's when it should pay.
+ pub fn copyProposal(e: *Engine, s: *Stream) !Copy {
+     if (e.cfg.max_copy == 0 or s.force.items.len > 0 or (e.cfg.root_copies and s.root_copy_miss)) return .{};
+-    const width: u32 = if (e.alone) (s.copy_width orelse e.cfg.first_copy) else e.cfg.first_copy;
++    if (q38_copy.off()) return .{};
++    const enter: i64 = if (q38_copy.match() > 0) q38_copy.match() else e.cfg.enter_match;
++    var width: u32 = if (e.alone) (s.copy_width orelse e.cfg.first_copy) else e.cfg.first_copy;
++    // q38 round 11 (TF_Q38_COPY_SHARED=1): in a shared round a stream's copy keeps its ramp too, capped by the pass's rows a live stream
++    // (the round's allocation still trims every plan to the pass)
++    // 1: an even share; 2: the rows left when every other live stream takes a 16-row window
++    if (!e.alone and q38_copy.shared()) {
++        const n: u32 = @intCast(e.live_n);
++        const cap: u32 = if (q38_copy.sharedMode() == 2) e.cfg.batch_rows -| (16 * (n - 1) + 1) else (e.cfg.batch_rows / n) -| 1;
++        width = @max(e.cfg.first_copy, @min(s.copy_width orelse e.cfg.first_copy, cap));
++    }
+     const most = @min(@as(i64, width), s.draftRoom() - 1);
+     if (s.proposer) |p| if (!e.alone or e.cfg.lone_copies) {
+         // a priced proposer's drafts are as it gives them, its none too: no width, length or match gate, no Recall
+         if (p.vtable.priced) return .{ .tokens = p.propose(s.context.items, @min(@as(i64, e.cfg.max_copy), s.draftRoom() - 1)) catch &.{} };
+-        const copied = p.proposeAfter(s.context.items, &.{}, most) catch &.{};
++        // q38 round 11 (lone streams; both off unless set): the first width from the match length, and a short match after a late break
++        const by_match = e.alone and q38_copy.first();
++        const low: i64 = if (e.alone and s.copy_last == 1) q38_copy.reenter() else 0;
++        q38_copy.low_match = low;
++        const ask = if (by_match) @min(@as(i64, e.cfg.max_copy), s.draftRoom() - 1) else most;
++        var copied = p.proposeAfter(s.context.items, &.{}, ask) catch &.{};
++        q38_copy.low_match = 0;
++        if (by_match) {
++            var w: i64 = most;
++            if (s.copy_last == 0 and q38_copy.last_match >= 32) w = @max(w, 127) else if (s.copy_last == 0 and q38_copy.last_match >= 16) w = @max(w, 63);
++            w = @max(0, @min(w, ask));
++            if (copied.len > @as(usize, @intCast(w))) copied = copied[0..@intCast(w)];
++        }
+         const least: usize = if (e.alone and e.cfg.context_copies) 1 else 2;
+-        if (copied.len >= least and p.lastMatch() >= e.cfg.enter_match) return .{ .tokens = copied };
++        const need = if (low > 0) @min(low, enter) else enter;
++        if (copied.len >= least and p.lastMatch() >= need) return .{ .tokens = copied };
+     };
+     const r = s.recall orelse return .{};
+     if (most < 2) return .{};
+diff --git a/zig/src/families/flashnext/cuda_mtp.zig b/zig/src/families/flashnext/cuda_mtp.zig
+index 8daa3db..f174e2f 100644
+--- a/zig/src/families/flashnext/cuda_mtp.zig
++++ b/zig/src/families/flashnext/cuda_mtp.zig
+@@ -96,6 +96,11 @@ test "the stop rules: per draft, running product, none" {
+ /// q38 round 10: the buffers hold 128 rows, so a copied continuation (context copy or a client's `prediction`) that keeps landing can be
+ /// verified 127 tokens a window; the knob still decides what the lane core may use (TF_FLASHNEXT_Q38_WINDOW_ROWS, 16..128).
+ pub const max_rows: usize = 128;
++/// q38 round 11: the rows a stream's window BUFFERS hold (scores, rollback copies, the late log): what the knob asks for, at least
++/// the 32 the tree held before round 10. max_rows stays the ceiling of the knob and sizes only small host arrays.
++pub fn bufRows() usize {
++    return @max(32, @import("cuda_knobs.zig").windowRows());
++}
+ /// qmm.split_for(2560, 2560): fc_embedding and fc_hidden sum K in four slices, in order.
+ pub const fc_sk: usize = 4;
+ /// Head rows one launch takes at most (a prompt's rows go through in pieces).
+diff --git a/zig/src/families/flashnext/cuda_mtp_draft.zig b/zig/src/families/flashnext/cuda_mtp_draft.zig
+index a402230..329b161 100644
+--- a/zig/src/families/flashnext/cuda_mtp_draft.zig
++++ b/zig/src/families/flashnext/cuda_mtp_draft.zig
+@@ -39,9 +39,17 @@ pub fn lateOn() bool {
+ }
+ 
+ /// Rows a lane's log holds (a window's rows go after the waiting ones) and the most that may wait after a rollback (a window's widest).
+-pub const late_cap: usize = 2 * max_rows;
+-pub const late_max_rows: usize = max_rows;
+-const late_layer_bytes: usize = late_cap * (gdn.log_row_k + gdn.log_row_v + gdn.log_row_gb);
++/// q38 round 11: both follow the window rows the knob asks for (mtp.bufRows(): 32 unless TF_FLASHNEXT_Q38_WINDOW_ROWS says more), not
++/// the compile-time ceiling mtp.max_rows, so a profile that keeps 32-row windows pays for 32-row buffers.
++pub fn lateCap() usize {
++    return 2 * mtp.bufRows();
++}
++pub fn lateMaxRows() usize {
++    return mtp.bufRows();
++}
++fn lateLayerBytes() usize {
++    return lateCap() * (gdn.log_row_k + gdn.log_row_v + gdn.log_row_gb);
++}
+ 
+ /// The format of the MTP head's own attention cache for a stream of `cap` positions when the engine's main caches are `main`
+ /// and a stream is charged its `window`'s bytes with the head's cache in `main` too (cuda_lanes_load.zig streamBytes). The head
+@@ -122,15 +130,23 @@ pub const Draft = struct {
+     host: []u16,
+     best_host: [max_rows * 4]f32 = undefined,
+ 
+-    pub const late_max = late_max_rows;
++    pub fn lateMax() usize {
++        return lateMaxRows();
++    }
+     /// A test's choice for the Drafts it makes next (null: the environment's).
+     pub var late_force: ?bool = null;
+     pub const hist_at: usize = 0;
+     pub const proj_at: usize = hist_at + linear_n * conv_bytes;
+-    pub const tail_at: usize = proj_at + linear_n * max_rows * proj_bytes;
++    pub fn tailAt() usize {
++        return proj_at + linear_n * mtp.bufRows() * proj_bytes;
++    }
+     /// The window's n-gram rows (the pass's ple_nrow), saved for a rollback to shift the kept ones into the tail.
+-    pub const nrow_at: usize = tail_at + ple_tail_n * wide * 2;
+-    const saved_bytes: usize = nrow_at + max_rows * wide * 2;
++    pub fn nrowAt() usize {
++        return tailAt() + ple_tail_n * wide * 2;
++    }
++    fn savedBytes() usize {
++        return nrowAt() + mtp.bufRows() * wide * 2;
++    }
+ 
+     /// Device bytes `init(cap, draft_n, rows)` allocates.
+     pub fn bytes(cap: usize, draft_n: usize, rows: usize) usize {
+@@ -139,7 +155,7 @@ pub const Draft = struct {
+ 
+     /// bytes with the head's cache in format `format`.
+     pub fn bytesFor(format: kv_format.Kv, cap: usize, draft_n: usize, rows: usize) usize {
+-        return cap * format.position() + prompt.pooledBytes(cap) + @max(rows, max_rows) * wide * 2 + wide * 2 + max_rows * vocab * 2 + draft_n * 2 + max_rows * 16 + saved_bytes + linear_n * state_n * 4 + (if (lateOn()) linear_n * late_layer_bytes else 0);
++        return cap * format.position() + prompt.pooledBytes(cap) + @max(rows, max_rows) * wide * 2 + wide * 2 + mtp.bufRows() * vocab * 2 + draft_n * 2 + max_rows * 16 + savedBytes() + linear_n * state_n * 4 + (if (lateOn()) linear_n * lateLayerBytes() else 0);
+     }
+ 
+     /// A head cache of `cap` entries; `rows` the widest prompt chunk whose streams it keeps.
+@@ -162,20 +178,20 @@ pub const Draft = struct {
+         errdefer d.streams.free();
+         d.out = try q38Take(driver, stream, wide * 2);
+         errdefer d.out.free();
+-        d.logits = try q38Take(driver, stream, max_rows * vocab * 2);
++        d.logits = try q38Take(driver, stream, mtp.bufRows() * vocab * 2);
+         errdefer d.logits.free();
+         d.dlogits = try q38Take(driver, stream, draft_n * 2);
+         errdefer d.dlogits.free();
+         d.best = try q38Take(driver, stream, max_rows * 16);
+         errdefer d.best.free();
+-        d.saved = try q38Take(driver, stream, saved_bytes);
++        d.saved = try q38Take(driver, stream, savedBytes());
+         errdefer d.saved.free();
+         var made: usize = 0;
+         errdefer for (d.spare[0..made]) |*b| b.free();
+         while (made < linear_n) : (made += 1) d.spare[made] = try q38Take(driver, stream, state_n * 4);
+-        if (lateOn()) d.log = try q38Take(driver, stream, linear_n * late_layer_bytes);
++        if (lateOn()) d.log = try q38Take(driver, stream, linear_n * lateLayerBytes());
+         errdefer if (d.log) |*b| b.free();
+-        d.host = try q38TakeHost(gpa, @max(max_rows * vocab, draft_n));
++        d.host = try q38TakeHost(gpa, @max(mtp.bufRows() * vocab, draft_n));
+         errdefer gpa.free(d.host);
+         errdefer cuda.completion.drain(driver, stream, "Flash Next draft fills did not drain before rollback");
+         // zeroed on the compute stream, ahead of the passes that read them
+@@ -184,11 +200,11 @@ pub const Draft = struct {
+         for (&d.keep.layers, 0..) |*lk, layer| {
+             if (!wt.linearLayer(layer)) continue;
+             lk.hist = d.saved.ptr + hist_at + li * conv_bytes;
+-            lk.proj = d.saved.ptr + proj_at + li * max_rows * proj_bytes;
++            lk.proj = d.saved.ptr + proj_at + li * mtp.bufRows() * proj_bytes;
+             if (d.log) |b| {
+-                lk.log_k = b.ptr + li * late_layer_bytes;
+-                lk.log_v = lk.log_k + late_cap * gdn.log_row_k;
+-                lk.log_gb = lk.log_v + late_cap * gdn.log_row_v;
++                lk.log_k = b.ptr + li * lateLayerBytes();
++                lk.log_v = lk.log_k + lateCap() * gdn.log_row_k;
++                lk.log_gb = lk.log_v + lateCap() * gdn.log_row_v;
+             }
+             li += 1;
+         }
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index d8c1de9..733d8dc 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -648,7 +648,7 @@ pub fn Ops(comptime Tri: type) type {
+             if (o.main) |m| return m.verify(m.ptr, seq, d, ids);
+             o.e.round_graph.clear();
+             const n = ids.len;
+-            if (n == 0 or n > max_rows) return error.WindowTooWide;
++            if (n == 0 or n > mtp.bufRows()) return error.WindowTooWide;
+             if (seq.fed + n > seq.cap) return error.PromptTooLong;
+             d.settle(seq);
+             d.fed0 = seq.fed;
+@@ -661,9 +661,9 @@ pub fn Ops(comptime Tri: type) type {
+             d.keep.pend = @intCast(d.pend);
+             d.skip = keeps and d.log != null and d.pend + n <= @import("cuda_knobs.zig").q38LateSkip();
+             d.keep.skip_state = d.skip;
+-            if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.tail_at, seq.tail.ptr, ple_tail_n * wide * 2);
++            if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.tailAt(), seq.tail.ptr, ple_tail_n * wide * 2);
+             try o.e.forward(Tri, o.tri, seq, ids, .{ .logits = .all, .logits_out = d.logits.ptr, .keep = if (keeps) &d.keep else null, .streams = d.streams.ptr });
+-            if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.nrow_at, o.e.batch_s.?.ple_nrow, n * wide * 2);
++            if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.nrowAt(), o.e.batch_s.?.ple_nrow, n * wide * 2);
+             d.open = keeps;
+         }
+ 
+@@ -672,7 +672,7 @@ pub fn Ops(comptime Tri: type) type {
+             if (o.main != null) return error.UnsupportedRankOperation;
+             // every window refused before any stream's state moves
+             for (seqs, idss) |seq, ids| {
+-                if (ids.len == 0 or ids.len > max_rows) return error.WindowTooWide;
++                if (ids.len == 0 or ids.len > mtp.bufRows()) return error.WindowTooWide;
+                 if (seq.fed + ids.len > seq.cap) return error.PromptTooLong;
+             }
+             o.e.round_graph.clear();
+@@ -690,14 +690,14 @@ pub fn Ops(comptime Tri: type) type {
+                 d.keep.pend = @intCast(d.pend);
+                 d.skip = keeps and d.log != null and d.pend + n <= @import("cuda_knobs.zig").q38LateSkip();
+                 d.keep.skip_state = d.skip;
+-                if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.tail_at, seq.tail.ptr, ple_tail_n * wide * 2);
++                if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.tailAt(), seq.tail.ptr, ple_tail_n * wide * 2);
+                 w.* = .{ .seq = seq, .ids = ids, .keep = if (keeps) &d.keep else null, .streams = d.streams.ptr, .logits = d.logits.ptr };
+             }
+             try o.e.windows(Tri, o.tri, wins, out);
+             var row0: usize = 0;
+             for (ds, idss) |d, ids| {
+                 const keeps = ids.len > 1;
+-                if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.nrow_at, o.e.batch_s.?.ple_nrow + row0 * wide * 2, ids.len * wide * 2);
++                if (keeps) try copyAsync(o.stream(), d.saved.ptr + Draft.nrowAt(), o.e.batch_s.?.ple_nrow + row0 * wide * 2, ids.len * wide * 2);
+                 d.open = keeps;
+                 row0 += ids.len;
+             }
+@@ -824,8 +824,8 @@ pub fn Ops(comptime Tri: type) type {
+             var hist = d.history;
+             for (d.ids[0..keep]) |t| hist = .{ hist[1], t };
+             seq.history = hist;
+-            try copyAsync(st, seq.tail.ptr, d.saved.ptr + Draft.tail_at, ple_tail_n * wide * 2);
+-            try shift(k, st, seq.tail.ptr, d.saved.ptr + Draft.nrow_at, wide, keep, ple_tail_n, wide);
++            try copyAsync(st, seq.tail.ptr, d.saved.ptr + Draft.tailAt(), ple_tail_n * wide * 2);
++            try shift(k, st, seq.tail.ptr, d.saved.ptr + Draft.nrowAt(), wide, keep, ple_tail_n, wide);
+             // TF_FLASHNEXT_KEEP_LATE: the conv windows move on, the states do not: the kept rows are already in the log, after the
+             // rows waiting there, and the next window's chain takes them (or flushLate, when too many would wait)
+             const late = d.log != null;
+@@ -865,7 +865,7 @@ pub fn Ops(comptime Tri: type) type {
+             if (late) {
+                 d.pend += keep;
+                 d.keep.pend = @intCast(d.pend);
+-                if (d.pend > Draft.late_max) try o.flushLate(seq, d);
++                if (d.pend > Draft.lateMax()) try o.flushLate(seq, d);
+             }
+         }
+ 
+@@ -886,7 +886,7 @@ pub fn Ops(comptime Tri: type) type {
+             a.add(d.saved.ptr + Draft.hist_at);
+             a.add(@as(c_longlong, @intCast(conv_bytes / 2)));
+             a.add(d.saved.ptr + Draft.proj_at);
+-            a.add(@as(c_longlong, @intCast(max_rows * gdn.proj_width)));
++            a.add(@as(c_longlong, @intCast(mtp.bufRows() * gdn.proj_width)));
+             a.add(@as(c_longlong, @intCast(gdn.proj_width)));
+             a.add(cint(keep));
+             a.add(cint(gdn.taps - 1));
+diff --git a/zig/src/server/anthropic_translate.zig b/zig/src/server/anthropic_translate.zig
+index 095ad66..0d9e53c 100644
+--- a/zig/src/server/anthropic_translate.zig
++++ b/zig/src/server/anthropic_translate.zig
+@@ -190,7 +190,8 @@ pub fn translate(cx: *Cx, body: Value, count: bool) errors.Refused!Value {
+         if (s != .bool) return cx.refuse("stream must be a boolean");
+         try chat.put(a, "stream", s);
+     }
+-    for ([_][]const u8{ "temperature", "top_p", "top_k" }) |k| if (body.get(k)) |v| try chat.put(a, k, v);
++    // q38 round 11: `prediction` (OpenAI's predicted-outputs shape) and `recall` are read as on /v1/chat/completions: drafts only
++    for ([_][]const u8{ "temperature", "top_p", "top_k", "prediction", "recall" }) |k| if (body.get(k)) |v| try chat.put(a, k, v);
+     if (body.get("stop_sequences")) |stops| {
+         const ok = stops == .array and for (stops.array) |s| {
+             if (s != .string or s.string.len == 0) break false;
+diff --git a/zig/src/server/chat.zig b/zig/src/server/chat.zig
+index 102f114..7d79314 100644
+--- a/zig/src/server/chat.zig
++++ b/zig/src/server/chat.zig
+@@ -205,6 +205,10 @@ pub fn prepare(srv: *Server, cx: *Cx, input: Input, gone: anytype) Failure!Prepa
+     };
+     try srv.checkFeatures(cx, f, input.tools.len > 0, thinking, rendered.ids, input.tools, &request);
+     if (drafts) request.prediction = try predictionIds(srv, cx, f.get("prediction"));
++    // q38 round 11: `"recall": false` keeps this request out of the server's --recall record (it neither drafts from it nor adds to it)
++    if (f.get("recall")) |v| if (v == .bool and !v.bool) {
++        request.recall = false;
++    };
+     if (thinking) {
+         const budget_field = f.get("thinking_budget");
+         const budget: i64 = if (budget_field != null and budget_field.?.truthy()) budget_field.?.int64() orelse 0 else srv.config.thinking_budget;
+diff --git a/zig/src/server/openai.zig b/zig/src/server/openai.zig
+index fb5a66b..9880261 100644
+--- a/zig/src/server/openai.zig
++++ b/zig/src/server/openai.zig
+@@ -152,7 +152,7 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
+         input.temperature = if (t == .float) t.float else std.fmt.parseFloat(f64, t.int) catch 0;
+     };
+     const sampling = try json.newObject(cx.a);
+-    for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "seed", "priority", "draft", "thinking_budget", "ignore_eos", "stop", "prediction" } ++ grammar.fields) |k| if (body.get(k)) |v| try sampling.put(cx.a, k, v);
++    for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "seed", "priority", "draft", "thinking_budget", "ignore_eos", "stop", "prediction", "recall" } ++ grammar.fields) |k| if (body.get(k)) |v| try sampling.put(cx.a, k, v);
+     try grammar.refusal(cx, body);
+     if (input.tools.len > 0 and try tool_specs.choiceRequiresCall(cx.a, body.get("tool_choice"))) try sampling.put(cx.a, "tool_call_required", .{ .bool = true });
+     if (body.field("parallel_tool_calls")) |p| if (p == .bool and !p.bool) try sampling.put(cx.a, "tool_call_single", .{ .bool = true });
+diff --git a/zig/src/server/responses_translate.zig b/zig/src/server/responses_translate.zig
+index 6a5f4c8..5084fc3 100644
+--- a/zig/src/server/responses_translate.zig
++++ b/zig/src/server/responses_translate.zig
+@@ -10,7 +10,7 @@ const Cx = errors.Cx;
+ const Allocator = std.mem.Allocator;
+ 
+ /// Fields a chat completion reads as they are: OpenAI's and this server's own.
+-const passed = [_][]const u8{ "model", "temperature", "top_p", "top_k", "min_p", "seed", "stream", "parallel_tool_calls", "stop", "draft", "thinking_budget", "ignore_eos", "priority", "return_token_ids", "chat_template_kwargs" };
++const passed = [_][]const u8{ "model", "temperature", "top_p", "top_k", "min_p", "seed", "stream", "parallel_tool_calls", "stop", "draft", "thinking_budget", "ignore_eos", "priority", "return_token_ids", "chat_template_kwargs", "prediction", "recall" };
+ const refused = [_][2][]const u8{
+     .{ "background", "background responses are not supported: send the request and wait for it" },
+     .{ "conversation", "conversations are not supported: send previous_response_id or the items" },

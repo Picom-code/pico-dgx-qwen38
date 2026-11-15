@@ -1,0 +1,88 @@
+READY tfb/default in 214 s; MemAvailable 39 GiB; GPU MiB 77122
+edit 24 agent 16 files from /usr/lib/python3.12
+heldpar 1 in flight: 24 prompts, 19505 tokens in 112.3 s = 173.7 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 198.5  tok/round 18.384  drafts proposed/round 19.572  accepted/round 17.372  accept rate 0.888  ms/round 92.60  rows/round 20.57
+fit over drafted requests: ms/round = 52.60 + 2.04 x drafts verified per round  (x range 12.53..29.33)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 41.2 s = 57.2 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 75.6  tok/round 4.647  drafts proposed/round 5.639  accepted/round 3.658  accept rate 0.649  ms/round 61.48  rows/round 6.64
+fit over drafted requests: ms/round = 44.66 + 2.98 x drafts verified per round  (x range 3.91..7.71)
+heldpar 1 in flight: 80 prompts, 15390 tokens in 273.0 s = 56.4 tok/s total; errors 0
+== chat
+drafted requests: n 69 tok/s 60.3  tok/round 3.281  drafts proposed/round 3.726  accepted/round 2.284  accept rate 0.613  ms/round 54.44  rows/round 4.73
+fit over drafted requests: ms/round = 38.88 + 4.18 x drafts verified per round  (x range 1.90..9.00)
+Q2_ref done 10:22:10
+READY tfb/default in 207 s; MemAvailable 39 GiB; GPU MiB 77122
+edit 24 agent 16 files from /usr/lib/python3.12
+heldpar 1 in flight: 24 prompts, 19505 tokens in 112.2 s = 173.8 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 198.7  tok/round 18.612  drafts proposed/round 19.921  accepted/round 17.600  accept rate 0.884  ms/round 93.66  rows/round 20.92
+fit over drafted requests: ms/round = 52.86 + 2.05 x drafts verified per round  (x range 12.85..29.50)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 41.0 s = 57.5 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 76.2  tok/round 4.715  drafts proposed/round 5.736  accepted/round 3.726  accept rate 0.650  ms/round 61.91  rows/round 6.74
+fit over drafted requests: ms/round = 44.94 + 2.96 x drafts verified per round  (x range 3.91..8.02)
+heldpar 1 in flight: 80 prompts, 15390 tokens in 272.9 s = 56.4 tok/s total; errors 0
+== chat
+drafted requests: n 69 tok/s 60.3  tok/round 3.296  drafts proposed/round 3.736  accepted/round 2.298  accept rate 0.615  ms/round 54.66  rows/round 4.74
+fit over drafted requests: ms/round = 38.91 + 4.22 x drafts verified per round  (x range 1.95..7.50)
+identical 24/24  mean shared-prefix fraction 1.000  differ: []
+identical 16/16  mean shared-prefix fraction 1.000  differ: []
+identical 80/80  mean shared-prefix fraction 1.000  differ: []
+Q2_sc3 done 10:32:45
+READY tfb/default in 182 s; MemAvailable 38 GiB; GPU MiB 77122
+edit 24 agent 16 files from /usr/lib/python3.12
+heldpar 1 in flight: 24 prompts, 19505 tokens in 112.5 s = 173.4 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 198.2  tok/round 18.541  drafts proposed/round 19.817  accepted/round 17.529  accept rate 0.885  ms/round 93.54  rows/round 20.82
+fit over drafted requests: ms/round = 52.15 + 2.09 x drafts verified per round  (x range 12.76..29.50)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 41.1 s = 57.3 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 75.9  tok/round 4.696  drafts proposed/round 5.731  accepted/round 3.706  accept rate 0.647  ms/round 61.90  rows/round 6.73
+fit over drafted requests: ms/round = 44.91 + 2.96 x drafts verified per round  (x range 3.91..8.02)
+heldpar 1 in flight: 80 prompts, 15390 tokens in 272.8 s = 56.4 tok/s total; errors 0
+== chat
+drafted requests: n 69 tok/s 60.3  tok/round 3.292  drafts proposed/round 3.728  accepted/round 2.295  accept rate 0.615  ms/round 54.58  rows/round 4.73
+fit over drafted requests: ms/round = 38.80 + 4.23 x drafts verified per round  (x range 1.90..7.50)
+identical 24/24  mean shared-prefix fraction 1.000  differ: []
+identical 16/16  mean shared-prefix fraction 1.000  differ: []
+identical 80/80  mean shared-prefix fraction 1.000  differ: []
+Q2_sc5 done 10:42:57
+READY tfb/default in 168 s; MemAvailable 38 GiB; GPU MiB 77122
+edit 24 agent 16 files from /usr/lib/python3.12
+heldpar 1 in flight: 24 prompts, 19505 tokens in 111.0 s = 175.6 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 201.2  tok/round 19.066  drafts proposed/round 20.307  accepted/round 18.055  accept rate 0.889  ms/round 94.77  rows/round 21.31
+fit over drafted requests: ms/round = 52.83 + 2.07 x drafts verified per round  (x range 13.24..29.69)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 41.0 s = 57.5 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 76.3  tok/round 4.755  drafts proposed/round 5.857  accepted/round 3.766  accept rate 0.643  ms/round 62.33  rows/round 6.86
+fit over drafted requests: ms/round = 44.40 + 3.06 x drafts verified per round  (x range 3.91..8.23)
+heldpar 1 in flight: 80 prompts, 15390 tokens in 273.3 s = 56.3 tok/s total; errors 0
+== chat
+drafted requests: n 69 tok/s 60.2  tok/round 3.297  drafts proposed/round 3.797  accepted/round 2.300  accept rate 0.606  ms/round 54.78  rows/round 4.80
+fit over drafted requests: ms/round = 39.17 + 4.11 x drafts verified per round  (x range 1.99..8.30)
+identical 24/24  mean shared-prefix fraction 1.000  differ: []
+identical 16/16  mean shared-prefix fraction 1.000  differ: []
+identical 80/80  mean shared-prefix fraction 1.000  differ: []
+Q2_sc3w done 10:52:53
+READY tfb/default in 161 s; MemAvailable 39 GiB; GPU MiB 77122
+heldpar 1 in flight: 40 prompts, 8058 tokens in 143.2 s = 56.3 tok/s total; errors 0
+mtpstat head-rows 79591 d0: 2400 x 1.952 ms d1: 2173 x 1.713 ms d2: 1812 x 1.700 ms d3: 1462 x 1.689 ms d4: 1188 x 1.684 ms d5: 965 x 1.677 ms
+Q2_hp0 done 10:57:59
+READY tfb/default in 162 s; MemAvailable 39 GiB; GPU MiB 77122
+heldpar 1 in flight: 40 prompts, 8058 tokens in 142.8 s = 56.4 tok/s total; errors 0
+mtpstat head-rows 79591 d0: 2400 x 1.688 ms d1: 2173 x 1.695 ms d2: 1812 x 1.681 ms d3: 1462 x 1.673 ms d4: 1188 x 1.668 ms d5: 965 x 1.660 ms
+Q2_hp1 done 11:03:06
+READY tfb/nodraft in 160 s; MemAvailable 40 GiB; GPU MiB 75474
+heldpar 1 in flight: 40 prompts, 6415 tokens in 284.1 s = 22.6 tok/s total; errors 0
+== held
+no-draft requests: n 34 tok/s 23.3  tok/round 1.006  drafts proposed/round 0.000  accepted/round 0.000  accept rate 0.000  ms/round 43.24  rows/round 1.00
+Q2_nd done 11:10:33
+READY tfb/nodraft in 156 s; MemAvailable 40 GiB; GPU MiB 75474
+heldpar 1 in flight: 40 prompts, 6415 tokens in 260.6 s = 24.6 tok/s total; errors 0
+== held
+no-draft requests: n 34 tok/s 25.4  tok/round 1.006  drafts proposed/round 0.000  accepted/round 0.000  accept rate 0.000  ms/round 39.59  rows/round 1.00
+identical 40/40  mean shared-prefix fraction 1.000  differ: []
+Q2_ndc done 11:17:32

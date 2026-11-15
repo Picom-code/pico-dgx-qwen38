@@ -1,0 +1,301 @@
+diff --git a/zig/kernels/cuda/flashnext_mtp.cu b/zig/kernels/cuda/flashnext_mtp.cu
+index 8649035..9f71ba9 100644
+--- a/zig/kernels/cuda/flashnext_mtp.cu
++++ b/zig/kernels/cuda/flashnext_mtp.cu
+@@ -411,6 +411,138 @@ extern "C" __global__ void __launch_bounds__(1024) fn_q38_head2_scan(const unsig
+     }
+ }
+ 
++// ---- q38 HEAD2 round 9 (TF_FLASHNEXT_Q38_HEAD2_FAST): the preview's arithmetic in integers. Drafts only.
++// fn_q38_head2_scan2 = fn_q38_head2_scan for R = 512 with the rotated input row as int8 (one scale a group of 32 values) and a lane's
++// 16 code x input products as four dp4a (a row was 16 shift / mask / convert / multiply-add steps a lane). The preview's scores differ
++// from fn_q38_head2_scan's by the input's rounding (under 0.4 % of a group's largest value); the 4-bit rows re-score its best rows.
++static __device__ __forceinline__ int q38_dp4a(int a, int b, int c) {
++    int r;
++    asm volatile("dp4a.s32.s32 %0, %1, %2, %3;" : "=r"(r) : "r"(a), "r"(b), "r"(c));
++    return r;
++}
++
++extern "C" __global__ void __launch_bounds__(1024) fn_q38_head2_scan2(const unsigned char* __restrict__ P, const __nv_bfloat16* __restrict__ S,
++                                                                      const __nv_bfloat16* __restrict__ B, const float* __restrict__ xr,
++                                                                      __nv_bfloat16* __restrict__ out, int V, int R, int* __restrict__ cidx,
++                                                                      float* __restrict__ tails) {
++    using namespace fn_mtp;
++    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    __shared__ float sx[512];
++    __shared__ float sg[16];
++    __shared__ float sq[16];
++    __shared__ signed char s8[512];
++    __shared__ float sv[256];
++    if (t < 512) sx[t] = xr[t];
++    __syncthreads();
++    if (t < 16) {
++        float a = 0.0f, m = 0.0f;
++#pragma unroll
++        for (int j = 0; j < 32; ++j) {
++            const float x = sx[t * 32 + j];
++            a += x;
++            m = fmaxf(m, fabsf(x));
++        }
++        sg[t] = a;
++        sq[t] = m > 0.0f ? m / 127.0f : 0.0f;
++    }
++    __syncthreads();
++    if (t < 512) {
++        const float q = sq[t >> 5];
++        s8[t] = q > 0.0f ? static_cast<signed char>(__float2int_rn(sx[t] / q)) : static_cast<signed char>(0);
++    }
++    __syncthreads();
++    const int g = lane >> 1;
++    const bool first = (lane & 1) == 0;
++    // the lane's 16 input values as four words: values 0,2,4,6 | 8,10,12,14 | 1,3,5,7 | 9,11,13,15 (a byte a value)
++    const signed char* xs = s8 + lane * 16;
++    int w4[4];
++#pragma unroll
++    for (int k = 0; k < 4; ++k) {
++        const int o = (k & 1) * 8 + (k >> 1);
++        w4[k] = (static_cast<int>(xs[o]) & 255) | ((static_cast<int>(xs[o + 2]) & 255) << 8) | ((static_cast<int>(xs[o + 4]) & 255) << 16) | ((static_cast<int>(xs[o + 6]) & 255) << 24);
++    }
++    const float xq = sq[g];
++    const float sgg = sg[g];
++    const int v0 = blockIdx.x * 256 + warp * 8;
++    unsigned long long q[8];
++    float sc[8], bi[8];
++#pragma unroll
++    for (int i = 0; i < 8; ++i) {
++        const int v = v0 + i;
++        const bool in = v < V;
++        q[i] = in ? *reinterpret_cast<const unsigned long long*>(P + static_cast<long long>(v) * 256 + lane * 8) : 0ull;
++        sc[i] = in ? __bfloat162float(S[static_cast<long long>(v) * 16 + g]) : 0.0f;
++        bi[i] = (in && first) ? __bfloat162float(B[static_cast<long long>(v) * 16 + g]) : 0.0f;
++    }
++#pragma unroll
++    for (int i = 0; i < 8; ++i) {
++        const int v = v0 + i;
++        float sum = -CUDART_INF_F;
++        if (v < V) {
++            const unsigned long long e = q[i] & 0x0f0f0f0f0f0f0f0full, o = (q[i] >> 4) & 0x0f0f0f0f0f0f0f0full;
++            int d = q38_dp4a(static_cast<int>(e), w4[0], 0);
++            d = q38_dp4a(static_cast<int>(e >> 32), w4[1], d);
++            d = q38_dp4a(static_cast<int>(o), w4[2], d);
++            d = q38_dp4a(static_cast<int>(o >> 32), w4[3], d);
++            sum = sc[i] * xq * static_cast<float>(d) + bi[i] * sgg;
++            for (int w = 16; w; w >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, w);
++            if (lane == 0) out[v] = __float2bfloat16(sum);
++        }
++        if (lane == 0) sv[warp * 8 + i] = sum;
++    }
++    __syncthreads();
++    if (warp != 0) return;
++    float b1 = -CUDART_INF_F;
++    int i1 = 0x7fffffff;
++#pragma unroll
++    for (int j = 0; j < 8; ++j) better(b1, i1, sv[lane * 8 + j], lane * 8 + j);
++    for (int o = 16; o; o >>= 1) better(b1, i1, __shfl_xor_sync(0xffffffffu, b1, o), __shfl_xor_sync(0xffffffffu, i1, o));
++    float b2 = -CUDART_INF_F;
++    int i2 = 0x7fffffff;
++#pragma unroll
++    for (int j = 0; j < 8; ++j)
++        if (lane * 8 + j != i1) better(b2, i2, sv[lane * 8 + j], lane * 8 + j);
++    for (int o = 16; o; o >>= 1) better(b2, i2, __shfl_xor_sync(0xffffffffu, b2, o), __shfl_xor_sync(0xffffffffu, i2, o));
++    float b3 = -CUDART_INF_F;
++    int i3 = 0x7fffffff;
++#pragma unroll
++    for (int j = 0; j < 8; ++j)
++        if (lane * 8 + j != i1 && lane * 8 + j != i2) better(b3, i3, sv[lane * 8 + j], lane * 8 + j);
++    for (int o = 16; o; o >>= 1) better(b3, i3, __shfl_xor_sync(0xffffffffu, b3, o), __shfl_xor_sync(0xffffffffu, i3, o));
++    float rest = 0.0f;
++#pragma unroll
++    for (int j = 0; j < 8; ++j) {
++        const int k = lane * 8 + j;
++        if (k != i1 && k != i2 && k != i3 && sv[k] > -CUDART_INF_F) rest += expf(sv[k] - b1);
++    }
++    for (int o = 16; o; o >>= 1) rest += __shfl_xor_sync(0xffffffffu, rest, o);
++    if (lane == 0) {
++        const int base = blockIdx.x * 256;
++        cidx[3 * blockIdx.x] = b1 > -CUDART_INF_F ? base + i1 : -1;
++        cidx[3 * blockIdx.x + 1] = b2 > -CUDART_INF_F ? base + i2 : -1;
++        cidx[3 * blockIdx.x + 2] = b3 > -CUDART_INF_F ? base + i3 : -1;
++        tails[blockIdx.x] = rest > 0.0f ? b1 + logf(rest) : -CUDART_INF_F;
++    }
++}
++
++// fn_q38_head2_rot with the rotation as bf16 (half the bytes a chain step).
++extern "C" __global__ void __launch_bounds__(256) fn_q38_head2_rot2(const __nv_bfloat16* __restrict__ x, const __nv_bfloat16* __restrict__ At,
++                                                                     float* __restrict__ xr, int D) {
++    const int o = blockIdx.x, t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    const __nv_bfloat16* a = At + static_cast<long long>(o) * D;
++    float sum = 0.0f;
++    for (int i = t; i < D; i += blockDim.x) sum += __bfloat162float(a[i]) * __bfloat162float(x[i]);
++    for (int w = 16; w; w >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, w);
++    __shared__ float ss[8];
++    if (lane == 0) ss[warp] = sum;
++    __syncthreads();
++    if (t == 0) {
++        float all = 0.0f;
++        for (int w = 0; w < static_cast<int>(blockDim.x >> 5); ++w) all += ss[w];
++        xr[o] = all;
++    }
++}
++
+ // fn_q38_head2_exact that also leaves the score as fp32 in exv[block] (-inf for a missing row).
+ extern "C" __global__ void __launch_bounds__(128) fn_q38_head2_exact2(const int* __restrict__ cols, const unsigned char* __restrict__ W,
+                                                                       const __nv_bfloat16* __restrict__ S, const __nv_bfloat16* __restrict__ B,
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index fa5f448..5a4e894 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -455,3 +455,57 @@ pub fn q38SGate() SGate {
+     }
+     return g;
+ }
++
++/// TF_FLASHNEXT_Q38_STOP2=x (q38; default 0 = off; 0.5 measured): a lone chain under the product rule (TF_FLASHNEXT_CONFIDENCE < 0) does
++/// not compute its next step once the running product of the proposed drafts is below x: that step's draft would cross the gate more
++/// often than not, and a step that crosses is computed and thrown away. Drafts only: fewer are proposed, every token is still verified.
++pub fn q38Stop2() f64 {
++    const st = struct {
++        var c: f64 = -1;
++    };
++    if (st.c < 0) {
++        st.c = 0;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_STOP2")) |v| st.c = std.fmt.parseFloat(f64, std.mem.span(v)) catch 0;
++        if (!(st.c >= 0 and st.c <= 1.0)) st.c = 0;
++    }
++    return st.c;
++}
++
++/// TF_FLASHNEXT_Q38_HEAD2_FAST=N (q38; default 0; bits): 1 = the two-stage head's preview (block form) in integers (fn_q38_head2_scan2:
++/// the rotated input as int8, dp4a); 2 = the rotation as bf16 (fn_q38_head2_rot2). 3 = both. Drafts only.
++pub fn q38Head2Fast() u32 {
++    const v = std.c.getenv("TF_FLASHNEXT_Q38_HEAD2_FAST") orelse return 0;
++    return (std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0) & 3;
++}
++
++/// TF_FLASHNEXT_Q38_DEEP=P[,BASE] (q38; default off; BASE default 6): with TF_FLASHNEXT_DRAFTS above BASE, a lone chain goes past BASE
++/// drafts only while the running product of its drafts is at least P (the product rule, TF_FLASHNEXT_CONFIDENCE < 0); chains of a
++/// shared round stay at BASE. Drafts only: every token is still verified.
++pub const Deep = struct { p: f64 = 0, base: usize = 6 };
++pub fn q38Deep() Deep {
++    const st = struct {
++        var done: bool = false;
++        var d: Deep = .{};
++    };
++    if (!st.done) {
++        st.done = true;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_DEEP")) |v| {
++            var it = std.mem.splitScalar(u8, std.mem.span(v), ',');
++            const p = std.fmt.parseFloat(f64, it.first()) catch 0;
++            const base = if (it.next()) |b| std.fmt.parseInt(usize, b, 10) catch 6 else 6;
++            if (p > 0 and p <= 1.0 and base >= 1) st.d = .{ .p = p, .base = base };
++        }
++    }
++    return st.d;
++}
++
++/// TF_FLASHNEXT_Q38_HEAD2_SAMPLED=1 (q38; default off): a lone SAMPLED chain also drafts with the two-stage head (block form): its
++/// keyed draw takes its candidates from the row of preview scores with the re-scored rows' 4-bit scores in place. Drafts only: the
++/// main model's own keyed draw at each position decides, so a seeded request's text does not change.
++pub fn q38Head2Sampled() bool {
++    const st = struct {
++        var c: i32 = -1;
++    };
++    if (st.c < 0) st.c = if (std.c.getenv("TF_FLASHNEXT_Q38_HEAD2_SAMPLED")) |v| @intFromBool(v[0] == '1') else 0;
++    return st.c == 1;
++}
+diff --git a/zig/src/families/flashnext/cuda_lanes_draft.zig b/zig/src/families/flashnext/cuda_lanes_draft.zig
+index ea1ae53..d6bf045 100644
+--- a/zig/src/families/flashnext/cuda_lanes_draft.zig
++++ b/zig/src/families/flashnext/cuda_lanes_draft.zig
+@@ -56,6 +56,9 @@ pub fn batched(self: anytype, requests: []const be.DraftRequest, done: []bool) !
+         if (r.position != l.seq.fed + 1) return error.PositionMismatch;
+         const room = l.seq.cap - l.seq.fed - 1;
+         counts[n] = @min(@min(r.depth, self.depth), room);
++        // q38 (TF_FLASHNEXT_Q38_DEEP): the deeper chain is a lone stream's; a shared round keeps the base depth
++        const deep = @import("cuda_knobs.zig").q38Deep();
++        if (deep.p > 0) counts[n] = @min(counts[n], deep.base);
+         if (r.rows) |path| {
+             nexts[n] = r.follow[0..path.len];
+             rows[n] = d.streams.ptr;
+diff --git a/zig/src/families/flashnext/cuda_mtp.zig b/zig/src/families/flashnext/cuda_mtp.zig
+index dd19cc6..a3a50a8 100644
+--- a/zig/src/families/flashnext/cuda_mtp.zig
++++ b/zig/src/families/flashnext/cuda_mtp.zig
+@@ -532,6 +532,7 @@ pub const Head = struct {
+                     h.cand_buf = try cuda.DeviceBuffer.alloc(driver, cand_bytes);
+                 }
+                 std.debug.print("q38 head2: on, rank {d}, {s}, re-score {d} of {d} rows\n", .{ t.r, if (t.block) "block form" else "top-k form", if (t.block) (h.ids.len + 255) / 256 * 3 else t.k, h.ids.len });
++                if (t.fast != 0) std.debug.print("q38 head2: fast {d} (1 = integer preview, 2 = bf16 rotation)\n", .{t.fast});
+             } else |e| std.debug.print("q38 head2: OFF ({s})\n", .{@errorName(e)});
+         }
+         return h;
+@@ -650,6 +651,8 @@ pub const Head2 = struct {
+     tails: cuda.DeviceBuffer,
+     exv: cuda.DeviceBuffer,
+     scan_fn: cuda.Function,
++    /// q38 (TF_FLASHNEXT_Q38_HEAD2_FAST): bit 1 the integer preview, bit 2 the bf16 rotation (`at` then holds bf16)
++    fast: u32 = 0,
+     exact2_fn: cuda.Function,
+     fin_fn: cuda.Function,
+     rot_fn: cuda.Function,
+@@ -675,7 +678,17 @@ pub const Head2 = struct {
+         const bytes = try gpa.alloc(u8, n);
+         defer gpa.free(bytes);
+         if (fread(bytes.ptr, 1, n, f) != n) return error.Head2ShortFile;
+-        var at = try cuda.DeviceBuffer.fromHost(driver, bytes[0..na]);
++        const fast = @import("cuda_knobs.zig").q38Head2Fast() & (if (@import("cuda_knobs.zig").q38Head2Block() and r == 512) @as(u32, 3) else 0);
++        if (fast & 2 != 0) {
++            // the rotation as bf16 (round to nearest even), packed into the front of its own bytes
++            var i: usize = 0;
++            while (i < r * dims) : (i += 1) {
++                const u = std.mem.readInt(u32, bytes[i * 4 ..][0..4], .little);
++                const h: u16 = @intCast((u +% 0x7fff +% ((u >> 16) & 1)) >> 16);
++                std.mem.writeInt(u16, bytes[i * 2 ..][0..2], h, .little);
++            }
++        }
++        var at = try cuda.DeviceBuffer.fromHost(driver, bytes[0..if (fast & 2 != 0) na / 2 else na]);
+         errdefer at.free();
+         var p = try cuda.DeviceBuffer.fromHost(driver, bytes[na..][0..np]);
+         errdefer p.free();
+@@ -692,7 +705,7 @@ pub const Head2 = struct {
+         var tails = try cuda.DeviceBuffer.alloc(driver, nb * 4);
+         errdefer tails.free();
+         const exv = try cuda.DeviceBuffer.alloc(driver, nb * 3 * 4);
+-        return .{ .block = @import("cuda_knobs.zig").q38Head2Block() and r == 512, .cidx = cidx, .tails = tails, .exv = exv, .scan_fn = try module.function("fn_q38_head2_scan"), .exact2_fn = try module.function("fn_q38_head2_exact2"), .fin_fn = try module.function("fn_q38_head2_fin"), .at = at, .p = p, .sc = sc, .bi = bi, .xr = xr, .rows = rows, .r = r, .k = @import("cuda_knobs.zig").q38Head2K(), .per_warp = @import("cuda_knobs.zig").q38Head2Rows(), .rot_fn = try module.function("fn_q38_head2_rot"), .prev_fn = try module.function(if (@import("cuda_knobs.zig").q38Head2Rows() == 8) "fn_q38_head2_prev8" else "fn_q38_head2_prev"), .exact_fn = try module.function("fn_q38_head2_exact") };
++        return .{ .block = @import("cuda_knobs.zig").q38Head2Block() and r == 512, .cidx = cidx, .tails = tails, .exv = exv, .fast = fast, .scan_fn = try module.function(if (fast & 1 != 0) "fn_q38_head2_scan2" else "fn_q38_head2_scan"), .exact2_fn = try module.function("fn_q38_head2_exact2"), .fin_fn = try module.function("fn_q38_head2_fin"), .at = at, .p = p, .sc = sc, .bi = bi, .xr = xr, .rows = rows, .r = r, .k = @import("cuda_knobs.zig").q38Head2K(), .per_warp = @import("cuda_knobs.zig").q38Head2Rows(), .rot_fn = try module.function(if (fast & 2 != 0) "fn_q38_head2_rot2" else "fn_q38_head2_rot"), .prev_fn = try module.function(if (@import("cuda_knobs.zig").q38Head2Rows() == 8) "fn_q38_head2_prev8" else "fn_q38_head2_prev"), .exact_fn = try module.function("fn_q38_head2_exact") };
+     }
+ 
+     /// One input row `x` ([dims] bf16) to `out` ([V] bf16 scores): the preview's score for every row, the 4-bit rows' for its best k.
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index 37306d7..ed84197 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -344,7 +344,7 @@ pub fn Ops(comptime Tri: type) type {
+         pub fn draft(o: Self, d: *Draft, next: []const u32, rows: u64, position: u64, count: usize, sm: ?Sampling, confidence: f64, out: *Chain, ahead: ?*ple.Ahead) !void {
+             out.n = 0;
+             // q38 (TF_FLASHNEXT_Q38_HEAD2): a lone greedy chain scores its drafts with the two-stage head
+-            mtp.head2_now = o.h.head2 != null and (if (sm) |s| s.temperature <= 0 else true);
++            mtp.head2_now = o.h.head2 != null and ((if (sm) |s| s.temperature <= 0 else true) or (knobs.q38Head2Sampled() and o.h.head2.?.block));
+             mtp.head2_best = d.best.ptr;
+             defer mtp.head2_now = false;
+             try o.absorb(d, next, rows, count > 0);
+@@ -356,6 +356,8 @@ pub fn Ops(comptime Tri: type) type {
+                 const sg = @import("cuda_knobs.zig").q38SGate();
+                 if (sg.c > 0 and confidence < 0) stop.c = -sg.c;
+             }
++            const stop2 = @import("cuda_knobs.zig").q38Stop2();
++            const deep = @import("cuda_knobs.zig").q38Deep();
+             const hp = cuda.launch.HostProf;
+             var hp_t: u64 = if (hp.on()) hp.now() else 0;
+             while (j < @min(count, max_chain)) : (j += 1) {
+@@ -374,6 +376,10 @@ pub fn Ops(comptime Tri: type) type {
+                 out.n += 1;
+                 if (ahead) |a| a.push(0, got.token);
+                 if (!t.more) break;
++                // q38 (TF_FLASHNEXT_Q38_STOP2): the next step is not computed when its draft would probably cross the gate
++                // q38 (TF_FLASHNEXT_Q38_DEEP): past the base depth only a chain whose product is still high goes on
++                if (stop.c < 0 and stop.product < (if (deep.p > 0 and j + 1 >= deep.base) deep.p else stop2)) break;
++                if (deep.p > 0 and stop.c >= 0 and j + 1 >= deep.base) break;
+                 if (j + 1 < count) {
+                     try o.forwardHead(d, &.{got.token}, d.out.ptr, true);
+                     // asked once the head's step is on the stream: the reads run while it does

@@ -1,0 +1,650 @@
+diff --git a/zig/kernels/cuda/nvfp4_experts.cu b/zig/kernels/cuda/nvfp4_experts.cu
+index 98aad8d..907cdaf 100644
+--- a/zig/kernels/cuda/nvfp4_experts.cu
++++ b/zig/kernels/cuda/nvfp4_experts.cu
+@@ -160,6 +160,154 @@ __global__ void __launch_bounds__(WARPS * 32)
+   expert_body<M, EPI, WARPS, 2>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip);
+ }
+ 
++// q38 (TF_FLASHNEXT_Q38_EXP_HALF; port of upstream TensorFold #1351's nvfp4_expert_half): the decode form with TWO warps a unit, 16
++// output columns each, for calls whose half units all fit the resident warps (a one-row gate-up: 11 items x 20 blocks = 220 units on
++// 768 warps; as half units 440). Each warp computes n8 tiles 2jh and 2jh + 1 of its unit with the stock stage's words, scales and
++// inputs, the same mma + fma per 16 inputs in the same group order, the same scale multiply and epilogue: the same bits a column.
++template <int M>
++struct Half {
++  uint2 w[M];
++  uint4 s[M];
++  uint2 xa[2], xb[2];
++};
++
++__device__ __forceinline__ uint2 ld_nc2(const void* p) {
++  uint2 r;
++  asm volatile("ld.global.nc.L1::no_allocate.v2.u32 {%0, %1}, [%2];\n" : "=r"(r.x), "=r"(r.y) : "l"(p));
++  return r;
++}
++
++template <int M>
++__device__ __forceinline__ void load_half(Half<M>& st, const uint4* blk, int g, int lane, int t, int jh,
++                                          const __nv_bfloat16* x0, const __nv_bfloat16* x1, bool v0, bool v1) {
++  const uint4* b = blk + (size_t)g * (M * BLOCK4);
++#pragma unroll
++  for (int m = 0; m < M; ++m) {
++    st.w[m] = ld_nc2(reinterpret_cast<const uint2*>(b + m * BLOCK4 + lane) + jh);
++    st.s[m] = ld_nc(b + m * BLOCK4 + 32 + t);
++  }
++  const uint2 zero = make_uint2(0u, 0u);
++  const int k0 = g * 32 + 4 * t;
++#pragma unroll
++  for (int h = 0; h < 2; ++h) {
++    st.xa[h] = v0 ? __ldg(reinterpret_cast<const uint2*>(x0 + k0 + 16 * h)) : zero;
++    st.xb[h] = v1 ? __ldg(reinterpret_cast<const uint2*>(x1 + k0 + 16 * h)) : zero;
++  }
++}
++
++// compute_stage's sums for tiles j = 2jh + jj: scale word 2h + jh, byte pair jj * 16.
++template <int M>
++__device__ __forceinline__ void compute_half(float (&acc)[M][2][4], const Half<M>& st, bool hi, int jh) {
++#pragma unroll
++  for (int m = 0; m < M; ++m)
++#pragma unroll
++    for (int h = 0; h < 2; ++h) {
++      const uint32_t a0 = st.xa[h].x, a2 = st.xa[h].y, a1 = st.xb[h].x, a3 = st.xb[h].y;
++      const uint32_t sw = h == 0 ? (jh ? st.s[m].y : st.s[m].x) : (jh ? st.s[m].w : st.s[m].z);
++#pragma unroll
++      for (int jj = 0; jj < 2; ++jj) {
++        const uint32_t word = jj ? st.w[m].y : st.w[m].x;
++        float p[4] = {0.f, 0.f, 0.f, 0.f};
++        mma(p, a0, a1, a2, a3, fp4pair(word, 8 * h), fp4pair(word, 8 * h + 4));
++        const int sh = jj * 16;
++        const float s0 = e4m3f((sw >> sh) & 0xFFu), s1 = e4m3f((sw >> (sh + 8)) & 0xFFu);
++        float(&a)[4] = acc[m][jj];
++        a[0] = fmaf(p[0], s0, a[0]);
++        a[1] = fmaf(p[1], s1, a[1]);
++        if (hi) {
++          a[2] = fmaf(p[2], s0, a[2]);
++          a[3] = fmaf(p[3], s1, a[3]);
++        }
++      }
++    }
++}
++
++// experts.cuh's epilogue on a half unit's two n8 tiles.
++template <int EPI, int M>
++__device__ __forceinline__ void epilogue_half(const float (&acc)[M][2][4], void* out, int N, int col0, int pr0, int pr1,
++                                              bool v0, bool v1, float limit) {
++#pragma unroll
++  for (int h = 0; h < 2; ++h) {
++    if (!(h ? v1 : v0)) continue;
++    const size_t row = (size_t)(h ? pr1 : pr0) * N;
++#pragma unroll
++    for (int j = 0; j < 2; ++j) {
++      const int col = col0 + 8 * j;
++      const float a0 = acc[0][j][2 * h], a1 = acc[0][j][2 * h + 1];
++      if constexpr (EPI == 0) {
++        *reinterpret_cast<float2*>(reinterpret_cast<float*>(out) + row + col) = make_float2(a0, a1);
++      } else {
++        float o0, o1;
++        if constexpr (EPI == 1) {
++          o0 = relu2(a0);
++          o1 = relu2(a1);
++        } else if constexpr (EPI == 2) {
++          o0 = swiglu(a0, acc[M - 1][j][2 * h], limit);
++          o1 = swiglu(a1, acc[M - 1][j][2 * h + 1], limit);
++        } else {
++          o0 = a0;
++          o1 = a1;
++        }
++        *reinterpret_cast<__nv_bfloat162*>(reinterpret_cast<__nv_bfloat16*>(out) + row + col) =
++            __floats2bfloat162_rn(o0, o1);
++      }
++    }
++  }
++}
++
++template <int M, int EPI, int WARPS>
++__device__ __forceinline__ void expert_half_body(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                      const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                      const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                      float limit, int skip) {
++  constexpr int D = 2;
++  q38_pdl();
++  const int lane = threadIdx.x & 31, gq = lane >> 2, t = lane & 3;
++  const int units = __ldg(counts) * NB * 2;
++  for (int unit = blockIdx.x * WARPS + (threadIdx.x >> 5); unit < units; unit += gridDim.x * WARPS) {
++    const int it = unit / (NB * 2), rest = unit - it * NB * 2, cb = rest >> 1, jh = rest & 1;
++    const int e = __ldg(items + 3 * it), first = __ldg(items + 3 * it + 1), cnt = __ldg(items + 3 * it + 2);
++    if (e == skip) continue;
++    const uint4* blk = W + ((size_t)e * NB + cb) * (size_t)KG * (M * BLOCK4);
++    for (int r0 = 0; r0 < cnt; r0 += 16) {
++      const bool v0 = r0 + gq < cnt, v1 = r0 + gq + 8 < cnt;
++      const int pr0 = v0 ? __ldg(members + first + r0 + gq) : 0;
++      const int pr1 = v1 ? __ldg(members + first + r0 + gq + 8) : 0;
++      const int x0r = slots ? pr0 / slots : pr0, x1r = slots ? pr1 / slots : pr1;
++      const __nv_bfloat16* x0 = X + (size_t)x0r * x_stride;
++      const __nv_bfloat16* x1 = X + (size_t)x1r * x_stride;
++      float acc[M][2][4];
++#pragma unroll
++      for (int m = 0; m < M; ++m)
++#pragma unroll
++        for (int j = 0; j < 2; ++j) acc[m][j][0] = acc[m][j][1] = acc[m][j][2] = acc[m][j][3] = 0.f;
++      Half<M> st[D];
++#pragma unroll
++      for (int d = 0; d < D; ++d)
++        if (d < KG) load_half<M>(st[d], blk, d, lane, t, jh, x0, x1, v0, v1);
++      for (int g0 = 0; g0 < KG; g0 += D) {
++#pragma unroll
++        for (int d = 0; d < D; ++d) {
++          const int g = g0 + d;
++          if (g < KG) {
++            compute_half<M>(acc, st[d], v1, jh);
++            if (g + D < KG) load_half<M>(st[d], blk, g + D, lane, t, jh, x0, x1, v0, v1);
++          }
++        }
++      }
++#pragma unroll
++      for (int m = 0; m < M; ++m) {
++        const float g = __ldg(scale + e * M + m);
++#pragma unroll
++        for (int j = 0; j < 2; ++j)
++#pragma unroll
++          for (int q = 0; q < 4; ++q) acc[m][j][q] *= g;
++      }
++      epilogue_half<EPI, M>(acc, out, N, cb * COLS + 16 * jh + 2 * t, pr0, pr1, v0, v1, limit);
++    }
++  }
++}
++
+ // The prompt form's tile: 16 RT rows a warp, WM x WN warps (BM pairs of one item by WN 32-column blocks a CTA).
+ template <int M, int RT, int WM, int WN>
+ struct Prompt4 {
+@@ -390,6 +538,15 @@ __global__ void __launch_bounds__(128) q38_down_f32_d8(const __nv_bfloat16* __re
+                         const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
+                         const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
+                         float limit, int skip) { tf_nvfp4_experts::expert_body<1, 0, 4, 8>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++// q38 (TF_FLASHNEXT_Q38_EXP_HALF; upstream #1351): two warps a unit. gate-up (SwiGLU) and the fp32 down projection.
++__global__ void __launch_bounds__(128) q38_gate_up_half(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_half_body<2, 2, 4>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_down_f32_half(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_half_body<1, 0, 4>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
+ // q38 (TF_FLASHNEXT_Q38_EXP_WAVES=1; upstream TensorFold #1351's wave form): the stock decode kernels with their units in equal waves.
+ __global__ void __launch_bounds__(128) q38_gate_up_w(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
+                         const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
+diff --git a/zig/kernels/cuda/qmmf.cu b/zig/kernels/cuda/qmmf.cu
+index 9ec1313..e5bb67a 100644
+--- a/zig/kernels/cuda/qmmf.cu
++++ b/zig/kernels/cuda/qmmf.cu
+@@ -81,7 +81,9 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+     const int wm = warp / WN, wn = warp % WN;
+     const int KG = K / GS, slice_groups = KG / SK, per = FUSE ? KG : slice_groups;
+-    const int2 at = tile_of(blockIdx.x, M, N, BM, BN, group);
++    // q38 (TF_FLASHNEXT_Q38_CERT_GATHER): group < 0 = a gather call of one row tile and one K slice: block b computes column tile
++    // list[b] (the list rides in `part`, which such a call does not use). A block's arithmetic depends on its tile alone: same bits.
++    const int2 at = group < 0 ? make_int2(0, reinterpret_cast<const int*>(part)[blockIdx.x] * BN) : tile_of(blockIdx.x, M, N, BM, BN, group);
+     const int m0 = at.x, n0 = at.y, slice = FUSE ? 0 : blockIdx.z, g0 = slice * per;
+ 
+     auto stage = [&](int s) { return buf + s * T::STAGE; };
+diff --git a/zig/src/cuda/experts.zig b/zig/src/cuda/experts.zig
+index 8428dad..43f324f 100644
+--- a/zig/src/cuda/experts.zig
++++ b/zig/src/cuda/experts.zig
+@@ -338,6 +338,10 @@ pub const Nvfp4Experts = struct {
+     resident: [4]usize, // blocks the grid may hold: per SM times SMs
+     prompt_fns: [3]Function, // relu^2 up, SwiGLU gate-up, bf16 sums down
+     warps: usize = 4,
++    /// q38 (TF_FLASHNEXT_Q38_EXP_HALF, upstream #1351): two warps a unit, for calls whose half units all fit the resident warps.
++    half_fns: [2]?Function = .{ null, null }, // SwiGLU gate-up, fp32 down
++    half_resident: [2]usize = .{ 0, 0 },
++    half_mode: u8 = 0, // bit 0 gate-up, bit 1 down
+ 
+     pub const cols = 32; // output columns a block
+     pub const words = 144; // int32 a (32 columns, 32 inputs) block: 128 code words, then 16 of e4m3 scales
+@@ -408,6 +412,17 @@ pub const Nvfp4Experts = struct {
+             }
+             e.resident[i] = @max(1, try e.fns[i].occupancy(@intCast(warps * 32), 0)) * sms;
+         }
++        if (warps == 4) {
++            if (std.c.getenv("TF_FLASHNEXT_Q38_EXP_HALF")) |v| {
++                e.half_mode = (std.fmt.parseInt(u8, std.mem.span(v), 10) catch 0) & 3;
++                for ([_][:0]const u8{ "q38_gate_up_half", "q38_down_f32_half" }, 0..) |name, i| {
++                    const f = try mod.function(name);
++                    e.half_fns[i] = f;
++                    e.half_resident[i] = @max(1, try f.occupancy(@intCast(warps * 32), 0)) * sms;
++                }
++                if (e.half_mode != 0) std.debug.print("q38 exp half: mode {d}, resident blocks {d} / {d}\n", .{ e.half_mode, e.half_resident[0], e.half_resident[1] });
++            }
++        }
+         for (symbols.prompt, &e.prompt_fns, [3]usize{ 1, 2, 1 }, prompt_wn) |name, *f, parts, wn| {
+             f.* = try mod.function(name);
+             try f.allowDynamicShared(promptSmem(parts, wn));
+@@ -425,7 +440,19 @@ pub const Nvfp4Experts = struct {
+         const kg = (if (gate) l.dims else l.width) / 32;
+         const nb = (if (gate) l.width else l.dims) / cols;
+         const ei: usize = if (gate and l.relu2) 3 else @backingInt(epi);
+-        const grid = @min((items * nb + e.warps - 1) / e.warps, e.resident[ei]);
++        // q38 (TF_FLASHNEXT_Q38_EXP_HALF; knob file word exp_half): two warps a unit while every half unit has a warp of its own
++        var hf: ?Function = null;
++        var hres: usize = 0;
++        if (e.half_mode != 0 and items > 0 and ((gate and !l.relu2) or epi == .down_f32)) {
++            const hi: usize = if (gate) 0 else 1;
++            var hm: u8 = e.half_mode;
++            if (@import("qmmf.zig").knobFile("exp_half")) |x| hm = @intCast(std.math.clamp(x, 0, 3));
++            if ((hm >> @intCast(hi)) & 1 != 0 and 2 * items * nb <= e.half_resident[hi] * e.warps) {
++                hf = e.half_fns[hi];
++                hres = e.half_resident[hi];
++            }
++        }
++        const grid = if (hf != null) @min((2 * items * nb + e.warps - 1) / e.warps, hres) else @min((items * nb + e.warps - 1) / e.warps, e.resident[ei]);
+         if (grid < 1) return;
+         var a: launch_.Args = .{};
+         a.add(in.x);
+@@ -439,7 +466,7 @@ pub const Nvfp4Experts = struct {
+         a.add(@as(i32, @intCast(if (gate) l.width else l.dims)));
+         a.add(if (gate) l.limit else @as(f32, 0.0));
+         a.add(skip);
+-        try launch_.launch(e.fns[ei], .{ .grid = .{ .x = @intCast(grid), .y = 1, .z = 1 }, .block = .{ .x = @intCast(e.warps * 32), .y = 1, .z = 1 } }, s, &a);
++        try launch_.launch(hf orelse e.fns[ei], .{ .grid = .{ .x = @intCast(grid), .y = 1, .z = 1 }, .block = .{ .x = @intCast(e.warps * 32), .y = 1, .z = 1 } }, s, &a);
+     }
+ 
+     /// Prompt rows on a plan of at most `items` items of 64 pairs: up (relu^2 or SwiGLU by the layer), bf16 sums down.
+diff --git a/zig/src/cuda/qmmf.zig b/zig/src/cuda/qmmf.zig
+index 66c3314..d5add8b 100644
+--- a/zig/src/cuda/qmmf.zig
++++ b/zig/src/cuda/qmmf.zig
+@@ -126,10 +126,66 @@ pub fn halfBelow() usize {
+     const st = struct {
+         var v: i64 = -1;
+     };
++    if (knobFile("half_below")) |v| return @intCast(@max(0, v));
+     if (st.v < 0) st.v = if (std.c.getenv("TF_FLASHNEXT_Q38_HALF_BELOW")) |e| (std.fmt.parseInt(i64, std.mem.span(e), 10) catch 0) else 0;
+     return @intCast(st.v);
+ }
+ 
++extern "c" fn clock_gettime(clk: c_int, ts: *[2]i64) c_int;
++/// TF_FLASHNEXT_Q38_KNOBFILE=path (q38 measuring aid, off unless set): a small text file of `name=value` words (at most 32 words, 512
++/// bytes), read again every 200 ms and kept as a parsed table, so one running engine can be switched between a lever's settings for
++/// paired timing and a knob read costs a clock read and a short scan. null: no file, or no such name.
++pub fn knobFile(name: []const u8) ?i64 {
++    const st = struct {
++        var init: bool = false;
++        var path: ?[*:0]const u8 = null;
++        var names: [32][24]u8 = undefined;
++        var lens: [32]u8 = undefined;
++        var vals: [32]i64 = undefined;
++        var n: usize = 0;
++        var at_ns: u64 = 0;
++        var have: bool = false;
++    };
++    if (!st.init) {
++        st.path = std.c.getenv("TF_FLASHNEXT_Q38_KNOBFILE");
++        st.init = true;
++    }
++    const path = st.path orelse return null;
++    var ts: [2]i64 = .{ 0, 0 };
++    _ = clock_gettime(1, &ts);
++    const now = @as(u64, @intCast(ts[0])) * 1_000_000_000 + @as(u64, @intCast(ts[1]));
++    if (!st.have or now -% st.at_ns > 200_000_000) {
++        st.at_ns = now;
++        var buf: [512]u8 = undefined;
++        var len: usize = 0;
++        const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, @as(std.c.mode_t, 0));
++        if (fd >= 0) {
++            const got = std.c.pread(fd, &buf, buf.len, 0);
++            if (got > 0) len = @intCast(got);
++            _ = std.c.close(fd);
++        }
++        var m: usize = 0;
++        var it = std.mem.tokenizeAny(u8, buf[0..len], "\n \t");
++        while (it.next()) |w| {
++            if (m == 32) break;
++            const eq = std.mem.indexOfScalar(u8, w, '=') orelse continue;
++            if (eq == 0 or eq > 24) continue;
++            const v = std.fmt.parseInt(i64, w[eq + 1 ..], 10) catch continue;
++            @memcpy(st.names[m][0..eq], w[0..eq]);
++            st.lens[m] = @intCast(eq);
++            st.vals[m] = v;
++            m += 1;
++        }
++        st.n = m;
++        st.have = true;
++    }
++    var i: usize = 0;
++    while (i < st.n) : (i += 1) {
++        if (st.lens[i] == name.len and std.mem.eql(u8, st.names[i][0..name.len], name)) return st.vals[i];
++    }
++    return null;
++}
++
+ /// TF_FLASHNEXT_Q38_ROWS128=N (q38; default 0: never; 2048 is the measured choice): MXFP8 / BF16 decode calls of more than 64 rows
+ /// whose weight has at least N output columns take one 128-row tile a block (two stages) instead of 64-row tiles side by side,
+ /// so a pass of 65-128 rows reads each weight tile once, not twice. Same sums a row and column (kit/mb/mb3.cu compares the bits).
+@@ -334,6 +390,34 @@ pub const Lane = struct {
+         }, s, &args);
+     }
+ 
++    /// q38 (TF_FLASHNEXT_Q38_CERT_GATHER): matmulTiles() for a LIST of column tiles in one launch: block b computes tile list[b]
++    /// (`list`: device int32, `count` entries, each below npad / 64) and writes it where matmul() writes it.
++    pub fn matmulTilesList(l: Lane, s: Stream, x: u64, ldx: usize, m: usize, m_plan: usize, w: Weight, y: u64, list: u64, count: usize) !void {
++        const p = plan(m_plan, w.n, w.k, l.clusters);
++        if (w.mode != .bf16 or p.sk != 1 or p.fused or m > p.bm or count == 0 or list == 0) return error.Invalid;
++        const set = l.fns[modeIndex(w.mode)];
++        const ti: usize = if (p.bm == 16) 0 else if (p.bm == 32) 1 else 2;
++        var args: launch_.Args = .{};
++        args.add(x);
++        args.add(w.codes);
++        args.add(w.scales);
++        args.add(w.scale);
++        args.add(y);
++        args.add(list);
++        args.add(@as(i32, @intCast(m)));
++        args.add(@as(i32, @intCast(w.n)));
++        args.add(@as(i32, @intCast(w.k)));
++        args.add(@as(i32, 1));
++        args.add(@as(i32, @intCast(w.npad)));
++        args.add(@as(i32, @intCast(if (m == 1) w.k else ldx)));
++        args.add(@as(i32, -1));
++        try launch_.launch(set[ti * 2], .{
++            .grid = .{ .x = @intCast(count), .y = 1, .z = 1 },
++            .block = .{ .x = threads, .y = 1, .z = 1 },
++            .shared = sharedBytesQ(w.mode, p.bm, false),
++        }, s, &args);
++    }
++
+     /// matmul() writing y as `out` says: bf16, or fp32.
+     pub fn matmulOut(l: Lane, s: Stream, x: u64, ldx: usize, m: usize, w: Weight, y: u64, out: Out, part: u64) !void {
+         const p = plan(m, w.n, w.k, l.clusters);
+diff --git a/zig/src/families/flashnext/cuda_cert.zig b/zig/src/families/flashnext/cuda_cert.zig
+index 1310a44..929c054 100644
+--- a/zig/src/families/flashnext/cuda_cert.zig
++++ b/zig/src/families/flashnext/cuda_cert.zig
+@@ -38,6 +38,7 @@ pub var round_k: u32 = 1;
+ var topk_cache: i32 = -1;
+ /// TF_FLASHNEXT_Q38_CERT_TOPK=K (q38; default 0: greedy passes only; at most 64): sampled streams with top_k <= K take the certified head.
+ pub fn topkMax() u32 {
++    if (@import("cuda_knobs.zig").q38KnobFile("cert_topk")) |x| return @intCast(std.math.clamp(x, 0, 64));
+     if (topk_cache < 0) {
+         topk_cache = 0;
+         if (std.c.getenv("TF_FLASHNEXT_Q38_CERT_TOPK")) |e| topk_cache = @intCast(@min(64, std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0));
+@@ -46,9 +47,11 @@ pub fn topkMax() u32 {
+ }
+ 
+ var topk_rows_cache: i32 = -1;
+-/// TF_FLASHNEXT_Q38_CERT_TOPK_ROWS=N (q38; default 8; 0: no limit): a top-k pass of more than N rows takes the whole head at once. Each
+-/// sampled row keeps ~80 exact tiles, so a wide pass of many sampled streams would run the coarse pass and then fall back over the tile limit.
++/// TF_FLASHNEXT_Q38_CERT_TOPK_ROWS=N (q38; default 8; 0: no limit; knob file word cert_topk_rows): a top-k pass of more than N rows takes
++/// the whole head at once. Each sampled row keeps ~80 exact tiles and rows of different streams share few, so a wide pass of several
++/// sampled streams would run the coarse pass and then most of the head (16 sampled users: -3 to -4 % without the limit, zero at 8).
+ pub fn topkRows() usize {
++    if (@import("cuda_knobs.zig").q38KnobFile("cert_topk_rows")) |x| return @intCast(std.math.clamp(x, 0, 4096));
+     if (topk_rows_cache < 0) {
+         topk_rows_cache = 8;
+         if (std.c.getenv("TF_FLASHNEXT_Q38_CERT_TOPK_ROWS")) |e| topk_rows_cache = @intCast(@min(4096, std.fmt.parseInt(u32, std.mem.span(e), 10) catch 8));
+@@ -56,6 +59,18 @@ pub fn topkRows() usize {
+     return @intCast(topk_rows_cache);
+ }
+ 
++var gather_cache: i8 = -1;
++/// TF_FLASHNEXT_Q38_CERT_GATHER=1 (q38; default 0; knob file word cert_gather): the exact tiles of a certified pass in ONE launch a row
++/// tile (the head's own BF16 kernel reading its tile index from a list) instead of one launch a run of neighbouring tiles (54 launches
++/// a sampled pass), and only the flagged tiles (no tiles between close runs). The same kernel program a tile: the same bits.
++/// The list reaches the device with a copy queued ON THE PASS'S STREAM, in order before the launch (a synchronous cuMemcpyHtoD here
++/// gave intermittently wrong rows on a GB10: measured, builder D round 10).
++pub fn gatherOn() bool {
++    if (@import("cuda_knobs.zig").q38KnobFile("cert_gather")) |x| return x != 0;
++    if (gather_cache < 0) gather_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_CERT_GATHER")) |e| @intFromBool(e[0] == '1') else 0;
++    return gather_cache == 1;
++}
++
+ var code_cache: i8 = -1;
+ /// TF_FLASHNEXT_Q38_CERT_CODE=sm8 (q38; default mxfp8): the coarse copy holds sign-magnitude 7-bit integer codes with a power-of-two
+ /// scale per 32 inputs (qmmf.cu SM8: the same bytes a row as the MXFP8 copy, about a third of its error), instead of E4M3 codes.
+@@ -154,6 +169,11 @@ pub const Cert = struct {
+     sm8: bool = false,
+     kcalls: u64 = 0,
+     kskipped: u64 = 0,
++    gcalls: u64 = 0,
++    gtiles: u64 = 0,
++    list: ?cuda.DeviceBuffer = null,
++    list_stream: ?cuda.Stream = null,
++    host_list: [max_tiles]u32 = undefined,
+     kfallbacks: u64 = 0,
+     ktiles: u64 = 0,
+     kruns: u64 = 0,
+@@ -237,6 +257,7 @@ pub const Cert = struct {
+         };
+         self.weight = cuda.mxfp8.weight(self.codes.ptr, self.scales.ptr, n, k);
+         self.weight.sm8 = sm8;
++        self.list = try cuda.DeviceBuffer.alloc(d, max_tiles * 4);
+         if (check and topkMax() > 1) self.chk_host = try gpa.alloc(u16, 2 * vocab);
+         try d.check(d.api.cuMemsetD32_v2(self.stats.ptr, 0, 64), "cuMemsetD32");
+         std.debug.print("q38 cert: {s} copy of the head made ({d} MiB), mean residual {d:.4} of a row's norm, check {d}, top-k up to {d}\n", .{ if (sm8) "SM8" else "MXFP8", (codes_p.len + scales_p.len) >> 20, self.resid, @intFromBool(check), topkMax() });
+@@ -252,6 +273,7 @@ pub const Cert = struct {
+         self.info.free();
+         self.chk.free();
+         self.stats.free();
++        if (self.list) |*b| b.free();
+         if (self.chk_host.len > 0) self.gpa.free(self.chk_host);
+         self.gpa.destroy(self);
+     }
+@@ -333,7 +355,29 @@ pub const Cert = struct {
+         }
+         // the exact kernel a row tile (64 rows) at a time, each with the instance the whole pass would take
+         var r0: usize = 0;
+-        while (r0 < n) : (r0 += tile_rows) {
++        if (c.list != null and gatherOn()) {
++            // the host list is read by a copy queued on a stream: before it is rewritten, that stream must have run the copy. This pass's
++            // stream was waited for above; a list last sent on another stream waits for that one.
++            if (c.list_stream) |ls| {
++                if (ls.handle != st.handle) try ls.synchronize();
++            }
++            var g: usize = 0;
++            for (0..tiles_n) |ti| {
++                if (c.host_flags[ti] != 0) {
++                    c.host_list[g] = @intCast(ti);
++                    g += 1;
++                }
++            }
++            try d.check(d.api.cuMemcpyHtoDAsync_v2(c.list.?.ptr, &c.host_list, g * 4, st.handle), "cuMemcpyHtoDAsync");
++            c.list_stream = st;
++            while (r0 < n) : (r0 += tile_rows) {
++                const m = @min(tile_rows, n - r0);
++                try k.native_lane.matmulTilesList(st, s.mixed + r0 * dims * 2, dims, m, n, head, out + r0 * vocab * 2, c.list.?.ptr, g);
++            }
++            c.gcalls += 1;
++            c.gtiles += g;
++            if (c.gcalls % 5000 == 0) std.debug.print("q38 cert gather: calls {d} tiles/call {d:.1}\n", .{ c.gcalls, @as(f64, @floatFromInt(c.gtiles)) / @as(f64, @floatFromInt(c.gcalls)) });
++        } else while (r0 < n) : (r0 += tile_rows) {
+             const m = @min(tile_rows, n - r0);
+             for (starts[0..runs], counts[0..runs]) |t0, cnt| try k.native_lane.matmulTiles(st, s.mixed + r0 * dims * 2, dims, m, n, head, out + r0 * vocab * 2, t0, cnt);
+         }
+@@ -396,6 +440,7 @@ pub const Cert = struct {
+         }
+         const done = @max(c.calls - c.fallbacks, 1);
+         std.debug.print("q38 cert: calls {d} rows {d} whole-head {d} tiles/call {d:.1} runs/call {d:.1} checked-rows {d} best-mismatch {d} value-mismatch {d} held {d}\n", .{ c.calls, c.rows, c.fallbacks, @as(f64, @floatFromInt(c.tiles)) / @as(f64, @floatFromInt(done)), @as(f64, @floatFromInt(c.runs)) / @as(f64, @floatFromInt(done)), hs[0], hs[1], hs[2], hs[3] });
++        if (c.gcalls > 0) std.debug.print("q38 cert gather: calls {d} tiles/call {d:.1}\n", .{ c.gcalls, @as(f64, @floatFromInt(c.gtiles)) / @as(f64, @floatFromInt(c.gcalls)) });
+         if (c.kcalls > 0 or c.kskipped > 0 or c.check) {
+             const kdone = @max(c.kcalls - c.kfallbacks, 1);
+             std.debug.print("q38 cert topk: wide passes not tried {d}\n", .{c.kskipped});
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index 0713c1a..3b4c25c 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -85,6 +85,7 @@ pub fn gdnLanes() bool {
+ /// TF_FLASHNEXT_Q38_GDN_LANES_MANY=1 (q38, off unless set): TF_FLASHNEXT_GDN_LANES also serves rounds of more than gdn.lanes_max (8)
+ /// lanes, in groups of 8 (cuda_batch.zig gdnLanesBatched). Stock: such rounds take five launches a lane a DeltaNet layer.
+ pub fn q38GdnLanesMany() u8 {
++    if (q38KnobFile("gdn_many")) |x| return @intCast(std.math.clamp(x, 0, 2));
+     const v = std.c.getenv("TF_FLASHNEXT_Q38_GDN_LANES_MANY") orelse return 0;
+     const t = std.mem.span(v);
+     return if (std.mem.eql(u8, t, "1")) 1 else if (std.mem.eql(u8, t, "2")) 2 else 0;
+@@ -93,6 +94,7 @@ pub fn q38GdnLanesMany() u8 {
+ /// TF_FLASHNEXT_Q38_BEST_LANES=1 (q38, off unless set): a shared round's draft step reads every lane's best draft with one launch
+ /// (fn_row_best_lanes) instead of one launch a lane. The same program a lane; drafts only.
+ pub fn q38BestLanes() bool {
++    if (q38KnobFile("best_lanes")) |x| return x != 0;
+     const v = std.c.getenv("TF_FLASHNEXT_Q38_BEST_LANES") orelse return false;
+     return std.mem.eql(u8, std.mem.span(v), "1");
+ }
+@@ -101,6 +103,7 @@ pub fn q38BestLanes() bool {
+ /// attention (prep, pool, scores, selection, chunks, merge) takes its text lanes in one launch a kernel, up to 16 lanes a launch,
+ /// instead of five or six launches a lane. Each block runs the per-lane kernel's program on its lane's caches; fp8 and bf16 caches.
+ pub fn q38AttnLanes() bool {
++    if (q38KnobFile("attn_lanes")) |x| return x != 0;
+     const v = std.c.getenv("TF_FLASHNEXT_Q38_ATTN_LANES") orelse return false;
+     return std.mem.eql(u8, std.mem.span(v), "1");
+ }
+@@ -111,6 +114,7 @@ var late_skip_cache: usize = std.math.maxInt(usize);
+ /// Kept whole, its rows wait in the log like a partly kept window's, and the next window's chain takes them first: the same steps in
+ /// the same order on the same start state, so the same bits. Above T the pass writes the end states as before.
+ pub fn q38LateSkip() usize {
++    if (q38KnobFile("late_skip")) |x| return @intCast(std.math.clamp(x, 0, 32));
+     if (late_skip_cache != std.math.maxInt(usize)) return late_skip_cache;
+     var t: usize = 0;
+     if (std.c.getenv("TF_FLASHNEXT_Q38_LATE_SKIP")) |v| t = std.fmt.parseInt(usize, std.mem.span(v), 10) catch 0;
+@@ -162,38 +166,9 @@ pub fn plog() bool {
+ /// TF_FLASHNEXT_Q38_KNOBFILE=path (q38 measuring aid, off unless set): a small text file of `name=value` words, read again at every
+ /// use, so one running engine can be switched between a lever's settings for paired timing. null: no file, or no such name.
+ pub fn q38KnobFile(name: []const u8) ?i64 {
+-    const path = std.c.getenv("TF_FLASHNEXT_Q38_KNOBFILE") orelse return null;
+-    // the file's text is kept for 200 ms: a knob read between two launches of a prompt pass must not cost a file read (the per-group
+-    // reads of round 9's indexer knobs slowed the stock path by ~2 % of a 109K prompt and skewed a paired comparison)
+-    const st = struct {
+-        var buf: [256]u8 = undefined;
+-        var len: usize = 0;
+-        var at_ns: u64 = 0;
+-        var have: bool = false;
+-    };
+-    var ts: [2]i64 = .{ 0, 0 };
+-    _ = q38_clock_gettime(1, &ts);
+-    const now = @as(u64, @intCast(ts[0])) * 1_000_000_000 + @as(u64, @intCast(ts[1]));
+-    if (!st.have or now -% st.at_ns > 200_000_000) {
+-        st.len = 0;
+-        const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, @as(std.c.mode_t, 0));
+-        if (fd >= 0) {
+-            const n = std.c.pread(fd, &st.buf, st.buf.len, 0);
+-            if (n > 0) st.len = @intCast(n);
+-            _ = std.c.close(fd);
+-        }
+-        st.at_ns = now;
+-        st.have = true;
+-    }
+-    var it = std.mem.tokenizeAny(u8, st.buf[0..st.len], "\n \t");
+-    while (it.next()) |w| {
+-        if (w.len > name.len + 1 and std.mem.startsWith(u8, w, name) and w[name.len] == '=') return std.fmt.parseInt(i64, w[name.len + 1 ..], 10) catch null;
+-    }
+-    return null;
++    return @import("cuda").qmmf.knobFile(name);
+ }
+ 
+-extern "c" fn clock_gettime(clk: c_int, ts: *[2]i64) c_int;
+-const q38_clock_gettime = clock_gettime;
+ 
+ 
+ var keep_inpass_cache: i64 = -1;
+@@ -264,6 +239,7 @@ pub fn windowRows() usize {
+ /// epilogue (fn_q38_hcdn) = two launches instead of five. Every output byte is the five-launch chain's.
+ var hcf_cache: i32 = -1;
+ pub fn q38Hcf() u32 {
++    if (q38KnobFile("hcf")) |x| return @intCast(std.math.clamp(x, 0, 3));
+     if (hcf_cache < 0) hcf_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_HCF")) |e| (std.fmt.parseInt(i32, std.mem.span(e), 10) catch 0) else 0;
+     return @intCast(hcf_cache);
+ }
+@@ -304,12 +280,14 @@ pub fn q38HeadKv() usize {
+ /// one row that reaches the draft); the head's cache is still written for every row. Same drafts, same replies.
+ var mtp_last_cache: i32 = -1;
+ pub fn q38MtpLast() bool {
++    if (q38KnobFile("mtp_last")) |x| return x != 0;
+     if (mtp_last_cache < 0) mtp_last_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_MTP_LAST")) |v| @intFromBool(v[0] == '1') else 0;
+     return mtp_last_cache == 1;
+ }
+ /// TF_FLASHNEXT_Q38_HCF_HALF=1: fn_q38_hcdn on 32-column half tiles (twice the blocks; same sums a column).
+ var hcf_half_cache: i32 = -1;
+ pub fn q38HcfHalf() bool {
++    if (q38KnobFile("hcf_half")) |x| return x != 0;
+     if (hcf_half_cache < 0) hcf_half_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_HCF_HALF")) |v| @intFromBool(v[0] == '1') else 0;
+     return hcf_half_cache == 1;
+ }
+@@ -498,6 +476,7 @@ pub fn q38SGate() SGate {
+ /// not compute its next step once the running product of the proposed drafts is below x: that step's draft would cross the gate more
+ /// often than not, and a step that crosses is computed and thrown away. Drafts only: fewer are proposed, every token is still verified.
+ pub fn q38Stop2() f64 {
++    if (q38KnobFile("stop2")) |x| return @as(f64, @floatFromInt(std.math.clamp(x, 0, 1000))) / 1000.0;
+     const st = struct {
+         var c: f64 = -1;
+     };
+@@ -534,6 +513,8 @@ pub fn q38Deep() Deep {
+             if (p > 0 and p <= 1.0 and base >= 1) st.d = .{ .p = p, .base = base };
+         }
+     }
++    // knob file word deep_off=1: a chain never passes the base depth (as without the flag at TF_FLASHNEXT_DRAFTS = base)
++    if (st.d.p > 0) if (q38KnobFile("deep_off")) |x| if (x != 0) return .{ .p = 2.0, .base = st.d.base };
+     return st.d;
+ }
+ 
+@@ -541,6 +522,7 @@ pub fn q38Deep() Deep {
+ /// keyed draw takes its candidates from the row of preview scores with the re-scored rows' 4-bit scores in place. Drafts only: the
+ /// main model's own keyed draw at each position decides, so a seeded request's text does not change.
+ pub fn q38Head2Sampled() bool {
++    if (q38KnobFile("head2_sampled")) |x| return x != 0;
+     const st = struct {
+         var c: i32 = -1;
+     };
+@@ -557,3 +539,15 @@ pub fn q38QsaKnobsLine() void {
+     st.done = true;
+     std.debug.print("q38 qsa knobs: cert={d} cert_min={d} slack={d:.1}e-6 half={d} list={d} rows={d} loop={d} stats={d}\n", .{ q38QsaCert(), q38QsaCertMin(), q38QsaSlack() * 1e6, @intFromBool(q38QsaHalf()), q38QsaList(), @intFromBool(q38QsaRows()), q38QsaLoop(), @intFromBool(q38QsaStats()) });
+ }
++
++/// Knob file word head2=0 (q38 measuring aid): the two-stage draft head, though loaded, is not used (the full 4-bit draft head runs).
++pub fn q38Head2On() bool {
++    if (q38KnobFile("head2")) |x| return x != 0;
++    return true;
++}
++
++/// Knob file word cert=0 (q38 measuring aid): the certified head, though made, serves no pass (the whole head runs).
++pub fn q38CertOn() bool {
++    if (q38KnobFile("cert")) |x| return x != 0;
++    return true;
++}
+diff --git a/zig/src/families/flashnext/cuda_lanes.zig b/zig/src/families/flashnext/cuda_lanes.zig
+index e60bf58..f862643 100644
+--- a/zig/src/families/flashnext/cuda_lanes.zig
++++ b/zig/src/families/flashnext/cuda_lanes.zig
+@@ -782,7 +782,7 @@ pub fn Namespace(comptime Tri: type) type {
+                     const greedy = if (w.stream.sampling) |sm| sm.temperature <= 0 else true;
+                     if (!greedy or w.masks.len != 0 or w.stream.logprobs != null) plain_greedy = false;
+                 }
+-                cert.round_ok = plain_greedy and @import("cuda_knobs.zig").certPlain();
++                cert.round_ok = plain_greedy and @import("cuda_knobs.zig").certPlain() and @import("cuda_knobs.zig").q38CertOn();
+                 defer cert.round_ok = false;
+                 if (self.ranks) |r| try r.round(Tri, self.tri(), seqs[at..][0..n], ids[at..][0..n], self.logits.ptr) else try self.engine.round(Tri, self.tri(), seqs[at..][0..n], ids[at..][0..n], self.logits.ptr);
+             }
+diff --git a/zig/src/families/flashnext/cuda_lanes_verify.zig b/zig/src/families/flashnext/cuda_lanes_verify.zig
+index d0689b0..0fb0285 100644
+--- a/zig/src/families/flashnext/cuda_lanes_verify.zig
++++ b/zig/src/families/flashnext/cuda_lanes_verify.zig
+@@ -28,7 +28,7 @@ pub fn windows(self: anytype, wins: []const be.Window, out: []be.Verified, draft
+             rows += w.rows();
+         }
+         // q38: the certified head serves a pass only when each of its streams is greedy, unmasked and wants no log-probabilities
+-        var all_greedy = cert.active != null;
++        var all_greedy = cert.active != null and @import("cuda_knobs.zig").q38CertOn();
+         // q38 (TF_FLASHNEXT_Q38_CERT_TOPK): a sampled stream whose keyed draw reads only its rows' top_k best scores (top_k up to the knob)
+         // rides too; the pass then certifies every row's `round_k` best instead of its best
+         var round_k: u32 = 1;
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index f0a67cb..823f153 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -355,7 +355,7 @@ pub fn Ops(comptime Tri: type) type {
+         pub fn draft(o: Self, d: *Draft, next: []const u32, rows: u64, position: u64, count: usize, sm: ?Sampling, confidence: f64, out: *Chain, ahead: ?*ple.Ahead) !void {
+             out.n = 0;
+             // q38 (TF_FLASHNEXT_Q38_HEAD2): a lone greedy chain scores its drafts with the two-stage head
+-            mtp.head2_now = o.h.head2 != null and ((if (sm) |s| s.temperature <= 0 else true) or (knobs.q38Head2Sampled() and o.h.head2.?.block));
++            mtp.head2_now = o.h.head2 != null and knobs.q38Head2On() and ((if (sm) |s| s.temperature <= 0 else true) or (knobs.q38Head2Sampled() and o.h.head2.?.block));
+             mtp.head2_best = d.best.ptr;
+             defer mtp.head2_now = false;
+             try o.absorb(d, next, rows, count > 0);

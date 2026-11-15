@@ -1,0 +1,26 @@
+06:32:03 sdrun: warm-up 1: prose 69.6 tok/s 
+06:32:07 sdrun: warm-up 2: prose 70.57 tok/s 
+06:32:11 sdrun: c1 prose run 1: 70.8 tok/s, 256 tokens, ttft 68.66 ms 
+06:32:14 sdrun: c1 code run 1: 113.5 tok/s, 256 tokens, ttft 198.5 ms 
+06:32:16 sdrun: c1 structured run 1: 164 tok/s, 256 tokens, ttft 69.26 ms 
+06:32:21 sdrun: c1 json run 1: 74.3 tok/s, 256 tokens, ttft 88.45 ms 
+06:32:25 sdrun: c1 prose run 2: 69.78 tok/s, 256 tokens, ttft 69.26 ms 
+06:32:28 sdrun: c1 code run 2: 117.13 tok/s, 256 tokens, ttft 68.35 ms 
+06:32:30 sdrun: c1 structured run 2: 162.35 tok/s, 256 tokens, ttft 68.54 ms 
+06:32:34 sdrun: c1 json run 2: 76.41 tok/s, 256 tokens, ttft 69.51 ms 
+06:32:38 sdrun: c1 prose run 3: 70.19 tok/s, 256 tokens, ttft 68.72 ms 
+06:32:41 sdrun: c1 code run 3: 117.2 tok/s, 256 tokens, ttft 66.85 ms 
+06:32:43 sdrun: c1 structured run 3: 164.6 tok/s, 256 tokens, ttft 67.84 ms 
+06:32:47 sdrun: c1 json run 3: 76.25 tok/s, 256 tokens, ttft 69.44 ms 
+06:32:51 sdrun: c1 prose run 4: 68.54 tok/s, 256 tokens, ttft 67 ms 
+06:32:54 sdrun: c1 code run 4: 117.43 tok/s, 256 tokens, ttft 68.04 ms 
+06:32:56 sdrun: c1 structured run 4: 162.92 tok/s, 256 tokens, ttft 68.79 ms 
+06:33:00 sdrun: c1 json run 4: 76.43 tok/s, 256 tokens, ttft 67.7 ms 
+06:33:04 sdrun: c1 prose run 5: 70.3 tok/s, 256 tokens, ttft 68.49 ms 
+06:33:07 sdrun: c1 code run 5: 116.7 tok/s, 256 tokens, ttft 68.2 ms 
+06:33:09 sdrun: c1 structured run 5: 162.9 tok/s, 256 tokens, ttft 69.85 ms 
+06:33:13 sdrun: c1 json run 5: 76.56 tok/s, 256 tokens, ttft 68.55 ms 
+06:34:50 sdrun: catalog prose: 16 prompts, mean 49.1 tok/s
+06:36:04 sdrun: catalog structural: 18 prompts, mean 77.3 tok/s
+06:37:49 sdrun: catalog code: 32 prompts, mean 97.6 tok/s
+06:37:49 sdrun: done

@@ -1,0 +1,710 @@
+diff --git a/zig/kernels/cuda/embed_rows.cu b/zig/kernels/cuda/embed_rows.cu
+index cd31765..844cffb 100644
+--- a/zig/kernels/cuda/embed_rows.cu
++++ b/zig/kernels/cuda/embed_rows.cu
+@@ -1,5 +1,6 @@
+ // Token rows for every CUDA family (float64 references: core/embed_ref.zig): MLX affine or bf16 tables.
+ 
++#include "q38_pdl.cuh"
+ #include <cuda_bf16.h>
+ #include <stdint.h>
+ 
+@@ -18,6 +19,7 @@ extern "C" __global__ void __launch_bounds__(NT) tf_embed_rows_affine4(const int
+                                                                        const __nv_bfloat16* __restrict__ b,
+                                                                        __nv_bfloat16* __restrict__ out, int d, int group,
+                                                                        int copies) {
++    q38_pdl();
+     const int64_t r = blockIdx.x;
+     const int c = blockIdx.y * NT + threadIdx.x; // 8 values, one word
+     if (8 * c >= d) return;
+@@ -38,6 +40,7 @@ extern "C" __global__ void __launch_bounds__(NT) tf_embed_rows_affine4(const int
+ extern "C" __global__ void __launch_bounds__(NT) tf_embed_rows_bf16(const int* __restrict__ ids,
+                                                                     const __nv_bfloat16* __restrict__ w,
+                                                                     __nv_bfloat16* __restrict__ out, int d) {
++    q38_pdl();
+     const int64_t r = blockIdx.x;
+     const int c = blockIdx.y * NT + threadIdx.x;
+     if (8 * c >= d) return;
+@@ -49,6 +52,7 @@ extern "C" __global__ void __launch_bounds__(NT) tf_embed_rows_bf16_copies(const
+                                                                            const __nv_bfloat16* __restrict__ w,
+                                                                            __nv_bfloat16* __restrict__ out, int d,
+                                                                            int copies) {
++    q38_pdl();
+     const int64_t r = blockIdx.x;
+     const int c = blockIdx.y * NT + threadIdx.x;
+     if (8 * c >= d) return;
+@@ -67,5 +71,6 @@ extern "C" __global__ void __launch_bounds__(NT) tf_embed_rows_affine(const int*
+                                                                       const __nv_bfloat16* __restrict__ b,
+                                                                       __nv_bfloat16* __restrict__ out, int d, int bits,
+                                                                       int group, float scale) {
++    q38_pdl();
+     tf_embed_affine::rows(ids, w, s, b, out, d, bits, group, scale, tf_embed_affine::ROUND);
+ }
+diff --git a/zig/kernels/cuda/experts.cu b/zig/kernels/cuda/experts.cu
+index 8cb065f..a5c34c2 100644
+--- a/zig/kernels/cuda/experts.cu
++++ b/zig/kernels/cuda/experts.cu
+@@ -1,5 +1,6 @@
+ // Device code of src/tensorfold/cuda/experts.cu (lines 1-286, comments and ATen includes dropped), checked by zig/tests/cuda/copies.py.
+ 
++#include "q38_pdl.cuh"
+ #include <cuda_bf16.h>
+ #include <stdint.h>
+ 
+@@ -205,6 +206,7 @@ __device__ int place_items(int c, int E, int T, int* __restrict__ items, int* __
+ __global__ void __launch_bounds__(PLAN_THREADS)
+     plan_kernel(const int* __restrict__ picks, int P, int E, int T, int* __restrict__ members,
+                 int* __restrict__ items, int* __restrict__ counts) {
++  q38_pdl();
+   __shared__ int pk[PSMALL];
+   __shared__ int cnt[EMAX];
+   __shared__ int off[EMAX];
+diff --git a/zig/kernels/cuda/flashnext_attn.cu b/zig/kernels/cuda/flashnext_attn.cu
+index e70599b..99c06df 100644
+--- a/zig/kernels/cuda/flashnext_attn.cu
++++ b/zig/kernels/cuda/flashnext_attn.cu
+@@ -2,6 +2,7 @@
+ 
+ // glue.py and attention.py's arithmetic and bf16 rounding points; the attention dots on mma tiles, K ascending.
+ 
++#include "q38_pdl.cuh"
+ #include <cuda_bf16.h>
+ #include <cuda_fp16.h>
+ #include <cuda_fp8.h>
+@@ -176,6 +177,7 @@ extern "C" __global__ void __launch_bounds__(256) fn_attn_prep(const __nv_bfloat
+                                                                __nv_bfloat16* __restrict__ VC, __nv_bfloat16* __restrict__ IQ,
+                                                                __nv_bfloat16* __restrict__ IKC, float eps, int PW, int NQ, int NKV,
+                                                                int NI, int IHD, int HALF) {
++    q38_pdl();
+     fn_attn_prep_body(P, POS0, QW, KW, IW, INV, Q, KC, VC, IQ, IKC, eps, PW, NQ, NKV, NI, IHD, HALF, nullptr, 0, 0);
+ }
+ 
+@@ -186,6 +188,7 @@ extern "C" __global__ void __launch_bounds__(256) fn_attn_prep_media(const __nv_
+                                                                __nv_bfloat16* __restrict__ VC, __nv_bfloat16* __restrict__ IQ,
+                                                                __nv_bfloat16* __restrict__ IKC, float eps, int PW, int NQ, int NKV,
+                                                                int NI, int IHD, int HALF, const int* rope3, int n, int delta) {
++    q38_pdl();
+     fn_attn_prep_body(P, POS0, QW, KW, IW, INV, Q, KC, VC, IQ, IKC, eps, PW, NQ, NKV, NI, IHD, HALF, rope3, n, delta);
+ }
+ 
+@@ -197,6 +200,7 @@ extern "C" __global__ void __launch_bounds__(256) fn_attn_prep_kv8(const __nv_bf
+                                                                unsigned char* __restrict__ VC, __nv_bfloat16* __restrict__ IQ,
+                                                                __nv_bfloat16* __restrict__ IKC, float eps, int PW, int NQ, int NKV,
+                                                                int NI, int IHD, int HALF) {
++    q38_pdl();
+     fn_attn_prep_body<true>(P, POS0, QW, KW, IW, INV, Q, reinterpret_cast<__nv_bfloat16*>(KC), reinterpret_cast<__nv_bfloat16*>(VC), IQ, IKC, eps, PW, NQ, NKV, NI, IHD, HALF, nullptr, 0, 0);
+ }
+ 
+@@ -207,12 +211,14 @@ extern "C" __global__ void __launch_bounds__(256) fn_attn_prep_media_kv8(const _
+                                                                unsigned char* __restrict__ VC, __nv_bfloat16* __restrict__ IQ,
+                                                                __nv_bfloat16* __restrict__ IKC, float eps, int PW, int NQ, int NKV,
+                                                                int NI, int IHD, int HALF, const int* rope3, int n, int delta) {
++    q38_pdl();
+     fn_attn_prep_body<true>(P, POS0, QW, KW, IW, INV, Q, reinterpret_cast<__nv_bfloat16*>(KC), reinterpret_cast<__nv_bfloat16*>(VC), IQ, IKC, eps, PW, NQ, NKV, NI, IHD, HALF, rope3, n, delta);
+ }
+ 
+ // glue._attn_gate, program (row, head) of HD threads: bf16(o / (1 + e^-gate)) and its 32-group sums.
+ extern "C" __global__ void __launch_bounds__(256) fn_attn_gate(const __nv_bfloat16* __restrict__ O, const __nv_bfloat16* __restrict__ P,
+                                                                __nv_bfloat16* __restrict__ OUT, float* __restrict__ XS, int PW, int NQ) {
++    q38_pdl();
+     const int r = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
+     const float o = bf(O[(static_cast<long long>(r) * NQ + h) * HD + d]);
+     const float g = bf(P[static_cast<long long>(r) * PW + h * 2 * HD + HD + d]);
+@@ -247,6 +253,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_qsa_pool(const __nv_bfloat1
+                                                               const int* __restrict__ POS0, const float* __restrict__ W,
+                                                               const float* __restrict__ INV, float eps, int R, int DI, int HALF,
+                                                               int RATIO) {
++    q38_pdl();
+     fn_qsa_pool_body(IKC, POOLED, POS0, W, INV, eps, R, DI, HALF, RATIO, nullptr, 0, 0);
+ }
+ 
+@@ -254,6 +261,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_qsa_pool_media(const __nv_b
+                                                               const int* __restrict__ POS0, const float* __restrict__ W,
+                                                               const float* __restrict__ INV, float eps, int R, int DI, int HALF,
+                                                               int RATIO, const int* rope3, int n, int delta) {
++    q38_pdl();
+     fn_qsa_pool_body(IKC, POOLED, POS0, W, INV, eps, R, DI, HALF, RATIO, rope3, n, delta);
+ }
+ 
+@@ -261,6 +269,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_qsa_pool_media(const __nv_b
+ extern "C" __global__ void __launch_bounds__(256) fn_qsa_scores(const __nv_bfloat16* __restrict__ IQ, const __nv_bfloat16* __restrict__ POOLED,
+                                                                 const int* __restrict__ POS0, float* __restrict__ SC, int NB, int HI,
+                                                                 int RATIO, int TOP) {
++    q38_pdl();
+     constexpr int DI = 128;
+     __shared__ float qs[8][DI];
+     const int r = blockIdx.x, j = blockIdx.y;
+@@ -579,6 +588,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_attn_chunks(const __nv_bflo
+                                                                  const int* __restrict__ IDS, const int* __restrict__ NKR,
+                                                                  const int* __restrict__ SPR, int H, int HK, int G, int CH, int NCH,
+                                                                  float SCALE, int IDW, int QSA) {
++    q38_pdl();
+     attn_chunks<1>(Q, KC, VC, POS0, PO, PM, PL, IDS, NKR, SPR, H, HK, G, CH, NCH, SCALE, IDW, QSA);
+ }
+ 
+@@ -588,6 +598,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_attn_fused(const __nv_bfloa
+                                                                 float* __restrict__ OUT, const int* __restrict__ IDS, const int* __restrict__ NKR,
+                                                                 const int* __restrict__ SPR, int H, int HK, int G, int CH,
+                                                                 float SCALE, int IDW, int QSA) {
++    q38_pdl();
+     attn_chunks<1, true, true>(Q, KC, VC, POS0, OUT, nullptr, nullptr, IDS, NKR, SPR, H, HK, G, CH, 1, SCALE, IDW, QSA);
+ }
+ 
+@@ -598,6 +609,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_attn_chunks_one(const __nv_
+                                                                      const int* __restrict__ IDS, const int* __restrict__ NKR,
+                                                                      const int* __restrict__ SPR, int H, int HK, int G, int CH, int NCH,
+                                                                      float SCALE, int IDW, int QSA) {
++    q38_pdl();
+     attn_chunks<1, true>(Q, KC, VC, POS0, PO, PM, PL, IDS, NKR, SPR, H, HK, G, CH, NCH, SCALE, IDW, QSA);
+ }
+ 
+@@ -608,6 +620,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_attn_chunks_kv8(const __nv_
+                                                                      const int* __restrict__ IDS, const int* __restrict__ NKR,
+                                                                      const int* __restrict__ SPR, int H, int HK, int G, int CH, int NCH,
+                                                                      float SCALE, int IDW, int QSA) {
++    q38_pdl();
+     attn_chunks<1, true, false, true>(Q, reinterpret_cast<const __nv_bfloat16*>(KC), reinterpret_cast<const __nv_bfloat16*>(VC), POS0, PO, PM, PL,
+                                       IDS, NKR, SPR, H, HK, G, CH, NCH, SCALE, IDW, QSA);
+ }
+@@ -618,6 +631,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_attn_fused_kv8(const __nv_b
+                                                                     float* __restrict__ OUT, const int* __restrict__ IDS, const int* __restrict__ NKR,
+                                                                     const int* __restrict__ SPR, int H, int HK, int G, int CH,
+                                                                     float SCALE, int IDW, int QSA) {
++    q38_pdl();
+     attn_chunks<1, true, true, true>(Q, reinterpret_cast<const __nv_bfloat16*>(KC), reinterpret_cast<const __nv_bfloat16*>(VC), POS0, OUT, nullptr,
+                                      nullptr, IDS, NKR, SPR, H, HK, G, CH, 1, SCALE, IDW, QSA);
+ }
+@@ -629,6 +643,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_attn_chunks_ahead(const __n
+                                                                        const int* __restrict__ IDS, const int* __restrict__ NKR,
+                                                                        const int* __restrict__ SPR, int H, int HK, int G, int CH, int NCH,
+                                                                        float SCALE, int IDW, int QSA) {
++    q38_pdl();
+     attn_chunks<2>(Q, KC, VC, POS0, PO, PM, PL, IDS, NKR, SPR, H, HK, G, CH, NCH, SCALE, IDW, QSA);
+ }
+ 
+@@ -638,6 +653,7 @@ extern "C" __global__ void __launch_bounds__(256) fn_attn_merge(const float* __r
+                                                                 __nv_bfloat16* __restrict__ OUT, const int* __restrict__ NKR,
+                                                                 const int* __restrict__ SPR, int H, int HK, int G, int CH, int NCH,
+                                                                 int QSA) {
++    q38_pdl();
+     const int r = blockIdx.x, head = blockIdx.y, d = threadIdx.x;
+     int n = POS0[0] + r + 1;
+     if (QSA && SPR[r] != 0) n = NKR[r];
+diff --git a/zig/kernels/cuda/flashnext_batch.cu b/zig/kernels/cuda/flashnext_batch.cu
+index 6b3797b..262f65d 100644
+--- a/zig/kernels/cuda/flashnext_batch.cu
++++ b/zig/kernels/cuda/flashnext_batch.cu
+@@ -1,11 +1,13 @@
+ // The small device steps of Flash Next's batched prompt pass (cuda_batch.zig), built without FMA contraction.
+ 
++#include "q38_pdl.cuh"
+ #include <cuda_bf16.h>
+ #include <stdint.h>
+ 
+ // out[i] = the sum of the sk slices' part[s][i] in order, rounded once (qmm.cu's reduce_kernel): bf16 if out_bf16.
+ extern "C" __global__ void fn_sum_slices(const float* __restrict__ part, void* __restrict__ out, int out_bf16,
+                                          long long n, int sk) {
++    q38_pdl();
+     const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
+     if (i >= n) return;
+     float acc = part[i];
+@@ -17,6 +19,7 @@ extern "C" __global__ void fn_sum_slices(const float* __restrict__ part, void* _
+ // Shifts the last-`taps`-rows window [taps, c] in place past `rows`, n rows `stride` apart (conv history, n-gram tail).
+ extern "C" __global__ void fn_shift_window(__nv_bfloat16* __restrict__ win, const __nv_bfloat16* __restrict__ rows,
+                                            long long stride, int n, int taps, int c) {
++    q38_pdl();
+     const int ch = blockIdx.x * blockDim.x + threadIdx.x;
+     if (ch >= c) return;
+     __nv_bfloat16 next[16];
+@@ -34,6 +37,7 @@ extern "C" __global__ void fn_shift_window(__nv_bfloat16* __restrict__ win, cons
+ extern "C" __global__ void fn_conv_roll(const unsigned long long* __restrict__ wins, const __nv_bfloat16* __restrict__ hist,
+                                         long long hist_stride, const __nv_bfloat16* __restrict__ proj,
+                                         long long proj_layer_stride, long long proj_row_stride, int n, int taps, int c) {
++    q38_pdl();
+     const int ch = blockIdx.x * blockDim.x + threadIdx.x;
+     if (ch >= c) return;
+     const int layer = blockIdx.y;
+@@ -123,6 +127,7 @@ extern "C" __global__ void __launch_bounds__(256) fn_gdn_front(
+         const __nv_bfloat16* __restrict__ P, const __nv_bfloat16* __restrict__ cs, const __nv_bfloat16* __restrict__ cw,
+         const float* __restrict__ a_log, const float* __restrict__ dt_bias, float* __restrict__ qn,
+         float* __restrict__ kn, float* __restrict__ v, float* __restrict__ gb) {
++    q38_pdl();
+     gdn_front(P, cs, cw, a_log, dt_bias, qn, kn, v, gb);
+ }
+ 
+@@ -196,12 +201,14 @@ static __device__ __forceinline__ void gdn_rows(
+ extern "C" __global__ void __launch_bounds__(128) fn_gdn_rows(
+         const float* __restrict__ qn, const float* __restrict__ kn, const float* __restrict__ v,
+         const float* __restrict__ gb, float* state, int rows, float* __restrict__ ys_out) {
++    q38_pdl();
+     gdn_rows(qn, kn, v, gb, state, state, rows, ys_out);
+ }
+ 
+ extern "C" __global__ void __launch_bounds__(128) fn_gdn_rows_to(
+         const float* __restrict__ qn, const float* __restrict__ kn, const float* __restrict__ v,
+         const float* __restrict__ gb, const float* state_in, float* state_out, int rows, float* __restrict__ ys_out) {
++    q38_pdl();
+     gdn_rows(qn, kn, v, gb, state_in, state_out, rows, ys_out);
+ }
+ 
+@@ -285,6 +292,7 @@ static __device__ __forceinline__ void gdn_rows_late(
+ extern "C" __global__ void __launch_bounds__(128) fn_gdn_rows_late(
+         const float* __restrict__ qn, const float* __restrict__ kn, const float* __restrict__ v,
+         const float* __restrict__ gb, const float* state_in, float* state_out, int rows, float* __restrict__ ys_out, int np) {
++    q38_pdl();
+     gdn_rows_late(qn, kn, v, gb, state_in, state_out, rows, ys_out, np);
+ }
+ 
+@@ -319,6 +327,7 @@ struct FnGdnLanes {
+ extern "C" __global__ void __launch_bounds__(256) fn_gdn_front_lanes(
+         const __grid_constant__ FnGdnLanes L, const __nv_bfloat16* __restrict__ cw, const float* __restrict__ a_log,
+         const float* __restrict__ dt_bias) {
++    q38_pdl();
+     using namespace fn_gdn;
+     const FnGdnLane& l = L.lane[blockIdx.z];
+     if (blockIdx.x >= l.rows) return;
+@@ -338,12 +347,14 @@ extern "C" __global__ void __launch_bounds__(256) fn_gdn_front_lanes(
+ 
+ // Program (lane, block of 128 threads): fn_gdn_rows_late on the lane's pointers.
+ extern "C" __global__ void __launch_bounds__(128) fn_gdn_rows_late_lanes(const __grid_constant__ FnGdnLanes L) {
++    q38_pdl();
+     const FnGdnLane& l = L.lane[blockIdx.z];
+     gdn_rows_late(l.qn, l.log_k, l.log_v, l.log_gb, l.state_in, l.state_out, l.rows, l.ys, l.np);
+ }
+ 
+ // Program (lane, 256 channels): the lane's history copy and fn_shift_window (taps rows, c channels, the lane's rows PW apart).
+ extern "C" __global__ void __launch_bounds__(256) fn_shift_window_lanes(const __grid_constant__ FnGdnLanes L, int taps, int c) {
++    q38_pdl();
+     using namespace fn_gdn;
+     const FnGdnLane& l = L.lane[blockIdx.y];
+     const int ch = blockIdx.x * blockDim.x + threadIdx.x;
+@@ -362,6 +373,7 @@ extern "C" __global__ void __launch_bounds__(256) fn_shift_window_lanes(const __
+ extern "C" __global__ void __launch_bounds__(128) fn_gdn_norm(
+         const float* __restrict__ ys_in, const __nv_bfloat16* __restrict__ P, const __nv_bfloat16* __restrict__ norm_w,
+         float eps, __nv_bfloat16* __restrict__ out, float* __restrict__ xs) {
++    q38_pdl();
+     using namespace fn_gdn;
+     const int r = blockIdx.x, hv = blockIdx.y, t = threadIdx.x, warp = t >> 5, lane = t & 31;
+     __shared__ float ys[DV];
+@@ -426,6 +438,7 @@ extern "C" __global__ void __launch_bounds__(1024) fn_qsa_select(const float* __
+                                                                  const int* __restrict__ pos0, int* __restrict__ ids,
+                                                                  int* __restrict__ nkr, int* __restrict__ spr, int nb,
+                                                                  int idw, int top, int ratio) {
++    q38_pdl();
+     __shared__ int hist[256];
+     __shared__ int warp_sums[32];
+     __shared__ uint32_t cut_s;
+@@ -500,6 +513,7 @@ extern "C" __global__ void __launch_bounds__(1024) fn_qsa_select(const float* __
+ // Training or a live pocket requests the ordered FP32 expert sum.
+ extern "C" __global__ void fn_moe_sum(const float* __restrict__ y, const float* __restrict__ wts, float* __restrict__ out,
+                                       int d, int slots) {
++    q38_pdl();
+     const int r = blockIdx.x, col = blockIdx.y * blockDim.x + threadIdx.x;
+     if (col >= d) return;
+     float acc = 0.0f;
+@@ -511,6 +525,7 @@ extern "C" __global__ void fn_moe_sum(const float* __restrict__ y, const float*
+ // dst [rows, width] (rows dst_pitch apart) = the columns src [rows, width] (src_pitch apart), 16-bit values.
+ extern "C" __global__ void fn_copy_cols(const uint16_t* __restrict__ src, long long src_pitch, uint16_t* __restrict__ dst,
+                                         long long dst_pitch, int width) {
++    q38_pdl();
+     const int col = blockIdx.x * blockDim.x + threadIdx.x, r = blockIdx.y;
+     if (col < width) dst[r * dst_pitch + col] = src[r * src_pitch + col];
+ }
+@@ -521,6 +536,7 @@ extern "C" __global__ void fn_copy_cols(const uint16_t* __restrict__ src, long l
+ extern "C" __global__ void __launch_bounds__(256) fn_gdn_chain_tpr(const float* qn, const float* kn, const float* v,
+                                                                  const float* gb, const float* state_in, float* state_out,
+                                                                  int rows, float* ys_out) {
++    q38_pdl();
+     gdn_tpr::chain<2, 16>(qn, kn, v, gb, state_in, state_out, rows, ys_out);
+ }
+ 
+diff --git a/zig/kernels/cuda/flashnext_hc.cu b/zig/kernels/cuda/flashnext_hc.cu
+index f0fe859..dc25594 100644
+--- a/zig/kernels/cuda/flashnext_hc.cu
++++ b/zig/kernels/cuda/flashnext_hc.cu
+@@ -2,6 +2,7 @@
+ 
+ // glue.py and qmm.py's arithmetic and bf16 rounding points, the 4-bit dots on mma tiles with K in ascending order.
+ 
++#include "q38_pdl.cuh"
+ #include <cuda_bf16.h>
+ #include <stdint.h>
+ 
+@@ -116,12 +117,14 @@ __device__ __forceinline__ void hc_writeback(const __nv_bfloat16* H, __nv_bfloat
+ }
+ 
+ extern "C" __global__ void __launch_bounds__(256) fn_hc_writeback0(const __nv_bfloat16* H, float* PSS, int D, int S) {
++    q38_pdl();
+     hc_writeback<0>(H, nullptr, PSS, nullptr, nullptr, nullptr, nullptr, 0, D, S, 0, 1, 1);
+ }
+ 
+ extern "C" __global__ void __launch_bounds__(256) fn_hc_writeback_moe(const __nv_bfloat16* H, __nv_bfloat16* HOUT, float* PSS,
+                                                                       const __nv_bfloat16* INJ, const float* Y,
+                                                                       const float* WTS, int D, int S, int TOPK, int SLOTS) {
++    q38_pdl();
+     hc_writeback<2>(H, HOUT, PSS, nullptr, INJ, Y, WTS, 0, D, S, TOPK, SLOTS, 1);
+ }
+ 
+@@ -129,12 +132,14 @@ extern "C" __global__ void __launch_bounds__(256) fn_hc_writeback_moe_sh(const _
+                                                                          const __nv_bfloat16* INJ, const float* Y,
+                                                                          const float* WTS, const float* SHARED, int D, int S, int TOPK,
+                                                                          int SLOTS) {
++    q38_pdl();
+     hc_writeback<3>(H, HOUT, PSS, SHARED, INJ, Y, WTS, 0, D, S, TOPK, SLOTS, 1);
+ }
+ 
+ extern "C" __global__ void __launch_bounds__(256) fn_hc_writeback_slices(const __nv_bfloat16* H, __nv_bfloat16* HOUT, float* PSS,
+                                                                          const float* BR, const __nv_bfloat16* INJ,
+                                                                          long long RS, int D, int S, int WORLD) {
++    q38_pdl();
+     hc_writeback<4>(H, HOUT, PSS, BR, INJ, nullptr, nullptr, RS, D, S, 0, 1, WORLD);
+ }
+ 
+@@ -144,6 +149,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_hc_down(const __nv_bfloat16
+                                                              const uint4* __restrict__ W, const __nv_bfloat16* __restrict__ S,
+                                                              const __nv_bfloat16* __restrict__ B, float* __restrict__ PART,
+                                                              int M, float eps, int N, int K, int D, int NC, int SS, int SK) {
++    q38_pdl();
+     extern __shared__ __align__(16) unsigned char smem_raw[];
+     __shared__ float rinv[16];
+     const int kg = K / 32, per = kg / SK, width = per * 32, ld = width + 8;
+@@ -226,6 +232,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_hc_down(const __nv_bfloat16
+ extern "C" __global__ void __launch_bounds__(1024) fn_hc_reduce_act(const float* __restrict__ PART, __nv_bfloat16* __restrict__ ACT,
+                                                                     float* __restrict__ XS, __nv_bfloat16* __restrict__ INJ,
+                                                                     int SK, int M, int S, int LOW, int HAS_INJ, int NDN) {
++    q38_pdl();
+     __shared__ float a_s[1024];
+     const int r = blockIdx.x, i = threadIdx.x;
+     if (i < LOW + (HAS_INJ ? S : 0)) {
+@@ -256,6 +263,7 @@ extern "C" __global__ void __launch_bounds__(1024) fn_hc_reduce_act(const float*
+ // fn_hc_norm's 1 / rms of each row's streams [M, SS], a thread each: the column blocks' sums in order.
+ extern "C" __global__ void fn_hc_rinv(const float* __restrict__ PSS, float* __restrict__ RINV, int M, float eps, int D,
+                                       int NC, int SS) {
++    q38_pdl();
+     const int i = blockIdx.x * blockDim.x + threadIdx.x, r = i / SS, st = i % SS;
+     if (r >= M) return;
+     float total = 0.0f;
+@@ -268,6 +276,7 @@ extern "C" __global__ void __launch_bounds__(256) fn_hc_mix_h(const __nv_bfloat1
+                                                               const float* __restrict__ RINV, const float* __restrict__ SCALE,
+                                                               __nv_bfloat16* __restrict__ MIXED, float* __restrict__ XSM,
+                                                               int D, int SS) {
++    q38_pdl();
+     __shared__ float ms[256];
+     const int r = blockIdx.x, d = blockIdx.y * 256 + threadIdx.x;
+     const long long row = static_cast<long long>(r) * SS * D;
+@@ -298,6 +307,7 @@ extern "C" __global__ void __launch_bounds__(256) fn_hc_upmix(const __nv_bfloat1
+                                                               const __nv_bfloat16* __restrict__ B, const __nv_bfloat16* __restrict__ NORMED,
+                                                               __nv_bfloat16* __restrict__ MIXED, float* __restrict__ XSM,
+                                                               int M, int N, int K, int D, int SS) {
++    q38_pdl();
+     extern __shared__ __align__(16) unsigned char smem_raw[];
+     const int kg = K / 32;
+     const int ld = K + 8;
+@@ -365,6 +375,7 @@ extern "C" __global__ void __launch_bounds__(512) fn_ple_gate(const __nv_bfloat1
+                                                               const __nv_bfloat16* __restrict__ H, const float* __restrict__ NK,
+                                                               const float* __restrict__ NQ, __nv_bfloat16* __restrict__ GATED,
+                                                               float* __restrict__ PSS, float eps, int D, int S) {
++    q38_pdl();
+     __shared__ float scratch[32];
+     const int r = blockIdx.x;
+     const float fd = static_cast<float>(D);
+@@ -408,6 +419,7 @@ extern "C" __global__ void __launch_bounds__(512) fn_ple_conv(const __nv_bfloat1
+                                                               const __nv_bfloat16* __restrict__ CW, const __nv_bfloat16* H,
+                                                               __nv_bfloat16* HOUT, __nv_bfloat16* __restrict__ NROW, float eps,
+                                                               int D, int S, int TAPS, int DIL) {
++    q38_pdl();
+     const int r = blockIdx.x;
+     const int w = S * D, nt = (TAPS - 1) * DIL;
+     const int e = blockIdx.y * blockDim.x + threadIdx.x;
+@@ -439,6 +451,7 @@ extern "C" __global__ void __launch_bounds__(512) fn_ple_conv(const __nv_bfloat1
+ // glue._add_streams: out[r, s] = bf16(e[r] + hs[r, s]), the MTP head's input streams.
+ extern "C" __global__ void fn_add_streams(const __nv_bfloat16* __restrict__ E, const __nv_bfloat16* __restrict__ HS,
+                                           __nv_bfloat16* __restrict__ OUT, int D, int S) {
++    q38_pdl();
+     const int r = blockIdx.x, d = blockIdx.y * blockDim.x + threadIdx.x;
+     if (d >= D) return;
+     const float e = bf(E[static_cast<long long>(r) * D + d]);
+@@ -451,6 +464,7 @@ extern "C" __global__ void fn_add_streams(const __nv_bfloat16* __restrict__ E, c
+ // Dense HC uses the same stored stream sums and FP32 gamma before one BF16 normalization rounding.
+ extern "C" __global__ void fn_hc_normalize(const __nv_bfloat16* H, const float* PSS, const float* SCALE,
+                                             __nv_bfloat16* OUT, float eps, int D, int SS) {
++    q38_pdl();
+     __shared__ float rinv;
+     const int r = blockIdx.x, stream = blockIdx.y, nc = D / 256;
+     if (threadIdx.x == 0) {
+@@ -469,6 +483,7 @@ extern "C" __global__ void fn_hc_normalize(const __nv_bfloat16* H, const float*
+ // Dense up-projection values are already BF16: sigmoid, product and stream mean keep their original rounding seams.
+ extern "C" __global__ void fn_hc_dense_mix(const __nv_bfloat16* UP, const __nv_bfloat16* NORMED,
+                                             __nv_bfloat16* MIXED, float* XSM, int D, int SS) {
++    q38_pdl();
+     __shared__ float row[32];
+     const int r = blockIdx.x, group = blockIdx.y, d = group * 32 + threadIdx.x;
+     float total = 0.0f;
+@@ -493,6 +508,7 @@ extern "C" __global__ void fn_hc_dense_mix(const __nv_bfloat16* UP, const __nv_b
+ extern "C" __global__ void __launch_bounds__(128) fn_hc_normalize2(const __nv_bfloat16* __restrict__ H, const float* __restrict__ PSS,
+                                                                     const float* __restrict__ SCALE, __nv_bfloat16* __restrict__ OUT,
+                                                                     float eps, int D, int SS) {
++    q38_pdl();
+     const int r = blockIdx.x, stream = blockIdx.y, nc = D / 256;
+     float total = 0.0f;
+     for (int c = 0; c < nc; ++c) total = __fadd_rn(total, PSS[(static_cast<long long>(r) * nc + c) * SS + stream]);
+@@ -512,6 +528,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_hc_normalize2(const __nv_bf
+ // the streams in order and the same in-order sum of each group of 32 mixed values.
+ extern "C" __global__ void __launch_bounds__(128) fn_hc_dense_mix2(const __nv_bfloat16* __restrict__ UP, const __nv_bfloat16* __restrict__ NORMED,
+                                                                     __nv_bfloat16* __restrict__ MIXED, float* __restrict__ XSM, int D, int SS) {
++    q38_pdl();
+     __shared__ float row[256];
+     const int r = blockIdx.x, t = threadIdx.x, d = blockIdx.y * 256 + 2 * t;
+     float total0 = 0.0f, total1 = 0.0f;
+@@ -538,6 +555,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_hc_dense_mix2(const __nv_bf
+ // Shared expert uses its own BF16 projection outputs and rounding boundaries.
+ extern "C" __global__ void fn_shared_swiglu(const __nv_bfloat16* GATE, const __nv_bfloat16* UP,
+                                              __nv_bfloat16* ACT, int W) {
++    q38_pdl();
+     const int r = blockIdx.x, j = blockIdx.y * blockDim.x + threadIdx.x;
+     if (j >= W) return;
+     const long long at = static_cast<long long>(r) * W + j;
+@@ -546,6 +564,7 @@ extern "C" __global__ void fn_shared_swiglu(const __nv_bfloat16* GATE, const __n
+ 
+ // Write only the final reserved slot; routed slots retain their FP32 partial sums.
+ extern "C" __global__ void fn_shared_scatter(const float* SHARED, float* Y, int D, int SLOTS) {
++    q38_pdl();
+     const int r = blockIdx.x, j = blockIdx.y * blockDim.x + threadIdx.x;
+     if (j < D) Y[(static_cast<long long>(r) * SLOTS + SLOTS - 1) * D + j] = SHARED[static_cast<long long>(r) * D + j];
+ }
+@@ -556,6 +575,7 @@ extern "C" __global__ void __launch_bounds__(256) fn_hc_upmix_up(const __nv_bflo
+                                                                  const __nv_bfloat16* __restrict__ B, const __nv_bfloat16* __restrict__ NORMED,
+                                                                  __nv_bfloat16* __restrict__ MIXED, float* __restrict__ XSM,
+                                                                  __nv_bfloat16* __restrict__ UP, int M, int N, int K, int D, int SS) {
++    q38_pdl();
+     extern __shared__ __align__(16) unsigned char smem_raw[];
+     const int kg = K / 32;
+     const int ld = K + 8;
+diff --git a/zig/kernels/cuda/q38_pdl.cuh b/zig/kernels/cuda/q38_pdl.cuh
+new file mode 100644
+index 0000000..3b5c80d
+--- /dev/null
++++ b/zig/kernels/cuda/q38_pdl.cuh
+@@ -0,0 +1,10 @@
++// q38: programmatic dependent launch for the decode step's small kernels (used only when the launch carries the attribute,
++// TF_FLASHNEXT_Q38_PDL=1; otherwise both instructions are no-ops). The kernel lets the next one spin up, then waits for every kernel
++// ahead of it before it reads or writes anything, so the stream's order of effects is unchanged.
++#pragma once
++__device__ __forceinline__ void q38_pdl() {
++#if __CUDA_ARCH__ >= 900
++    asm volatile("griddepcontrol.launch_dependents;\n" ::: "memory");
++    asm volatile("griddepcontrol.wait;\n" ::: "memory");
++#endif
++}
+diff --git a/zig/kernels/cuda/route_rows.cu b/zig/kernels/cuda/route_rows.cu
+index 5489c57..926d8d6 100644
+--- a/zig/kernels/cuda/route_rows.cu
++++ b/zig/kernels/cuda/route_rows.cu
+@@ -2,6 +2,7 @@
+ 
+ // Router logits on mma tiles, K ascending from zero (a row's sums never depend on the row count), and top-k rows.
+ 
++#include "q38_pdl.cuh"
+ #include <cuda_bf16.h>
+ #include <math.h>
+ #include <stdint.h>
+@@ -113,6 +114,7 @@ __device__ __forceinline__ void route_logits(const __nv_bfloat16* __restrict__ X
+ extern "C" __global__ void __launch_bounds__(128) tf_route_logits(const __nv_bfloat16* __restrict__ X, int x_ld,
+                                                                   const __nv_bfloat16* __restrict__ W, float* __restrict__ OUT,
+                                                                   int M, int D, int E) {
++    q38_pdl();
+     route_logits<4, 2, 128>(X, x_ld, W, OUT, M, D, E);
+ }
+ 
+@@ -120,6 +122,7 @@ extern "C" __global__ void __launch_bounds__(128) tf_route_logits(const __nv_bfl
+ extern "C" __global__ void __launch_bounds__(256) tf_route_logits_wide(const __nv_bfloat16* __restrict__ X, int x_ld,
+                                                                        const __nv_bfloat16* __restrict__ W, float* __restrict__ OUT,
+                                                                        int M, int D, int E) {
++    q38_pdl();
+     route_logits<8, 2, 64, 8>(X, x_ld, W, OUT, M, D, E);
+ }
+ 
+@@ -127,6 +130,7 @@ extern "C" __global__ void __launch_bounds__(256) tf_route_logits_wide(const __n
+ extern "C" __global__ void __launch_bounds__(128) tf_route_logits_few(const __nv_bfloat16* __restrict__ X, int x_ld,
+                                                                      const __nv_bfloat16* __restrict__ W, float* __restrict__ OUT,
+                                                                      int M, int D, int E) {
++    q38_pdl();
+     route_logits<4, 3, 256>(X, x_ld, W, OUT, M, D, E);
+ }
+ 
+@@ -134,6 +138,7 @@ extern "C" __global__ void __launch_bounds__(128) tf_route_logits_few(const __nv
+ extern "C" __global__ void __launch_bounds__(NT) tf_route_topk(const float* __restrict__ L, int NL, int NE, int TOPK,
+                                                                int* __restrict__ PICK, float* __restrict__ WTS, int SLOTS,
+                                                                int shared) {
++    q38_pdl();
+     __shared__ float sv[2][NT / 32];
+     __shared__ int si[2][NT / 32];
+     const int r = blockIdx.x;
+diff --git a/zig/src/cuda/launch.zig b/zig/src/cuda/launch.zig
+index 2506e1b..d4f84e1 100644
+--- a/zig/src/cuda/launch.zig
++++ b/zig/src/cuda/launch.zig
+@@ -136,10 +136,78 @@ const KProf = struct {
+     }
+ };
+ 
++/// TF_FLASHNEXT_Q38_PDL=1 (q38, off unless set): kernels on the q38 list are launched with the programmatic-dependent-launch attribute.
++/// Each of them waits for the kernels ahead of it before touching data, so only launch latency changes, never results.
++const Q38Pdl = struct {
++    const names = @import("q38_pdl_names.zig");
++    const Slot = struct { h: usize = 0, ok: bool = false };
++    var state: i8 = -1;
++    var slots: [1024]Slot = @splat(.{});
++    var busy: u8 = 0;
++
++    fn on() bool {
++        if (state < 0) state = if (std.c.getenv("TF_FLASHNEXT_Q38_PDL")) |v| @intFromBool(v[0] == '1') else 0;
++        return state == 1;
++    }
++
++    fn allowed(d: anytype, handle: abi.Function) bool {
++        while (@atomicRmw(u8, &busy, .Xchg, 1, .acquire) != 0) {}
++        defer @atomicStore(u8, &busy, 0, .release);
++        const h: usize = @intFromPtr(handle);
++        var i: usize = (h >> 4) % slots.len;
++        var probes: usize = 0;
++        while (slots[i].h != 0 and slots[i].h != h and probes < slots.len) : (probes += 1) i = (i + 1) % slots.len;
++        if (slots[i].h == h) return slots[i].ok;
++        if (slots[i].h != 0) return false;
++        const name = d.functionName(handle);
++        var ok = false;
++        for (names.names) |n| {
++            if (std.mem.eql(u8, n, name)) ok = true;
++        }
++        for (names.prefixes) |p| {
++            if (std.mem.startsWith(u8, name, p)) ok = true;
++        }
++        slots[i] = .{ .h = h, .ok = ok };
++        return ok;
++    }
++};
++
++/// TF_HOSTPROF=N (q38 measuring aid, off unless set): every N launches, the host time spent inside the driver's launch calls
++/// and the wall time over the same launches ("hostprof launches N in-driver-ms X wall-ms Y").
++const HostProf = struct {
++    var state: i64 = -1;
++    var n: u64 = 0;
++    var ns: u64 = 0;
++    var wall0: u64 = 0;
++
++    fn on() bool {
++        if (state < 0) {
++            var v: i64 = 0;
++            if (std.c.getenv("TF_HOSTPROF")) |e| v = std.fmt.parseInt(i64, std.mem.span(e), 10) catch 0;
++            state = if (v > 0) v else 0;
++        }
++        return state > 0;
++    }
++
++    fn add(d: u64) void {
++        if (n == 0) wall0 = KProf.now();
++        n += 1;
++        ns += d;
++        if (n >= @as(u64, @intCast(state))) {
++            const w = KProf.now() - wall0;
++            std.debug.print("hostprof launches {d} in-driver-ms {d:.2} wall-ms {d:.2}\n", .{ n, @as(f64, @floatFromInt(ns)) / 1e6, @as(f64, @floatFromInt(w)) / 1e6 });
++            n = 0;
++            ns = 0;
++        }
++    }
++};
++
+ /// cuLaunchKernel for plain launches, cuLaunchKernelEx when a cluster, PDL or cooperative attribute is set.
+-pub fn launch(f: Function, cfg: Config, stream: Stream, args: *Args) Error!void {
+-    try cfg.validate();
++pub fn launch(f: Function, cfg_in: Config, stream: Stream, args: *Args) Error!void {
++    try cfg_in.validate();
+     const d = f.d;
++    var cfg = cfg_in;
++    if (!cfg.pdl and !cfg.cooperative and Q38Pdl.on() and Q38Pdl.allowed(d, f.handle)) cfg.pdl = true;
+     const prof = KProf.on();
+     var prof_t0: u64 = 0;
+     if (prof) {
+@@ -152,6 +220,9 @@ pub fn launch(f: Function, cfg: Config, stream: Stream, args: *Args) Error!void
+     };
+     const g = cfg.grid;
+     const b = cfg.block;
++    const hp = HostProf.on();
++    const hp_t0: u64 = if (hp) KProf.now() else 0;
++    defer if (hp) HostProf.add(KProf.now() - hp_t0);
+     if (cfg.plain()) {
+         return launched(f, cfg, d.api.cuLaunchKernel(f.handle, g.x, g.y, g.z, b.x, b.y, b.z, cfg.shared, stream.handle, args.pointers(), null), "cuLaunchKernel");
+     }
+diff --git a/zig/src/cuda/q38_pdl_names.zig b/zig/src/cuda/q38_pdl_names.zig
+new file mode 100644
+index 0000000..4ac6e8f
+--- /dev/null
++++ b/zig/src/cuda/q38_pdl_names.zig
+@@ -0,0 +1,67 @@
++//! q38: kernels that wait for the stream ahead of them at entry (q38_pdl.cuh) and so may be launched with the PDL attribute.
++pub const names = [_][]const u8{
++    "fn_hc_writeback0",
++    "fn_hc_writeback_moe",
++    "fn_hc_writeback_moe_sh",
++    "fn_hc_writeback_slices",
++    "fn_hc_down",
++    "fn_hc_reduce_act",
++    "fn_hc_rinv",
++    "fn_hc_mix_h",
++    "fn_hc_upmix",
++    "fn_ple_gate",
++    "fn_ple_conv",
++    "fn_add_streams",
++    "fn_hc_normalize",
++    "fn_hc_dense_mix",
++    "fn_hc_normalize2",
++    "fn_hc_dense_mix2",
++    "fn_shared_swiglu",
++    "fn_shared_scatter",
++    "fn_hc_upmix_up",
++    "tf_route_logits",
++    "tf_route_logits_wide",
++    "tf_route_logits_few",
++    "tf_route_topk",
++    "fn_sum_slices",
++    "fn_shift_window",
++    "fn_conv_roll",
++    "fn_gdn_front",
++    "fn_gdn_rows",
++    "fn_gdn_rows_to",
++    "fn_gdn_rows_late",
++    "fn_gdn_front_lanes",
++    "fn_gdn_rows_late_lanes",
++    "fn_shift_window_lanes",
++    "fn_gdn_norm",
++    "fn_qsa_select",
++    "fn_moe_sum",
++    "fn_copy_cols",
++    "fn_gdn_chain_tpr",
++    "fn_attn_prep",
++    "fn_attn_prep_media",
++    "fn_attn_prep_kv8",
++    "fn_attn_prep_media_kv8",
++    "fn_attn_gate",
++    "fn_qsa_pool",
++    "fn_qsa_pool_media",
++    "fn_qsa_scores",
++    "fn_attn_chunks",
++    "fn_attn_fused",
++    "fn_attn_chunks_one",
++    "fn_attn_chunks_kv8",
++    "fn_attn_fused_kv8",
++    "fn_attn_chunks_ahead",
++    "fn_attn_merge",
++    "tf_embed_rows_affine4",
++    "tf_embed_rows_bf16",
++    "tf_embed_rows_bf16_copies",
++    "tf_embed_rows_affine",
++};
++pub const prefixes = [_][]const u8{
++    "_ZN7tf_qmmf11qmmf_kernel",
++    "_ZN16tf_nvfp4_experts19nvfp4_expert_kernel",
++    "_ZN10tf_experts11plan_kernel",
++    "q38_gate_up_d",
++    "q38_down_f32_d",
++};

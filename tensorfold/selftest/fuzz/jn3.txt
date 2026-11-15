@@ -1,0 +1,9 @@
+# night 11-14, E1b: recipe default again: predictions, 2 in flight, client cancels, streamed pairs.
+ENGINE on2|def|on|||PAR=2
+NEED=6 bash $RT/rj.sh pair2 pair $RT/matrix/cases2.jsonl $O/pair2.jsonl vars=off,on limit=150 dl=$DL
+NEED=6 bash $RT/rj.sh pairS3 pair $RT/matrix/cases3.jsonl $O/pairS3.jsonl vars=off_s,on_s not=long_out limit=250 dl=$DL
+NEED=6 bash $RT/rj.sh c2 run $RT/matrix/cases3.jsonl $O/c2.jsonl on_c2 mode=n conc=2 order=shuf not=long_out limit=220 decoys=1 dl=$DL
+NEED=6 bash $RT/rj.sh c3 run $RT/matrix/cases1.jsonl $O/c3.jsonl on_c3 mode=both conc=3 order=shuf not=long,long_out limit=180 pre=cancel dl=$DL
+NEED=6 bash $RT/rj.sh pairS1 pair $RT/matrix/cases1.jsonl $O/pairS1.jsonl vars=off_s,on_s not=long,long_out limit=130 dl=$DL
+NEED=6 bash $RT/rj.sh pairC pair $RT/matrix/cases3.jsonl $O/pairC.jsonl vars=off,on_c not=long_out limit=80 dl=$DL
+docker logs q38-run-D 2>&1 | grep -E 'q38 (cert|qsacert|hcf check|snapdelta|gdnprod|hcdn|routeband|scratch check)' | awk '{k=$1 $2 $3; l[k]=$0} END{for(k in l) print l[k]}' | cut -c1-300 > $O/checklines.txt; cat $O/checklines.txt; echo "log error lines: $(docker logs q38-run-D 2>&1 | grep -ciE 'panic|segfault|error\(|mismatch|abort')"

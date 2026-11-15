@@ -1,0 +1,69 @@
+Round 10 final. spark-923b, DOCUMENTED PATH: recipe.sh prepare (patches 0101-0123 + the two-stage head's file) then recipe.sh start, vision on.
+ONE shared window (S141010, 2026-11-14 14:10-18:50 UTC), one image. Order: levers off (14:14-15:10), custom engine R (15:13-15:46), levers off again (15:46-16:36),
+ours with 16-user profile (16:37-16:51), ours recipe default (16:52-17:43). The default run has two levers-off runs BEFORE it and none after (the planned third
+was given up for a bf16-KV check); the two levers-off runs, 1.5 h apart, agree to 0.4 % on the 320 held prompts and 0.1 % on seeded sampled.
+KV cache format of every number in this file: fp8 (MiaAI-Lab's default; their note: lossy against a bf16 KV cache, ~98.8 % top-1). See the bf16 lines at the end.
+All MEASURED. "ours vs mean off" = recipe default against the mean of the two levers-off runs.
+custom engine R column: custom engine R v0.3.13 on turboderp's EXL3 4.05 bpw checkpoint = RE-QUANTISED weights, NOT the official checkpoint: not a lossless comparison.
+Ours = NVIDIA's official FP4-Local checkpoint; every text of the default run is identical to the levers-off run's (below).
+
++-------------------------------------------------------+--------------------+-------------------+-----------------------+----------------------------------+------------------+
+| bench                                                 | levers off (first) | levers off (last) | recipe default (ours) | custom engine R v0.3.13, EXL3 re-quantised | ours vs mean off |
++-------------------------------------------------------+--------------------+-------------------+-----------------------+----------------------------------+------------------+
+| first token, short prompt (ms)                        | 208                | 208               | 119                   | 119                              | -42.8 %          |
+| 3-prompt chat, 9 runs (median)                        | 47.0               | 46.7              | 51.5                  | 55.3                             | +9.9 %           |
+| 3-prompt code, 9 runs (median)                        | 76.8               | 77.9              | 86.9                  | 90.4                             | +12.3 %          |
+| sparkDash-method prose T0                             | 56.8               | 56.5              | 61.8                  | 66.8                             | +9.1 %           |
+| sparkDash-method code (task 0)                        | 92.0               | 91.5              | 122.6                 | 110.2                            | +33.6 %          |
+| sparkDash-method code, 8 tasks                        | 87.7               | 87.1              | 106.1                 | 108.4                            | +21.4 %          |
+| sparkDash-method structured                           | 105.7              | 105.0             | 169.2                 | 153.3                            | +60.6 %          |
+| sparkDash 1.8.8 itself, prose (median)                | 56.3               | 56.2              | 61.0                  | 66.8                             | +8.4 %           |
+| sparkDash 1.8.8 itself, code (median)                 | 91.6               | 91.6              | 121.4                 | 110.7                            | +32.5 %          |
+| sparkDash 1.8.8 itself, structured (median)           | 105.0              | 104.5             | 167.5                 | 154.1                            | +59.9 %          |
+| ALL 320 held prompts, all                             | 57.34              | 57.12             | 65.51                 | 64.36                            | +14.5 %          |
+|   held 320: chat                                      | 49.97              | 49.84             | 56.20                 | 56.68                            | +12.6 %          |
+|   held 320: code                                      | 74.51              | 74.26             | 87.66                 | 82.01                            | +17.8 %          |
+|   held 320: math                                      | 72.68              | 71.86             | 86.98                 | 81.68                            | +20.4 %          |
+| edit set (24 file rewrites), wall tok/s               | 136.5              | 136.6             | 219.0                 | -                                | +60.4 %          |
+| agent set (16 turns), wall tok/s                      | 53.7               | 53.6              | 62.9                  | -                                | +17.2 %          |
+| seeded sampled T0.7, 24 held chat prompts             | 46.33              | 46.29             | 51.72                 | -                                | +11.7 %          |
+| seeded sampled T0.7 with thinking, 24 prompts         | 47.51              | -                 | 52.58                 | -                                | +10.7 %          |
+| seeded sparkDash-method prose T0.7 thinking, 6 rounds | 51.54              | -                 | 57.12                 | -                                | +10.8 %          |
+| prefill 7.4K / 29K / 117K prompt (tok/s)              | 2384 / 2437 / 2292 | -                 | 2508 / 2544 / 2466    | -                                |                  |
+| needle 182K-token prompt: first token s               | 82.7               | -                 | 75.4                  | -                                | -8.8 %           |
+|   recall                                              | 3/3                | -                 | 3/3                   | -                                |                  |
+| 227,621-token prompt: first token s                   | 107.7              | -                 | 94.3                  | -                                | -12.4 %          |
+|   recall                                              | 3/3                | -                 | 3/3                   | -                                |                  |
+| image                                                 | PASS ttft 0.47 s   | -                 | PASS ttft 0.52 s      | -                                |                  |
+| qeval (4 in flight)                                   | 33/35              | -                 | 33/35                 | -                                |                  |
+| 4 users distinct, default profile (tok/s)             | 151.9              | -                 | 162.0                 | 137.3 (its 8-slot default)       | +6.6 %           |
+| min MemAvailable MiB during the suite                 | 30096              | 34556             | 8394                  | 27786                            |                  |
+| max GPU MiB during the suite                          | 85437              | 81572             | 107914                | 86344                            |                  |
++-------------------------------------------------------+--------------------+-------------------+-----------------------+----------------------------------+------------------+
+sparkDash 1.8.8 catalogs prose / structural / code: levers off 43.6 / 66.1 / 81.0; ours 48.1 / 76.8 / 97.6; custom engine R 49.4 / 74.8 / 95.1.
+IDENTITY, recipe default against levers off (same engine, same checkpoint, same window): identity set 51/51, ALL 320 held texts 320/320, edit set 24/24,
+agent set 16/16; seeded sampled (T 0.7) 24/24, with thinking 24/24, sparkDash-method 6/6 identical per seed. 0 crash lines.
+MEMORY of the default run: lowest MemAvailable 8.4 GiB, GPU max 107.9 GiB (levers off 30.1 GiB / 85.4 GiB): the elastic prompt cache + 128-row window buffers.
+That is BELOW the engine's 9 GiB reserve figure (round 9: 10.5 GiB): a dedicated box only; ELASTIC=0 otherwise.
+
+SAME-WINDOW COMPARISON with custom engine R (re-quantised checkpoint; ours is output-identical to the official checkpoint served without the levers):
++--------------------------------------------+------------------------+---------------------------+
+| bench                                      | ours, recipe default   | custom engine R v0.3.13 (EXL3 4.05) |
++--------------------------------------------+------------------------+---------------------------+
+| 3-prompt chat / code, 9 runs               | 51.5 / 86.9            | 55.3 / 90.4               |
+| ALL 320 held prompts (chat / code / math)  | 65.51 (56.20 / 87.66 / 86.98) | 64.36 (56.68 / 82.01 / 81.68) |
+| sparkDash 1.8.8 prose / code / structured  | 61.0 / 121.4 / 167.5   | 66.8 / 110.7 / 154.1      |
+| sparkDash catalogs prose / struct / code   | 48.1 / 76.8 / 97.6     | 49.4 / 74.8 / 95.1        |
+| first token, short prompt                  | 119 ms                 | 119 ms                    |
+| 1 / 4 / 8 users, distinct prompts          | 90.1 / 153.3 / 213.2 (USERS16 profile; 4 users on the default profile 162.0) | 87.2 / 137.3 / 166.6 |
+|   last first token at 1 / 4 / 8 users      | 0.17 / 0.63 / 0.80 s   | 0.16 / 0.85 / 2.17 s      |
++--------------------------------------------+------------------------+---------------------------+
+Plain reading: custom engine R is still faster on prose-like single-user text (3-prompt chat +7 %, code +4 %, sparkDash prose +10 %); ours is faster on the 320 held
+prompts as a whole (+1.8 %; code +6.9 %, math +6.5 %, chat -0.8 %), on sparkDash code and structured (+10 %, +9 %), and with 4-8 users (+12..+28 %).
+Not ahead everywhere; and the two columns do not serve the same weights.
+
+MANY USERS, final image, USERS16=1 (pool of 16 x 48K tokens, see README: was 16 x 64K before patch 0122), same window, MEASURED:
+ 1 / 4 / 8 / 12 users 90.1 / 153.3 / 213.2 / 257.1 (last first token 0.17 / 0.63 / 0.80 / 1.07 s); 16 users 274.4 / 288.7 / 284.6 (1.16 / 0.81 / 0.81 s);
+ 16 copies 353.2; waves of 16 162.3 (last first token 1.24 s), waves of 4 102.2 (0.57 s); 136,607-token prompt + 15 short: recall 3/3, shorts' last first
+ token 1.11 s; held 107 with 16 in flight 197.2 greedy / 187.4 seeded sampled. MiaAI's 16 x 64K configuration was NOT re-run in this window: round 9's same-window
+ figure was 215-224 (last first token 6.8 s).

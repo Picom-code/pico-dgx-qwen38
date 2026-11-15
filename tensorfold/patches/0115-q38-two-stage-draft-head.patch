@@ -1,0 +1,663 @@
+diff --git a/zig/kernels/cuda/flashnext_mtp.cu b/zig/kernels/cuda/flashnext_mtp.cu
+index 6a26529..8649035 100644
+--- a/zig/kernels/cuda/flashnext_mtp.cu
++++ b/zig/kernels/cuda/flashnext_mtp.cu
+@@ -164,6 +164,343 @@ extern "C" __global__ void __launch_bounds__(1024) fn_row_best_lanes(const __gri
+     }
+ }
+ 
++// ---- q38 (TF_FLASHNEXT_Q38_HEAD2): a two-stage draft head for a lone greedy chain. Drafts only: the main model verifies every token.
++// Stage 1 scores every draft row from the first R coordinates of the rows in a rotated basis, 4-bit again (V x R / 2 bytes
++// instead of V x 1280), stage 2 re-scores the best
++// K of them with the 4-bit rows themselves. The idea is SVD-softmax (Shim et al., NeurIPS 2017): preview in a rotated basis, exact
++// scores for the short list.
++
++// xr[o] = sum_i At[o][i] * x[i]: the head's input row in the rotated basis, R values. One block (256 threads) an output.
++extern "C" __global__ void __launch_bounds__(256) fn_q38_head2_rot(const __nv_bfloat16* __restrict__ x, const float* __restrict__ At,
++                                                                    float* __restrict__ xr, int D) {
++    const int o = blockIdx.x, t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    const float* a = At + static_cast<long long>(o) * D;
++    float sum = 0.0f;
++    for (int i = t; i < D; i += blockDim.x) sum += a[i] * __bfloat162float(x[i]);
++    for (int w = 16; w; w >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, w);
++    __shared__ float ss[8];
++    if (lane == 0) ss[warp] = sum;
++    __syncthreads();
++    if (t == 0) {
++        float all = 0.0f;
++        for (int w = 0; w < static_cast<int>(blockDim.x >> 5); ++w) all += ss[w];
++        xr[o] = all;
++    }
++}
++
++// out[v] = bf16(sum over groups g of S[v][g] * sum_i code[v][i] * xr[i] + B[v][g] * sum_i xr[i]) for every row v: the rotated rows'
++// first R coordinates, group-32 affine 4-bit (R / 2 code bytes a row, low nibble first). A warp a row (32 rows a block), a lane
++// R / 64 bytes of it (R = 128, 256 or 512), so a row's codes arrive as one or two coalesced loads a warp.
++extern "C" __global__ void __launch_bounds__(1024) fn_q38_head2_prev(const unsigned char* __restrict__ P, const __nv_bfloat16* __restrict__ S,
++                                                                     const __nv_bfloat16* __restrict__ B, const float* __restrict__ xr,
++                                                                     __nv_bfloat16* __restrict__ out, int V, int R) {
++    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    __shared__ float sx[512];
++    __shared__ float sg[16];
++    for (int i = t; i < R; i += blockDim.x) sx[i] = xr[i];
++    __syncthreads();
++    const int groups = R >> 5;
++    if (t < groups) {
++        float a = 0.0f;
++#pragma unroll
++        for (int j = 0; j < 32; ++j) a += sx[t * 32 + j];
++        sg[t] = a;
++    }
++    __syncthreads();
++    const int v = blockIdx.x * 32 + warp;
++    if (v >= V) return;
++    const int per = R >> 6;            // code bytes a lane
++    const int vals = R >> 5;           // values a lane
++    const int g = (lane * vals) >> 5;  // the lane's group
++    const unsigned char* row = P + static_cast<long long>(v) * (R >> 1) + lane * per;
++    const float* xs = sx + lane * vals;
++    float dot = 0.0f;
++    if (per == 8) {
++        const unsigned long long q = *reinterpret_cast<const unsigned long long*>(row);
++#pragma unroll
++        for (int j = 0; j < 16; ++j) dot += static_cast<float>((q >> (4 * j)) & 15ull) * xs[j];
++    } else {
++        for (int j = 0; j < per; ++j) {
++            const unsigned c = row[j];
++            dot += static_cast<float>(c & 15u) * xs[2 * j] + static_cast<float>(c >> 4) * xs[2 * j + 1];
++        }
++    }
++    float sum = __bfloat162float(S[static_cast<long long>(v) * groups + g]) * dot;
++    // the group's bias once: by the first lane of the group
++    if (((lane * vals) & 31) == 0) sum += __bfloat162float(B[static_cast<long long>(v) * groups + g]) * sg[g];
++    for (int w = 16; w; w >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, w);
++    if (lane == 0) out[v] = __float2bfloat16(sum);
++}
++
++// fn_q38_head2_prev with 8 rows a warp (256 rows a block): an eighth of the blocks, the same sum a row.
++extern "C" __global__ void __launch_bounds__(1024) fn_q38_head2_prev8(const unsigned char* __restrict__ P, const __nv_bfloat16* __restrict__ S,
++                                                                     const __nv_bfloat16* __restrict__ B, const float* __restrict__ xr,
++                                                                     __nv_bfloat16* __restrict__ out, int V, int R) {
++    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    __shared__ float sx[512];
++    __shared__ float sg[16];
++    for (int i = t; i < R; i += blockDim.x) sx[i] = xr[i];
++    __syncthreads();
++    const int groups = R >> 5;
++    if (t < groups) {
++        float a = 0.0f;
++#pragma unroll
++        for (int j = 0; j < 32; ++j) a += sx[t * 32 + j];
++        sg[t] = a;
++    }
++    __syncthreads();
++    const int per = R >> 6;            // code bytes a lane
++    const int vals = R >> 5;           // values a lane
++    const int g = (lane * vals) >> 5;  // the lane's group
++    const float* xs = sx + lane * vals;
++    const bool first = ((lane * vals) & 31) == 0;
++    for (int i = 0; i < 8; ++i) {
++        const int v = blockIdx.x * 256 + warp * 8 + i;
++        if (v >= V) break;
++        const unsigned char* row = P + static_cast<long long>(v) * (R >> 1) + lane * per;
++        float dot = 0.0f;
++        if (per == 8) {
++            const unsigned long long q = *reinterpret_cast<const unsigned long long*>(row);
++#pragma unroll
++            for (int j = 0; j < 16; ++j) dot += static_cast<float>((q >> (4 * j)) & 15ull) * xs[j];
++        } else {
++            for (int j = 0; j < per; ++j) {
++                const unsigned c = row[j];
++                dot += static_cast<float>(c & 15u) * xs[2 * j] + static_cast<float>(c >> 4) * xs[2 * j + 1];
++            }
++        }
++        float sum = __bfloat162float(S[static_cast<long long>(v) * groups + g]) * dot;
++        if (first) sum += __bfloat162float(B[static_cast<long long>(v) * groups + g]) * sg[g];
++        for (int w = 16; w; w >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, w);
++        if (lane == 0) out[v] = __float2bfloat16(sum);
++    }
++}
++
++// The K rows named by cols[] get their scores from the 4-bit rows (group-32 affine: value = code * scale + bias): one block a row,
++// a thread a group of 32 values (16 bytes of codes, low nibble first). out[col] replaces the preview's score.
++extern "C" __global__ void __launch_bounds__(128) fn_q38_head2_exact(const int* __restrict__ cols, const unsigned char* __restrict__ W,
++                                                                     const __nv_bfloat16* __restrict__ S, const __nv_bfloat16* __restrict__ B,
++                                                                     const __nv_bfloat16* __restrict__ x, __nv_bfloat16* __restrict__ out,
++                                                                     int V, int D) {
++    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    const int col = cols[blockIdx.x];
++    if (col < 0 || col >= V) return;
++    const int groups = D >> 5;
++    float sum = 0.0f;
++    for (int g = t; g < groups; g += blockDim.x) {
++        const unsigned char* w = W + static_cast<long long>(col) * (D >> 1) + g * 16;
++        const __nv_bfloat16* xg = x + g * 32;
++        float dot = 0.0f, xs = 0.0f;
++#pragma unroll
++        for (int j = 0; j < 16; ++j) {
++            const unsigned c = w[j];
++            const float x0 = __bfloat162float(xg[2 * j]), x1 = __bfloat162float(xg[2 * j + 1]);
++            dot += static_cast<float>(c & 15u) * x0 + static_cast<float>(c >> 4) * x1;
++            xs += x0 + x1;
++        }
++        sum += __bfloat162float(S[static_cast<long long>(col) * groups + g]) * dot + __bfloat162float(B[static_cast<long long>(col) * groups + g]) * xs;
++    }
++    for (int w = 16; w; w >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, w);
++    __shared__ float ss[4];
++    if (lane == 0) ss[warp] = sum;
++    __syncthreads();
++    if (t == 0) {
++        float all = 0.0f;
++        for (int w = 0; w < static_cast<int>(blockDim.x >> 5); ++w) all += ss[w];
++        out[col] = __float2bfloat16(all);
++    }
++}
++
++// ---- q38 HEAD2, block form (TF_FLASHNEXT_Q38_HEAD2_MODE=block): no pass over the whole score row by one block.
++// fn_q38_head2_scan = fn_q38_head2_prev8 that also leaves, for its 256 rows, the three best rows' ids (cidx[3b .. 3b + 2]; -1: none)
++// and tails[b] = log of the sum of exp(score) over its other rows (-inf: none).
++extern "C" __global__ void __launch_bounds__(1024) fn_q38_head2_scan(const unsigned char* __restrict__ P, const __nv_bfloat16* __restrict__ S,
++                                                                     const __nv_bfloat16* __restrict__ B, const float* __restrict__ xr,
++                                                                     __nv_bfloat16* __restrict__ out, int V, int R, int* __restrict__ cidx,
++                                                                     float* __restrict__ tails) {
++    using namespace fn_mtp;
++    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    __shared__ float sx[512];
++    __shared__ float sg[16];
++    __shared__ float sv[256];
++    for (int i = t; i < R; i += blockDim.x) sx[i] = xr[i];
++    __syncthreads();
++    const int groups = R >> 5;
++    if (t < groups) {
++        float a = 0.0f;
++#pragma unroll
++        for (int j = 0; j < 32; ++j) a += sx[t * 32 + j];
++        sg[t] = a;
++    }
++    __syncthreads();
++    const int per = R >> 6;
++    const int vals = R >> 5;
++    const int g = (lane * vals) >> 5;
++    const float* xs = sx + lane * vals;
++    const bool first = ((lane * vals) & 31) == 0;
++    const int v0 = blockIdx.x * 256 + warp * 8;
++    unsigned long long q[8];
++    float sc[8], bi[8];
++    if (per == 8) {
++#pragma unroll
++        for (int i = 0; i < 8; ++i) {
++            const int v = v0 + i;
++            const bool in = v < V;
++            q[i] = in ? *reinterpret_cast<const unsigned long long*>(P + static_cast<long long>(v) * (R >> 1) + lane * 8) : 0ull;
++            sc[i] = in ? __bfloat162float(S[static_cast<long long>(v) * groups + g]) : 0.0f;
++            bi[i] = (in && first) ? __bfloat162float(B[static_cast<long long>(v) * groups + g]) : 0.0f;
++        }
++    }
++#pragma unroll
++    for (int i = 0; i < 8; ++i) {
++        const int v = v0 + i;
++        float sum = -CUDART_INF_F;
++        if (v < V) {
++            float dot = 0.0f;
++            if (per == 8) {
++#pragma unroll
++                for (int j = 0; j < 16; ++j) dot += static_cast<float>((q[i] >> (4 * j)) & 15ull) * xs[j];
++                sum = sc[i] * dot + (first ? bi[i] * sg[g] : 0.0f);
++            } else {
++                const unsigned char* row = P + static_cast<long long>(v) * (R >> 1) + lane * per;
++                for (int j = 0; j < per; ++j) {
++                    const unsigned c = row[j];
++                    dot += static_cast<float>(c & 15u) * xs[2 * j] + static_cast<float>(c >> 4) * xs[2 * j + 1];
++                }
++                sum = __bfloat162float(S[static_cast<long long>(v) * groups + g]) * dot;
++                if (first) sum += __bfloat162float(B[static_cast<long long>(v) * groups + g]) * sg[g];
++            }
++            for (int w = 16; w; w >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, w);
++            if (lane == 0) out[v] = __float2bfloat16(sum);
++        }
++        if (lane == 0) sv[warp * 8 + i] = sum;
++    }
++    __syncthreads();
++    if (warp != 0) return;
++    // warp 0: the block's three best rows and the others' log-sum-exp; a lane 8 of the 256 scores
++    float b1 = -CUDART_INF_F;
++    int i1 = 0x7fffffff;
++#pragma unroll
++    for (int j = 0; j < 8; ++j) better(b1, i1, sv[lane * 8 + j], lane * 8 + j);
++    for (int o = 16; o; o >>= 1) better(b1, i1, __shfl_xor_sync(0xffffffffu, b1, o), __shfl_xor_sync(0xffffffffu, i1, o));
++    float b2 = -CUDART_INF_F;
++    int i2 = 0x7fffffff;
++#pragma unroll
++    for (int j = 0; j < 8; ++j)
++        if (lane * 8 + j != i1) better(b2, i2, sv[lane * 8 + j], lane * 8 + j);
++    for (int o = 16; o; o >>= 1) better(b2, i2, __shfl_xor_sync(0xffffffffu, b2, o), __shfl_xor_sync(0xffffffffu, i2, o));
++    float b3 = -CUDART_INF_F;
++    int i3 = 0x7fffffff;
++#pragma unroll
++    for (int j = 0; j < 8; ++j)
++        if (lane * 8 + j != i1 && lane * 8 + j != i2) better(b3, i3, sv[lane * 8 + j], lane * 8 + j);
++    for (int o = 16; o; o >>= 1) better(b3, i3, __shfl_xor_sync(0xffffffffu, b3, o), __shfl_xor_sync(0xffffffffu, i3, o));
++    float rest = 0.0f;
++#pragma unroll
++    for (int j = 0; j < 8; ++j) {
++        const int k = lane * 8 + j;
++        if (k != i1 && k != i2 && k != i3 && sv[k] > -CUDART_INF_F) rest += expf(sv[k] - b1);
++    }
++    for (int o = 16; o; o >>= 1) rest += __shfl_xor_sync(0xffffffffu, rest, o);
++    if (lane == 0) {
++        const int base = blockIdx.x * 256;
++        cidx[3 * blockIdx.x] = b1 > -CUDART_INF_F ? base + i1 : -1;
++        cidx[3 * blockIdx.x + 1] = b2 > -CUDART_INF_F ? base + i2 : -1;
++        cidx[3 * blockIdx.x + 2] = b3 > -CUDART_INF_F ? base + i3 : -1;
++        tails[blockIdx.x] = rest > 0.0f ? b1 + logf(rest) : -CUDART_INF_F;
++    }
++}
++
++// fn_q38_head2_exact that also leaves the score as fp32 in exv[block] (-inf for a missing row).
++extern "C" __global__ void __launch_bounds__(128) fn_q38_head2_exact2(const int* __restrict__ cols, const unsigned char* __restrict__ W,
++                                                                      const __nv_bfloat16* __restrict__ S, const __nv_bfloat16* __restrict__ B,
++                                                                      const __nv_bfloat16* __restrict__ x, __nv_bfloat16* __restrict__ out,
++                                                                      float* __restrict__ exv, int V, int D) {
++    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    const int col = cols[blockIdx.x];
++    if (col < 0 || col >= V) {
++        if (t == 0) exv[blockIdx.x] = -CUDART_INF_F;
++        return;
++    }
++    const int groups = D >> 5;
++    float sum = 0.0f;
++    for (int g = t; g < groups; g += blockDim.x) {
++        const unsigned char* w = W + static_cast<long long>(col) * (D >> 1) + g * 16;
++        const __nv_bfloat16* xg = x + g * 32;
++        float dot = 0.0f, xs = 0.0f;
++#pragma unroll
++        for (int j = 0; j < 16; ++j) {
++            const unsigned c = w[j];
++            const float x0 = __bfloat162float(xg[2 * j]), x1 = __bfloat162float(xg[2 * j + 1]);
++            dot += static_cast<float>(c & 15u) * x0 + static_cast<float>(c >> 4) * x1;
++            xs += x0 + x1;
++        }
++        sum += __bfloat162float(S[static_cast<long long>(col) * groups + g]) * dot + __bfloat162float(B[static_cast<long long>(col) * groups + g]) * xs;
++    }
++    for (int w = 16; w; w >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, w);
++    __shared__ float ss[4];
++    if (lane == 0) ss[warp] = sum;
++    __syncthreads();
++    if (t == 0) {
++        float all = 0.0f;
++        for (int w = 0; w < static_cast<int>(blockDim.x >> 5); ++w) all += ss[w];
++        const __nv_bfloat16 r = __float2bfloat16(all);
++        out[col] = r;
++        exv[blockIdx.x] = __bfloat162float(r);
++    }
++}
++
++// One block: out [4] fp32 = the best of the n re-scored rows (exv, their ids in cols; the lower id of equal scores), the log-sum-exp
++// of the n scores and the nb block tails, the best's id, 0: fn_row_best's output for the two-stage row.
++extern "C" __global__ void __launch_bounds__(1024) fn_q38_head2_fin(const float* __restrict__ exv, const int* __restrict__ cols,
++                                                                    const float* __restrict__ tails, int n, int nb, float* __restrict__ out) {
++    using namespace fn_mtp;
++    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    float v = -CUDART_INF_F;
++    int at = 0x7fffffff;
++    for (int i = t; i < n; i += blockDim.x)
++        if (cols[i] >= 0) better(v, at, exv[i], cols[i]);
++    for (int o = 16; o; o >>= 1) better(v, at, __shfl_xor_sync(0xffffffffu, v, o), __shfl_xor_sync(0xffffffffu, at, o));
++    __shared__ float sv[32];
++    __shared__ int si[32];
++    __shared__ float top;
++    __shared__ int top_at;
++    if (lane == 0) {
++        sv[warp] = v;
++        si[warp] = at;
++    }
++    __syncthreads();
++    if (warp == 0) {
++        v = sv[lane];
++        at = si[lane];
++        for (int o = 16; o; o >>= 1) better(v, at, __shfl_xor_sync(0xffffffffu, v, o), __shfl_xor_sync(0xffffffffu, at, o));
++        if (lane == 0) {
++            top = v;
++            top_at = at;
++        }
++    }
++    __syncthreads();
++    const float m = top;
++    float sum = 0.0f;
++    for (int i = t; i < n; i += blockDim.x)
++        if (cols[i] >= 0) sum += expf(exv[i] - m);
++    for (int i = t; i < nb; i += blockDim.x) sum += expf(tails[i] - m);
++    for (int o = 16; o; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
++    __shared__ float ss[32];
++    if (lane == 0) ss[warp] = sum;
++    __syncthreads();
++    if (warp == 0) {
++        sum = ss[lane];
++        for (int o = 16; o; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
++        if (lane == 0) {
++            out[0] = m;
++            out[1] = m + logf(sum);
++            out[2] = __int_as_float(top_at);
++            out[3] = 0.0f;
++        }
++    }
++}
++
+ // A sampled draw's candidates (cuda_mtp.zig topCandidates is its host form, and the spec). The idea, an exact selection of a
+ // row's k best on the device so that the host draws among k scores instead of a whole row, is Track B of the DeepSeek-V4.1
+ // recipe (MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold, patch 0021, Mia's AI Lab); this kernel is written for
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index 48f4d6b..2503939 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -296,3 +296,47 @@ pub fn shortCopy() [2]u32 {
+     }
+     return short_copy_cache.?;
+ }
++
++/// TF_FLASHNEXT_Q38_HEAD2=FILE (q38, off unless set): a lone greedy chain's draft head runs in two stages: a rank-R rotated 8-bit
++/// preview of every draft row (FILE, made by kit/mkhead2.py from the checkpoint's own head rows), then the 4-bit rows themselves for
++/// the preview's best K (TF_FLASHNEXT_Q38_HEAD2_K, default 32, at most 64). Drafts only: the main model verifies every token.
++pub fn q38Head2() ?[*:0]const u8 {
++    const v = std.c.getenv("TF_FLASHNEXT_Q38_HEAD2") orelse return null;
++    return if (v[0] == 0) null else v;
++}
++
++pub fn q38Head2K() usize {
++    const v = std.c.getenv("TF_FLASHNEXT_Q38_HEAD2_K") orelse return 32;
++    const k = std.fmt.parseInt(usize, std.mem.span(v), 10) catch return 32;
++    return std.math.clamp(k, 1, 64);
++}
++
++/// TF_FLASHNEXT_Q38_HEAD2_ROWS=1|8 (default 8): rows a warp of the preview kernel takes (8: fn_q38_head2_prev8, an eighth of the blocks).
++pub fn q38Head2Rows() usize {
++    const v = std.c.getenv("TF_FLASHNEXT_Q38_HEAD2_ROWS") orelse return 8;
++    return if (v[0] == '1') 1 else 8;
++}
++
++/// TF_FLASHNEXT_Q38_HEAD2_C=x: odds factor on the tail mass of the two-stage head's draft probability (the gate's input):
++/// p' = p / (p + x (1 - p)). Defaults centre it on the full 4-bit head's probability at rank 512 (kit/calB2.py): 1.02 in the block
++/// form (three rows a block re-scored), 1.06 in the top-k form at K = 64 (1.08 at K = 32).
++pub fn q38Head2C() f64 {
++    const st = struct {
++        var c: f64 = -1;
++    };
++    if (st.c < 0) {
++        const d: f64 = if (q38Head2Block()) 1.02 else 1.06;
++        st.c = d;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_HEAD2_C")) |v| st.c = std.fmt.parseFloat(f64, std.mem.span(v)) catch d;
++        if (!(st.c >= 0.5 and st.c <= 4.0)) st.c = d;
++    }
++    return st.c;
++}
++
++/// TF_FLASHNEXT_Q38_HEAD2_MODE=block (default) | topk: block: every 256-row block of the preview re-scores its three best rows and the
++/// row's best and log-sum-exp come from those and the blocks' tails (four launches, none of them one block over the whole row);
++/// topk: the preview's best K rows through fn_row_cand, then fn_row_best over the row.
++pub fn q38Head2Block() bool {
++    const v = std.c.getenv("TF_FLASHNEXT_Q38_HEAD2_MODE") orelse return true;
++    return !std.mem.eql(u8, std.mem.span(v), "topk");
++}
+diff --git a/zig/src/families/flashnext/cuda_mtp.zig b/zig/src/families/flashnext/cuda_mtp.zig
+index a067865..e404a5c 100644
+--- a/zig/src/families/flashnext/cuda_mtp.zig
++++ b/zig/src/families/flashnext/cuda_mtp.zig
+@@ -380,6 +380,8 @@ pub const Head = struct {
+     /// fn_row_cand and the device scratch of its outputs, with TF_FLASHNEXT_SAMPLE_CAND=1 (else null).
+     cand_fn: ?cuda.Function,
+     cand_buf: ?cuda.DeviceBuffer,
++    /// q38 (TF_FLASHNEXT_Q38_HEAD2): the two-stage draft head of a lone greedy chain (null: off).
++    head2: ?Head2 = null,
+ 
+     pub fn init(gpa: std.mem.Allocator, io: std.Io, driver: *cuda.Driver, stream: *cuda.Stream, dir: []const u8) !*Head {
+         if (!cuda.kernels.available) return error.BuiltWithoutKernels;
+@@ -433,6 +435,17 @@ pub const Head = struct {
+             h.cand_fn = try h.module.function("fn_row_cand");
+             h.cand_buf = try cuda.DeviceBuffer.alloc(driver, cand_bytes);
+         }
++        h.head2 = null;
++        if (@import("cuda_knobs.zig").q38Head2()) |path| {
++            if (Head2.load(gpa, driver, &store, &h.artifact, h.module, path)) |t| {
++                h.head2 = t;
++                if (h.cand_fn == null) {
++                    h.cand_fn = try h.module.function("fn_row_cand");
++                    h.cand_buf = try cuda.DeviceBuffer.alloc(driver, cand_bytes);
++                }
++                std.debug.print("q38 head2: on, rank {d}, {s}, re-score {d} of {d} rows\n", .{ t.r, if (t.block) "block form" else "top-k form", if (t.block) (h.ids.len + 255) / 256 * 3 else t.k, h.ids.len });
++            } else |e| std.debug.print("q38 head2: OFF ({s})\n", .{@errorName(e)});
++        }
+         return h;
+     }
+ 
+@@ -462,6 +475,7 @@ pub const Head = struct {
+ 
+     /// The BF16 legacy lane is the same qlinear owner; group-32 affine keeps its existing unqualified callback.
+     pub fn project(h: *const Head, pass: anytype, input: u64, sums: u64, out: u64, rows: usize) !void {
++        if (head2_now and rows == 1) if (h.head2) |t| return t.project(h, pass.stream, input, out);
+         if (h.draft.native) |weight| {
+             const view_: cuda.qlinear.proposal.Head = .{ .weight = .{ .bf16 = weight }, .role = .decode, .vocab = vocab, .logical = @intCast(h.ids.len), .stride = @intCast(h.ids.len), .ids = h.ids, .generation = h.artifact.fingerprint };
+             return view_.project(.{ .lane = &pass.k.native_lane }, pass.stream, .{ .x = input, .sums = sums, .part = pass.s.native_part }, out, rows);
+@@ -520,6 +534,148 @@ pub fn headBytes() usize {
+ 
+ pub const headFormat = @import("cuda_mtp_draft.zig").headFormat;
+ pub const Pick = @import("cuda_mtp_draft.zig").Pick;
++/// q38: set by a lone greedy chain around its head calls (one launching thread); Head.project then takes the two-stage path.
++pub var head2_now: bool = false;
++/// q38: where the block form of the two-stage head leaves the row's best, log-sum-exp and id (the chain's Draft.best).
++pub var head2_best: u64 = 0;
++
++extern "c" fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
++extern "c" fn fread(ptr: [*]u8, size: usize, n: usize, f: *anyopaque) usize;
++extern "c" fn fclose(f: *anyopaque) c_int;
++
++/// q38 (TF_FLASHNEXT_Q38_HEAD2): a two-stage draft head. File (little endian, kit/mkhead2.py): "Q38HEAD2", u32 version 2, u32 dims,
++/// u32 rank R (128, 256 or 512), u32 rows V; then At [R, dims] fp32 (the rotation, an output a row); codes [V, R / 2] u8, scales
++/// [V, R / 32] bf16, biases [V, R / 32] bf16: the first R rotated coordinates of the 4-bit draft rows, group-32 affine 4-bit again.
++/// Rows are the draft vocabulary's, in its order.
++pub const Head2 = struct {
++    at: cuda.DeviceBuffer,
++    p: cuda.DeviceBuffer,
++    sc: cuda.DeviceBuffer,
++    bi: cuda.DeviceBuffer,
++    xr: cuda.DeviceBuffer,
++    rows: @import("cuda_mtp_load.zig").Plain,
++    r: usize,
++    k: usize,
++    per_warp: usize,
++    block: bool,
++    cidx: cuda.DeviceBuffer,
++    tails: cuda.DeviceBuffer,
++    exv: cuda.DeviceBuffer,
++    scan_fn: cuda.Function,
++    exact2_fn: cuda.Function,
++    fin_fn: cuda.Function,
++    rot_fn: cuda.Function,
++    prev_fn: cuda.Function,
++    exact_fn: cuda.Function,
++
++    var steps: u64 = 0;
++
++    fn load(gpa: std.mem.Allocator, driver: *cuda.Driver, store: *wt.Store, artifact: *const proposal.Artifact, module: cuda.Module, path: [*:0]const u8) !Head2 {
++        const f = fopen(path, "rb") orelse return error.Head2FileMissing;
++        defer _ = fclose(f);
++        var hd: [24]u8 = undefined;
++        if (fread(&hd, 1, 24, f) != 24 or !std.mem.eql(u8, hd[0..8], "Q38HEAD2")) return error.Head2BadFile;
++        const version = std.mem.readInt(u32, hd[8..12], .little);
++        const d = std.mem.readInt(u32, hd[12..16], .little);
++        const r: usize = std.mem.readInt(u32, hd[16..20], .little);
++        const v: usize = std.mem.readInt(u32, hd[20..24], .little);
++        if (version != 2 or d != dims or v != artifact.ids().len or (r != 128 and r != 256 and r != 512)) return error.Head2BadShape;
++        const na = r * dims * 4;
++        const np = v * r / 2;
++        const ns = v * r / 32 * 2;
++        const n = na + np + 2 * ns;
++        const bytes = try gpa.alloc(u8, n);
++        defer gpa.free(bytes);
++        if (fread(bytes.ptr, 1, n, f) != n) return error.Head2ShortFile;
++        var at = try cuda.DeviceBuffer.fromHost(driver, bytes[0..na]);
++        errdefer at.free();
++        var p = try cuda.DeviceBuffer.fromHost(driver, bytes[na..][0..np]);
++        errdefer p.free();
++        var sc = try cuda.DeviceBuffer.fromHost(driver, bytes[na + np ..][0..ns]);
++        errdefer sc.free();
++        var bi = try cuda.DeviceBuffer.fromHost(driver, bytes[na + np + ns ..][0..ns]);
++        errdefer bi.free();
++        var xr = try cuda.DeviceBuffer.alloc(driver, 512 * 4);
++        errdefer xr.free();
++        const rows = try @import("cuda_mtp_load.zig").plain(gpa, driver, store, artifact);
++        const nb = (v + 255) / 256;
++        var cidx = try cuda.DeviceBuffer.alloc(driver, nb * 3 * 4);
++        errdefer cidx.free();
++        var tails = try cuda.DeviceBuffer.alloc(driver, nb * 4);
++        errdefer tails.free();
++        const exv = try cuda.DeviceBuffer.alloc(driver, nb * 3 * 4);
++        return .{ .block = @import("cuda_knobs.zig").q38Head2Block() and r == 512, .cidx = cidx, .tails = tails, .exv = exv, .scan_fn = try module.function("fn_q38_head2_scan"), .exact2_fn = try module.function("fn_q38_head2_exact2"), .fin_fn = try module.function("fn_q38_head2_fin"), .at = at, .p = p, .sc = sc, .bi = bi, .xr = xr, .rows = rows, .r = r, .k = @import("cuda_knobs.zig").q38Head2K(), .per_warp = @import("cuda_knobs.zig").q38Head2Rows(), .rot_fn = try module.function("fn_q38_head2_rot"), .prev_fn = try module.function(if (@import("cuda_knobs.zig").q38Head2Rows() == 8) "fn_q38_head2_prev8" else "fn_q38_head2_prev"), .exact_fn = try module.function("fn_q38_head2_exact") };
++    }
++
++    /// One input row `x` ([dims] bf16) to `out` ([V] bf16 scores): the preview's score for every row, the 4-bit rows' for its best k.
++    fn project(t: Head2, h: *const Head, stream: cuda.Stream, x: u64, out: u64) !void {
++        const v = h.ids.len;
++        var a: cuda.Args = .{};
++        a.add(x);
++        a.add(t.at.ptr);
++        a.add(t.xr.ptr);
++        a.add(cint(dims));
++        try cuda.launch.launch(t.rot_fn, .{ .grid = .{ .x = @intCast(t.r) }, .block = .{ .x = 256 } }, stream, &a);
++        if (t.block) {
++            const nb = (v + 255) / 256;
++            var s2: cuda.Args = .{};
++            s2.add(t.p.ptr);
++            s2.add(t.sc.ptr);
++            s2.add(t.bi.ptr);
++            s2.add(t.xr.ptr);
++            s2.add(out);
++            s2.add(cint(v));
++            s2.add(cint(t.r));
++            s2.add(t.cidx.ptr);
++            s2.add(t.tails.ptr);
++            try cuda.launch.launch(t.scan_fn, .{ .grid = .{ .x = @intCast(nb) }, .block = .{ .x = 1024 } }, stream, &s2);
++            var e2: cuda.Args = .{};
++            e2.add(t.cidx.ptr);
++            e2.add(t.rows.w.ptr);
++            e2.add(t.rows.s.ptr);
++            e2.add(t.rows.b.ptr);
++            e2.add(x);
++            e2.add(out);
++            e2.add(t.exv.ptr);
++            e2.add(cint(v));
++            e2.add(cint(dims));
++            try cuda.launch.launch(t.exact2_fn, .{ .grid = .{ .x = @intCast(nb * 3) }, .block = .{ .x = 128 } }, stream, &e2);
++            var f2: cuda.Args = .{};
++            f2.add(t.exv.ptr);
++            f2.add(t.cidx.ptr);
++            f2.add(t.tails.ptr);
++            f2.add(cint(nb * 3));
++            f2.add(cint(nb));
++            f2.add(head2_best);
++            try cuda.launch.launch(t.fin_fn, .{ .grid = .{ .x = 1 }, .block = .{ .x = 1024 } }, stream, &f2);
++            steps += 1;
++            return;
++        }
++        var b: cuda.Args = .{};
++        b.add(t.p.ptr);
++        b.add(t.sc.ptr);
++        b.add(t.bi.ptr);
++        b.add(t.xr.ptr);
++        b.add(out);
++        b.add(cint(v));
++        b.add(cint(t.r));
++        try cuda.launch.launch(t.prev_fn, .{ .grid = .{ .x = @intCast((v + 32 * t.per_warp - 1) / (32 * t.per_warp)) }, .block = .{ .x = 1024 } }, stream, &b);
++        try h.cand(stream, out, v, v, 1, t.k, 0);
++        var c: cuda.Args = .{};
++        c.add(h.cand_buf.?.ptr + cand_slots * cand_max * 4);
++        c.add(t.rows.w.ptr);
++        c.add(t.rows.s.ptr);
++        c.add(t.rows.b.ptr);
++        c.add(x);
++        c.add(out);
++        c.add(cint(v));
++        c.add(cint(dims));
++        try cuda.launch.launch(t.exact_fn, .{ .grid = .{ .x = @intCast(t.k) }, .block = .{ .x = 128 } }, stream, &c);
++        steps += 1;
++        if (steps % 20000 == 0) std.debug.print("q38 head2: {d} chain steps\n", .{steps});
++    }
++};
++
+ pub const Chain = @import("cuda_mtp_draft.zig").Chain;
+ pub const Draft = @import("cuda_mtp_draft.zig").Draft;
+ pub const Ops = @import("cuda_mtp_ops.zig").Ops;
+diff --git a/zig/src/families/flashnext/cuda_mtp_load.zig b/zig/src/families/flashnext/cuda_mtp_load.zig
+index 3be6a75..f8c7f49 100644
+--- a/zig/src/families/flashnext/cuda_mtp_load.zig
++++ b/zig/src/families/flashnext/cuda_mtp_load.zig
+@@ -39,6 +39,32 @@ pub fn draft(a: std.mem.Allocator, d: *cuda.Driver, store: *wt.Store, artifact:
+     return wt.uploadQ4(a, d, selected.codes, selected.scales, selected.biases, ids.len, wt.dims / 8);
+ }
+ 
++pub const Plain = struct { w: cuda.DeviceBuffer, s: cuda.DeviceBuffer, b: cuda.DeviceBuffer };
++
++/// q38 (TF_FLASHNEXT_Q38_HEAD2): the 4-bit draft rows once more, row-major and unpacked (16 code bytes, a bf16 scale and a bf16 bias a
++/// group of 32 values), for the kernel that re-scores a few rows. The same codes `quantized` packs for the head's own kernel.
++pub fn plain(a: std.mem.Allocator, d: *cuda.Driver, store: *wt.Store, artifact: *const core.proposal_vocab.Artifact) !Plain {
++    const n = artifact.ids().len;
++    const tensor = try store.tensor("language_model.lm_head.weight");
++    if (tensor.dtype != .bf16 or !tensor.is(.bf16, &.{ wt.vocab, wt.dims })) return error.UnexpectedTensor;
++    var selected = try (core.proposal_rows.Source{ .identity = artifact.identity(), .storage = .bf16, .recipe = .qlinear_decode, .codes = .{ .bytes = tensor.bytes, .stride = wt.dims * 2 } }).extract(a, artifact, 1, std.math.maxInt(usize));
++    defer selected.deinit();
++    const rows = selected.codes;
++    const words = try a.alloc(u8, n * wt.dims / 2);
++    defer a.free(words);
++    const scales = try a.alloc(u8, n * wt.dims / 16);
++    defer a.free(scales);
++    const biases = try a.alloc(u8, scales.len);
++    defer a.free(biases);
++    for (0..n) |i| try @import("cuda_draft_affine.zig").row(rows[i * wt.dims * 2 ..][0 .. wt.dims * 2], words[i * wt.dims / 2 ..][0 .. wt.dims / 2], scales[i * wt.dims / 16 ..][0 .. wt.dims / 16], biases[i * wt.dims / 16 ..][0 .. wt.dims / 16]);
++    var w = try cuda.DeviceBuffer.fromHost(d, words);
++    errdefer w.free();
++    var sc = try cuda.DeviceBuffer.fromHost(d, scales);
++    errdefer sc.free();
++    const bi = try cuda.DeviceBuffer.fromHost(d, biases);
++    return .{ .w = w, .s = sc, .b = bi };
++}
++
+ fn quantized(a: std.mem.Allocator, d: *cuda.Driver, rows: []const u8, n: usize) !wt.Q4 {
+     const words = try a.alloc(u8, n * wt.dims / 2);
+     defer a.free(words);
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index 3f8a5d3..c35c598 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -280,14 +280,20 @@ pub fn Ops(comptime Tri: type) type {
+             const h = o.h;
+             const view_ = h.view();
+             const n = view_.logical;
+-            try h.best(o.stream(), d.dlogits.ptr, n, n, 1, d.best.ptr);
++            // q38 (HEAD2, block form): the two-stage head has left the row's best in d.best already
++            const done = mtp.head2_now and (if (h.head2) |t| t.block else false);
++            if (!done) try h.best(o.stream(), d.dlogits.ptr, n, n, 1, d.best.ptr);
+             try download(o.stream(), std.mem.sliceAsBytes(d.best_host[0..4]), d.best.ptr);
+             const top = d.best_host[0];
+             const lse = d.best_host[1];
+             const greedy = if (sm) |s| s.temperature <= 0 else true;
+             if (greedy) {
+                 const col: usize = @intCast(@as(i32, @bitCast(d.best_host[2])));
+-                return .{ .token = try view_.global(@intCast(col)), .prob = @exp(@as(f64, top) - @as(f64, lse)) };
++                var prob = @exp(@as(f64, top) - @as(f64, lse));
++                // q38 (HEAD2): the preview's rows carry less of the tail's mass than the 4-bit rows do, so the two-stage head's
++                // probability reads a little high; the gate's input is corrected by the measured odds factor (kit/calB.py)
++                if (mtp.head2_now) prob = prob / (prob + @import("cuda_knobs.zig").q38Head2C() * (1.0 - prob));
++                return .{ .token = try view_.global(@intCast(col)), .prob = prob };
+             }
+             if (mtp.candidatesOn()) if (mtp.candidateCount(sm, n)) |count| {
+                 // the row's top_k best on the device: nothing of the row but those is copied (a NaN row is read whole)
+@@ -332,6 +338,10 @@ pub fn Ops(comptime Tri: type) type {
+         /// Python decode.draft: absorb the kept rows, then chain up to `count` drafts, the first always kept.
+         pub fn draft(o: Self, d: *Draft, next: []const u32, rows: u64, position: u64, count: usize, sm: ?Sampling, confidence: f64, out: *Chain, ahead: ?*ple.Ahead) !void {
+             out.n = 0;
++            // q38 (TF_FLASHNEXT_Q38_HEAD2): a lone greedy chain scores its drafts with the two-stage head
++            mtp.head2_now = o.h.head2 != null and (if (sm) |s| s.temperature <= 0 else true);
++            mtp.head2_best = d.best.ptr;
++            defer mtp.head2_now = false;
+             try o.absorb(d, next, rows, count > 0);
+             if (ahead) |a| a.flush();
+             var j: usize = 0;

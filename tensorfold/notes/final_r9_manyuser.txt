@@ -1,0 +1,28 @@
+Round 9 final, many users. spark-923b, DOCUMENTED PATH (recipe.sh prepare with patches 0101-0118, recipe.sh start, vision on), ONE window
+(2026-11-14 05:12-05:57 UTC), same image in every column. Distinct coding prompts, 512 tokens, greedy, total tok/s (last first token). MEASURED.
++--------------------+----------------------------------------+------------------------------------------+------------------------------------------+
+| users              | MiaAI config, 16 x 64K slots           | USERS16=1, recipe default                | USERS16=1 PREFIX_WAIT=0                  |
+|                    | (every lever of ours off)              | (PREFIX_WAIT=60000)                      | (reference, run before / after)          |
++--------------------+----------------------------------------+------------------------------------------+------------------------------------------+
+| 1                  | 75.8 (0.24 s)                          | 88.1 (0.18 s)                            | 87.6 / 86.8                              |
+| 4                  | 142.7 (1.17 s)                         | 158.7 (0.52 s)                           | 157.3 / 159.1                            |
+| 8                  | 199.3 (2.83 s)                         | 215.9 (0.68 s)                           | 212.7 / 219.9                            |
+| 12                 | 223.4 (4.83 s)                         | 258.6 (0.73 s)                           | 264.3 / 259.3                            |
+| 16                 | 215.6 / 224.3 / 214.7 (6.81/6.74/6.78) | 280.7 / 287.6 / 272.8 (0.88/0.67/0.69)   | 272.0 282.0 275.7 / 286.1 286.7 281.0    |
+| 16, mean of three  | 218.2                                  | 280.4                                    | 276.6 / 284.6                            |
+| 16 copies          | 244.1 (6.55 s)                         | 369.4 (0.63 s)                           | 364.5 / 364.6                            |
+| waves of 16 held   | 127.6, last first token 7.22 s         | 163.6, 1.10 s                            | 163.7, 1.09 s                            |
+| waves of 4 held    | 87.4, 1.35 s                           | 102.7, 0.54 s                            | 102.1, 0.55 s                            |
+| held 107, 16 in flight |                                    | 196.9                                    | 196.9                                    |
++--------------------+----------------------------------------+------------------------------------------+------------------------------------------+
+16 users: 280.4 against 218.2 = +28.5 %; 12 users +16 %; 8 users +8 %; 4 users +11 %; 1 user +16 %; last first token at 16 users 6.8 s -> 0.7-0.9 s.
+PREFIX_WAIT at 16 distinct users: 280.4 with it against 276.6 before and 284.6 after without it (mean 280.6): no cost; first-token times equal.
+  It is a recipe default from this round (measured gain, builder C, round 8: 8 requests on a NEW 25.5K-token system prompt, last first token 86.7 -> 12.9 s).
+Identity (texts): waves of 16 128/128 and waves of 4 64/64 identical between the MiaAI column and USERS16; waves of 16 with PREFIX_WAIT 128/128 identical
+to without; held 107 prompts with 16 in flight 107/107 identical to the round-7 build's texts, with and without PREFIX_WAIT.
+USERS16 keeps the 262,144-token window: 136,607-token prompt + 15 short: recall 3/3, shorts' last first token 0.97 s; 227,621-token prompt 3/3,
+first token 98.1 s (2320 tok/s; round 8: 2141).
+Against round 8 on this path (patches 0101-0113: 81.6 / 153.7 / 219.9 / 260.0 / 276.9 283.0 278.6, copies 347.9, waves 160.1): 16 users unchanged
+(this round's levers act on lone chains and long prompts), 1 user 81.6 -> 88, copies 348 -> 365-369.
+NOT MEASURED HERE: sampled requests at 16 users. Builder D measured on the head that CERT_TOPK=20 costs 16 SAMPLED users 3-4 % without a row limit that
+is not in patches 0101-0118, so USERS16 sets CERT_TOPK=0 (recipe.sh); the greedy runs above had CERT_TOPK=20 set, which greedy passes do not read.

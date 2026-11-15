@@ -1,0 +1,64 @@
+head tensor lm_head.weight BF16
+fit rows 130042 calls 29472; second-moment energy in the first r directions: 32:0.5587 64:0.6150 128:0.6701 256:0.7350 512:0.8109 1024:0.8958 2048:0.9795
+test: calls 25686 rows 129990 (all sizes); verify windows used 3000 rows 13239 (mean 4.41 rows a window); sources {'agent': 18, 'fresh': 2043, 'held': 939}
+test rows: norm outside the first r fitted directions / row norm (mean, p99): 64:0.653/0.891 128:0.613/0.850 256:0.560/0.786 512:0.488/0.706 1024:0.378/0.574 2048:0.177/0.299
+row-mean shift: |mean head row| 0.2647, mean |head row| 0.6614, mean |head row - mean row| 0.6054
+| scheme (stage 1)                             | MiB s1 | bound   | entries  | tiles a window mean / p50 / p90 / p99 | >1500  | MiB all | saved   |
+(a) SM8 today: exact tiles a window mean 8.7 p50 7 p90 16 p99 28; entries a row 2.4; bound +-0.993 logits; residual / row norm 0.0087
+| (a) sm8 /32 pow2, one norm [today]           |  606.2 |    0.99 |        2 |      9 /      7 /     16 /     28 |   0.0 % |  609.0 |   0.0 % |
+(b) residual / row norm with the shift 0.0076
+| (b) sm8 + row-mean shift (exact tiles)       |  606.2 |    0.88 |        2 |      9 /      7 /     15 /     27 |   0.0 % |  609.0 |   0.0 % |
+| (b2) sm8, 8-group bound (exact tiles)        |  606.2 |    0.89 |        2 |      8 /      7 /     13 /     23 |   0.0 % |  608.7 |   0.0 % |
+| (c0) plain basis, 4-bit all, group bound     |  305.7 |    9.95 |   100515 |   3666 /   3877 /   3880 /   3880 |  95.5 % |  892.3 | -46.5 % |
+| (c0) plain + shift, 4-bit all                |  305.7 |    9.13 |    96887 |   3681 /   3877 /   3880 /   3880 |  96.4 % |  897.2 | -47.3 % |
+| (c0) plain basis, 5-bit all                  |  381.5 |    4.65 |      735 |    739 /    325 /   2147 /   3876 |  15.6 % |  526.6 |  13.5 % |
+| (c0) plain basis, 6-bit all                  |  457.3 |    2.25 |       10 |     33 /     20 /     73 /    200 |   0.0 % |  465.1 |  23.6 % |
+| (c) rot 8b x 2560 (same bytes)               |  608.9 |    0.47 |        1 |      6 /      5 /      9 /     14 |   0.0 % |  612.5 |  -0.6 % |
+| (c) rot 8b x 1024                            |  245.1 |   29.87 |   248200 |   3880 /   3880 /   3880 /   3880 | 100.0 % |  854.1 | -40.2 % |
+| (c) rot 8b x 512                             |  123.9 |   42.40 |   248320 |   3880 /   3880 /   3880 /   3880 | 100.0 % |  732.8 | -20.3 % |
+| (c) rot 8b x 256                             |   63.2 |   50.44 |   248320 |   3880 /   3880 /   3880 /   3880 | 100.0 % |  672.2 | -10.4 % |
+| (c) rot 4b x 2560                            |  305.7 |    7.28 |    22975 |   2538 /   3564 /   3877 /   3880 |  68.2 % |  747.0 | -22.7 % |
+| (c) rot 4b x 1024                            |  123.9 |   33.46 |   248318 |   3880 /   3880 /   3880 /   3880 | 100.0 % |  732.8 | -20.3 % |
+| (c) rot 8b x 256 + 4b x 768                  |  154.2 |   31.76 |   248297 |   3880 /   3880 /   3880 /   3880 | 100.0 % |  763.1 | -25.3 % |
+| (c) rot 8b x 512 + 4b x 2048                 |  366.4 |    4.85 |     1919 |    782 /    203 /   3386 /   3877 |  17.4 % |  510.0 |  16.3 % |
+| (c) rot 8b x 256 + 4b x 2304                 |  336.0 |    5.59 |     4616 |   1211 /    533 /   3875 /   3880 |  30.0 % |  561.8 |   7.8 % |
+| (c) rot 8b x 128 + 6b x 384 + 4b x 2048      |  343.6 |    5.07 |     2559 |    899 /    276 /   3727 /   3877 |  20.9 % |  510.7 |  16.1 % |
+| (c) rot 8b x 512 + 2b x 2048                 |  245.1 |   26.81 |   247207 |   3880 /   3880 /   3880 /   3880 | 100.0 % |  854.1 | -40.2 % |
+| (c) rot 6b x 2560                            |  457.3 |    1.72 |        5 |     17 /     12 /     35 /     84 |   0.0 % |  462.7 |  24.0 % |
+| (c) rot 8b x 1024 + 4b x 1536                |  427.0 |    3.69 |      257 |    296 /     47 /    655 /   3850 |   6.0 % |  485.1 |  20.3 % |
+| (c) rot + shift, 8b x 512 + 4b x 2048        |  366.4 |    4.12 |      928 |    661 /    250 /   1920 /   3877 |  12.7 % |  491.3 |  19.3 % |
+| (c) rot + shift, 4b x 2560                   |  305.7 |    6.31 |    17051 |   2429 /   2838 /   3877 /   3880 |  67.1 % |  746.2 | -22.5 % |
+notes: MiB s1 = stage-1 bytes (codes + bound table); MiB all = stage 1 + SM8 on the surviving whole tiles (whole SM8 copy when > 1500 tiles) + exact tiles; saved = against today's (a). Stage-1 scales are ideal (not power of two): generous.
+head tensor lm_head.weight BF16
+fit rows 130042 calls 29472; second-moment energy in the first r directions: 32:0.5587 64:0.6150 128:0.6701 256:0.7350 512:0.8109 1024:0.8958 2048:0.9795
+test: calls 25686 rows 129990 (all sizes); verify windows used 3000 rows 13239 (mean 4.41 rows a window); sources {'agent': 18, 'fresh': 2043, 'held': 939}
+test rows: norm outside the first r fitted directions / row norm (mean, p99): 64:0.653/0.891 128:0.613/0.850 256:0.560/0.786 512:0.488/0.706 1024:0.378/0.574 2048:0.177/0.299
+row-mean shift: |mean head row| 0.2647, mean |head row| 0.6614, mean |head row - mean row| 0.6054
+| scheme (stage 1)                             | MiB s1 | bound   | entries  | tiles a window mean / p50 / p90 / p99 | >1500  | MiB all | saved   |
+(a) SM8 today: exact tiles a window mean 8.7 p50 7 p90 16 p99 28; entries a row 2.4; bound +-0.993 logits; residual / row norm 0.0087
+| (a) sm8 /32 pow2, one norm [today]           |  606.2 |    0.99 |        2 |      9 /      7 /     16 /     28 |   0.0 % |  609.0 |   0.0 % |
+(b) residual / row norm with the shift 0.0076
+| (b) sm8 + row-mean shift (exact tiles)       |  606.2 |    0.88 |        2 |      9 /      7 /     15 /     27 |   0.0 % |  609.0 |   0.0 % |
+| (b2) sm8, 8-group bound (exact tiles)        |  606.2 |    0.89 |        2 |      8 /      7 /     13 /     23 |   0.0 % |  608.7 |   0.0 % |
+permuted basis: share of sum x_j^2 w_j^2 in the first n dims: 256:0.648 512:0.713 1024:0.810 1536:0.887
+| (p) perm 6b x 2560                           |  457.3 |    1.85 |        5 |     18 /     13 /     37 /     83 |   0.0 % |  462.8 |  24.0 % |
+| (p) perm 8b x 512 + 5b x 2048                |  427.0 |    2.65 |       15 |     48 /     27 /    112 /    315 |   0.0 % |  437.1 |  28.2 % |
+| (p) perm 7b x 512 + 6b x 1024 + 5b x 1024    |  442.1 |    2.10 |        7 |     25 /     16 /     54 /    139 |   0.0 % |  448.7 |  26.3 % |
+| (p) perm 6b x 1024 + 5b x 1536               |  411.8 |    2.73 |       16 |     51 /     28 /    121 /    367 |   0.0 % |  422.6 |  30.6 % |
+| (p) perm 6b x 512 + 5b x 2048                |  396.7 |    3.11 |       28 |     83 /     40 /    202 /    660 |   0.0 % |  412.4 |  32.3 % |
+| (p) perm 6b x 1280 + 4b x 1280               |  381.7 |    4.14 |      201 |    360 /    143 /    941 /   3208 |   4.7 % |  451.0 |  25.9 % |
+| (p) perm 7b x 256 + 6b x 768 + 5b x 1536     |  419.4 |    2.53 |       12 |     40 /     23 /     94 /    252 |   0.0 % |  428.5 |  29.6 % |
+| (c) rot 6b x 1024 + 5b x 1536                |  411.8 |    2.55 |       14 |     48 /     22 /    103 /    457 |   0.0 % |  422.1 |  30.7 % |
+| (c) rot 7b x 512 + 6b x 1024 + 4b x 1024     |  411.8 |    3.26 |       85 |    166 /     31 /    300 /   2984 |   2.8 % |  445.9 |  26.8 % |
+| (c) rot 6b x 512 + 5b x 1024 + 4b x 1024     |  366.4 |    4.10 |      498 |    438 /     84 /   1257 /   3876 |   8.9 % |  448.9 |  26.3 % |
+| (c) rot 7b x 256 + 6b x 768 + 4b x 1536      |  373.9 |    4.14 |      596 |    456 /     82 /   1363 /   3876 |   9.4 % |  459.6 |  24.5 % |
+| (c) rot 6b x 1024 + 4b x 1536                |  366.4 |    4.34 |      837 |    548 /    112 /   1911 /   3877 |  11.6 % |  468.9 |  23.0 % |
+| (c) rot 6b x 512 + 4b x 2048                 |  336.0 |    5.29 |     3326 |   1043 /    396 /   3843 /   3877 |  25.2 % |  531.9 |  12.7 % |
+| (c) rot 5b x 1536 + 4b x 1024                |  351.2 |    4.72 |     1416 |    739 /    214 /   2878 /   3877 |  16.0 % |  488.9 |  19.7 % |
+| (c) rot 8b x 256 + 6b x 768 + 5b x 1536      |  427.0 |    2.24 |        9 |     30 /     16 /     62 /    253 |   0.0 % |  434.4 |  28.7 % |
+| (c) rot 7b x 1024 + 5b x 1536                |  442.1 |    2.12 |        7 |     25 /     14 /     53 /    192 |   0.0 % |  448.8 |  26.3 % |
+| (c) rot 5b x 2560                            |  381.5 |    3.47 |       91 |    208 /     63 /    470 /   2527 |   2.7 % |  423.0 |  30.5 % |
+| (c) rot 7b x 2560                            |  533.1 |    0.88 |        2 |      8 /      7 /     13 /     23 |   0.0 % |  537.0 |  11.8 % |
+| (c0) plain 6b x 2560, POWER-OF-TWO scale     |  457.3 |    3.40 |       63 |    164 /     68 /    403 /   1388 |   1.0 % |  488.2 |  19.8 % |
+| (c0) plain 6b x 2560, one norm (no group bound) |  454.9 |    2.43 |       13 |     43 /     24 /    100 /    309 |   0.0 % |  464.5 |  23.7 % |
+| (c0) plain 7b x 2560 ideal scale             |  533.1 |    1.11 |        3 |     10 /      8 /     17 /     33 |   0.0 % |  537.3 |  11.8 % |

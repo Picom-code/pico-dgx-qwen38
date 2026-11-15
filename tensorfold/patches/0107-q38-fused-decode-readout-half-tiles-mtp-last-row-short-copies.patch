@@ -1,0 +1,724 @@
+diff --git a/zig/kernels/cuda/flashnext_hcf.cu b/zig/kernels/cuda/flashnext_hcf.cu
+index 6a8985d..6e4bdbe 100644
+--- a/zig/kernels/cuda/flashnext_hcf.cu
++++ b/zig/kernels/cuda/flashnext_hcf.cu
+@@ -759,3 +759,203 @@ extern "C" __global__ void __launch_bounds__(256) fn_hcn_peak(float* OUT, int it
+     }
+ HCN_UP_DBG(fn_hcn_up3_k5_gemm, 3, 5, 1)
+ HCN_UP_DBG(fn_hcn_up3_k5_epi, 3, 5, 2)
++
++// ---- q38: the native read-out in DECODE geometry (few rows), two launches instead of five ----
++//
++// The exact chain for decode rows is fn_hc_normalize2 -> qmmf_kernel<BF16, 16, 64, 1, 4, ST, F32, CLUSTER> (down: 64 columns and one
++// K slice a block, the SK slices of a column tile met in a cluster and added in slice order) -> fn_hc_reduce_act (SK 1) ->
++// qmmf up (bf16) -> fn_hc_dense_mix2.
++//   fn_q38_hcdn: the down block of that chain with (a) its input stage formed in shared memory from the streams (fn_hc_normalize2's
++//   expression, one bf16 rounding) instead of copied from the normed rows, and (b) fn_hc_reduce_act's per-column arithmetic applied
++//   to the block's finished fp32 sums. The weight stages, the mma order (one m16n8k16 a k16 step, K ascending, from a zero
++//   accumulator), the slice order of the cluster sum and every rounding point are the chain's, so every output byte is the chain's.
++//   fn_hcn_up1_k5: hcn::upmix_body at one 16-row tile (the prompt tiles' up + mix kernel, already byte for byte the chain's).
++#include <cooperative_groups.h>
++namespace q38hc {
++using namespace qmm_frag;
++using tf_glue::bf;
++using tf_glue::rbf;
++
++__device__ __forceinline__ float bsig(float x) { return rbf(tf_glue::tf_sigmoid(x)); }
++__device__ __forceinline__ float bsilu(float x) { return rbf(tf_glue::tf_silu(x)); }
++
++template <int STAGES, int BN>
++__device__ __forceinline__ void hcdn_body(const __nv_bfloat16* __restrict__ H, const float* __restrict__ PSS,
++                                          const float* __restrict__ SCALE, const unsigned char* __restrict__ w,
++                                          __nv_bfloat16* __restrict__ ACT, float* __restrict__ XS, __nv_bfloat16* __restrict__ INJ,
++                                          float* __restrict__ PART, int M, int N, int K, int SK, int D, int NC, int SS, int LOW,
++                                          int HAS_INJ, float eps, float scale) {
++    constexpr int GS = 64, BM = 16, WN = 4, THREADS = 128, NT = BN / WN / 8, ROW = GS * 2, CHUNKS = ROW / 16;
++    static_assert(BN == 64 || BN == 32, "a 64-column tile of the packed weights, or its half (n8 tiles 0-3 / 4-7)");
++    constexpr int X = BM * ROW, W = BN * GS * 2, STAGE = (X + W + 127) / 128 * 128;
++    extern __shared__ __align__(128) unsigned char buf[];
++    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, wn = warp % WN;
++    const int KG = K / GS, per = KG / SK;
++    const int m0 = blockIdx.y * BM, n0 = blockIdx.x * BN, slice = blockIdx.z, g0 = slice * per;
++
++    // this thread's row of the input stage (one 16-byte chunk a thread a stage) and that row's 1 / rms in the slice's first stream
++    const int xr = tid / CHUNKS, xch = tid % CHUNKS, xrow = m0 + xr;
++    const int st0 = (g0 * GS) / D;
++    float rinv0 = 0.0f;
++    auto stage = [&](int s) { return buf + s * STAGE; };
++    auto loadX = [&](int s, int g) {
++        unsigned char* p = stage(s) + xr * ROW + swz<CHUNKS>(xr, xch) * 16;
++        uint4 o = make_uint4(0u, 0u, 0u, 0u);
++        if (xrow < M) {
++            const int k0 = g * GS + xch * 8, st = k0 / D;
++            const float rv = st == st0 ? rinv0 : hcn::rinv_of(PSS, xrow, st, NC, SS, D, eps);
++            const uint4 hv = *reinterpret_cast<const uint4*>(H + static_cast<size_t>(xrow) * K + k0);
++            const float4 s0 = *reinterpret_cast<const float4*>(SCALE + k0);
++            const float4 s1 = *reinterpret_cast<const float4*>(SCALE + k0 + 4);
++            const float sc[8] = {s0.x, s0.y, s0.z, s0.w, s1.x, s1.y, s1.z, s1.w};
++            const uint32_t hw[4] = {hv.x, hv.y, hv.z, hv.w};
++            uint32_t ow[4];
++#pragma unroll
++            for (int q = 0; q < 4; ++q) {
++                const __nv_bfloat162 h2 = *reinterpret_cast<const __nv_bfloat162*>(&hw[q]);
++                const __nv_bfloat162 n2 = __halves2bfloat162(__float2bfloat16_rn(__fmul_rn(__fmul_rn(bf(h2.x), rv), sc[2 * q])),
++                                                             __float2bfloat16_rn(__fmul_rn(__fmul_rn(bf(h2.y), rv), sc[2 * q + 1])));
++                ow[q] = *reinterpret_cast<const uint32_t*>(&n2);
++            }
++            o = make_uint4(ow[0], ow[1], ow[2], ow[3]);
++        }
++        *reinterpret_cast<uint4*>(p) = o;
++    };
++    auto loadW = [&](int s, int g) {
++        unsigned char* pw = stage(s) + X;
++        constexpr int TILE_BYTES = 64 * GS * 2;
++        const int half = (n0 % 64) / 32;  // 0 for 64-column tiles
++        for (int c = tid; c < W / 16; c += THREADS)
++            cp16(pw + c * 16, w + (static_cast<size_t>(n0 / 64) * KG + g) * TILE_BYTES + half * (TILE_BYTES / 2) + c * 16);
++    };
++
++    float acc[NT][4];
++#pragma unroll
++    for (int j = 0; j < NT; ++j)
++#pragma unroll
++        for (int e = 0; e < 4; ++e) acc[j][e] = 0.0f;
++    grid_launch();
++#pragma unroll
++    for (int s = 0; s < STAGES - 1; ++s)
++        if (s < per) loadW(s, g0 + s);
++    grid_wait();
++    if (xrow < M) rinv0 = hcn::rinv_of(PSS, xrow, st0, NC, SS, D, eps);
++#pragma unroll
++    for (int s = 0; s < STAGES - 1; ++s) {
++        if (s < per) loadX(s, g0 + s);
++        commit();
++    }
++    for (int it = 0; it < per; ++it) {
++        wait<STAGES - 2>();
++        __syncthreads();
++        const int next = it + STAGES - 1;
++        if (next < per) {
++            loadX(next % STAGES, g0 + next);
++            loadW(next % STAGES, g0 + next);
++        }
++        commit();
++        const unsigned char* p = stage(it % STAGES);
++        const unsigned char* pw = p + X;
++#pragma unroll
++        for (int kt = 0; kt < GS / 16; ++kt) {
++            uint32_t a[4];
++            {
++                const int r = (lane & 7) + ((lane >> 3) & 1) * 8;
++                const int ch = kt * 2 + (lane >> 4);
++                ldmatrix4(a, p + r * ROW + swz<CHUNKS>(r, ch) * 16);
++            }
++#pragma unroll
++            for (int j = 0; j < NT; ++j) {
++                const uint2 v = reinterpret_cast<const uint2*>(pw)[((wn * NT + j) * 4 + kt) * 32 + lane];
++                mma(acc[j], a, v.x, v.y);
++            }
++        }
++    }
++    wait<0>();
++    __syncthreads();
++#if __CUDA_ARCH__ < 900
++    __trap();
++#else
++    auto cluster = cooperative_groups::this_cluster();
++    float* mine = reinterpret_cast<float*>(buf);
++    if (slice != 0) {
++#pragma unroll
++        for (int j = 0; j < NT; ++j)
++#pragma unroll
++            for (int e = 0; e < 4; ++e) mine[(j * 4 + e) * THREADS + tid] = acc[j][e];
++    }
++    cluster.sync();
++    if (slice == 0) {
++        for (int peer = 1; peer < SK; ++peer) {
++            const float* theirs = cluster.map_shared_rank(mine, peer);
++#pragma unroll
++            for (int j = 0; j < NT; ++j)
++#pragma unroll
++                for (int e = 0; e < 4; ++e) acc[j][e] = acc[j][e] + theirs[(j * 4 + e) * THREADS + tid];
++        }
++    }
++    cluster.sync();
++    if (slice != 0) return;
++#endif
++    // the block's finished sums [16 rows, 64 columns]: fn_hc_reduce_act's column arithmetic (SK 1), then its sums of 32
++    float* a_s = reinterpret_cast<float*>(buf);
++#pragma unroll
++    for (int j = 0; j < NT; ++j) {
++        const int cl = wn * (BN / WN) + j * 8 + (lane & 3) * 2;
++#pragma unroll
++        for (int h = 0; h < 2; ++h) {
++            const int rl = (lane >> 2) + h * 8, row = m0 + rl;
++#pragma unroll
++            for (int e = 0; e < 2; ++e) {
++                const int c = n0 + cl + e;
++                const float v0 = acc[j][2 * h + e] * scale;
++                if (row >= M || c >= N) continue;
++                if (PART) PART[static_cast<size_t>(row) * N + c] = v0;
++                const float v = rbf(__fdiv_rn(rbf(v0), static_cast<float>(SS)));
++                if (c < LOW) {
++                    const float a = bsilu(v);
++                    ACT[static_cast<size_t>(row) * LOW + c] = __float2bfloat16_rn(a);
++                    a_s[rl * BN + cl + e] = a;
++                } else if (HAS_INJ && c < LOW + SS) {
++                    INJ[static_cast<size_t>(row) * SS + (c - LOW)] = __float2bfloat16_rn(__fmul_rn(2.0f, bsig(v)));
++                }
++            }
++        }
++    }
++    __syncthreads();
++    if (tid < BM * 2) {
++        const int rl = tid >> 1, gi = tid & 1, c0 = n0 + gi * 32;
++        if (gi * 32 < BN && m0 + rl < M && c0 < LOW) {
++            float sum = 0.0f;
++            for (int k = 0; k < 32; ++k) sum = __fadd_rn(sum, a_s[rl * BN + gi * 32 + k]);
++            XS[static_cast<size_t>(m0 + rl) * (LOW / 32) + c0 / 32] = sum;
++        }
++    }
++}
++
++}  // namespace q38hc
++
++#define Q38_HCDN(NAME, ST, BNC)                                                                                                \
++    extern "C" __global__ void __launch_bounds__(128) NAME(                                                               \
++        const __nv_bfloat16* __restrict__ H, const float* __restrict__ PSS, const float* __restrict__ SCALE,              \
++        const unsigned char* __restrict__ W, __nv_bfloat16* __restrict__ ACT, float* __restrict__ XS,                     \
++        __nv_bfloat16* __restrict__ INJ, float* __restrict__ PART, int M, int N, int K, int SK, int D, int NC, int SS,    \
++        int LOW, int HAS_INJ, float eps, float scale) {                                                                    \
++        q38hc::hcdn_body<ST, BNC>(H, PSS, SCALE, W, ACT, XS, INJ, PART, M, N, K, SK, D, NC, SS, LOW, HAS_INJ, eps, scale);     \
++    }
++Q38_HCDN(fn_q38_hcdn4, 4, 64)
++Q38_HCDN(fn_q38_hcdn3, 3, 64)
++Q38_HCDN(fn_q38_hcdn6, 6, 64)
++Q38_HCDN(fn_q38_hcdn3h, 3, 32)
++Q38_HCDN(fn_q38_hcdn4h, 4, 32)
++Q38_HCDN(fn_q38_hcdn2, 2, 64)
++Q38_HCDN(fn_q38_hcdn2h, 2, 32)
++HCN_UP(fn_hcn_up1_k5, 1, 5)
++
++// q38 check aid: words of a and b that differ, and words compared (two 64-bit counters).
++extern "C" __global__ void fn_q38_cmp16(const uint16_t* __restrict__ A, const uint16_t* __restrict__ B, long long n,
++                                        unsigned long long* __restrict__ CNT) {
++    const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
++    if (i == 0) atomicAdd(CNT + 1, static_cast<unsigned long long>(n));
++    if (i < n && A[i] != B[i]) atomicAdd(CNT, 1ull);
++}
+diff --git a/zig/kernels/cuda/qmmf.cu b/zig/kernels/cuda/qmmf.cu
+index cbfe209..1e4fdc7 100644
+--- a/zig/kernels/cuda/qmmf.cu
++++ b/zig/kernels/cuda/qmmf.cu
+@@ -64,7 +64,7 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+         float scale, void* __restrict__ out, float* __restrict__ part, int M, int N, int K, int SK, int npad, int ldx,
+         int group) {
+     using T = Tile<MODE, BM, BN, WM, WN, STAGES>;
+-    static_assert(BN == 64, "a block reads one 64-column tile of words and scales");
++    static_assert(BN == 64 || BN == 32, "a block reads one 64-column tile of words and scales, or its half");
+     extern __shared__ __align__(128) unsigned char buf[];
+     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+     const int wm = warp / WN, wn = warp % WN;
+@@ -86,6 +86,17 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+         unsigned char* p = stage(s);
+         unsigned char* pw = p + T::X;
+         constexpr int TILE_BYTES = MODE == FP4 ? 64 * GS / 2 : MODE == BF16 ? 64 * GS * 2 : 64 * GS;
++        if constexpr (BN == 32) {
++            // q38 (upstream #1171): half a packed 64-column tile: its n8 tiles 0-3 or 4-7, contiguous in every format's word order
++            const int half = (n0 % 64) / 32;
++            for (int c = tid; c < T::W / 16; c += T::THREADS)
++                cp16(pw + c * 16, w + (static_cast<size_t>(n0 / 64) * KG + g) * TILE_BYTES + half * (TILE_BYTES / 2) + c * 16);
++            if constexpr (T::S > 0) {
++                unsigned char* ps = pw + T::W;
++                for (int c = tid; c < T::S / 16; c += T::THREADS)
++                    cp16(ps + c * 16, bs + (static_cast<size_t>(n0 / 64) * KG + g) * (2 * T::S) + half * T::S + c * 16);
++            }
++        } else {
+         for (int c = tid; c < T::W / 16; c += T::THREADS) {
+             const int t = c / (TILE_BYTES / 16), off = c % (TILE_BYTES / 16);
+             cp16(pw + c * 16, w + (static_cast<size_t>(n0 / 64 + t) * KG + g) * TILE_BYTES + off * 16);
+@@ -95,6 +106,7 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+             for (int c = tid; c < T::S / 16; c += T::THREADS)
+                 cp16(ps + c * 16, bs + (static_cast<size_t>(n0 / 64) * KG + g) * T::S + c * 16);
+         }
++        }
+     };
+     auto load = [&](int s, int g) {
+         loadX(s, g);
+@@ -440,6 +452,15 @@ template __global__ void qmmf_kernel<BF16, 32, 64, 1, 4, 4, true, true, false>(c
+ template __global__ void qmmf_kernel<BF16, 64, 64, 1, 4, 4, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<BF16, 64, 64, 1, 4, 4, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<BF16, 64, 64, 1, 4, 4, true, false, true>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++// q38 (upstream #1171): the 16-row tile at 32 columns a block, for decode calls whose 64-column grid leaves SMs idle; same sums.
++template __global__ void qmmf_kernel<MXFP8, 16, 32, 1, 4, 4, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 32, 1, 4, 4, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 32, 1, 4, 4, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 16, 32, 1, 4, 4, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 32, 1, 4, 4, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 32, 1, 4, 4, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 32, 1, 4, 4, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 16, 32, 1, 4, 4, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void reduce_kernel<true>(const float* __restrict__, void* __restrict__, long long, int, float);
+ template __global__ void reduce_kernel<false>(const float* __restrict__, void* __restrict__, long long, int, float);
+ 
+diff --git a/zig/src/core/lanes/config.zig b/zig/src/core/lanes/config.zig
+index 66eda79..4f73277 100644
+--- a/zig/src/core/lanes/config.zig
++++ b/zig/src/core/lanes/config.zig
+@@ -47,6 +47,8 @@ pub const Model = struct {
+     context_copies: bool = false, // a lone head window shares its agreeing copy path and appends the rest
+     copy_match: i64 = 8, // matching history tokens a copy needs
+     lone_copies: bool = true, // a lone stream proposes copies (false: only streams in shared rounds do)
++    short_copy_match: u32 = 0, // q38: a lone head window whose drafts all agree with a context match of this many tokens appends its continuation (0: off)
++    short_copy_rows: u32 = 7, // q38: and at most this many appended tokens
+ };
+ 
+ pub const Config = struct {
+@@ -94,6 +96,8 @@ pub const Config = struct {
+     enter_match: i64 = 8, // matching tokens a copy needs (rejects coincidental indentation)
+     copy_rate: f64 = 0.94, // a copied token's chance of landing in allocation
+     lone_copies: bool = true, // Model.lone_copies
++    short_copy_match: u32 = 0, // Model.short_copy_match
++    short_copy_rows: u32 = 7, // Model.short_copy_rows
+     k: Constants = .{},
+ 
+     pub fn init(gpa: Allocator, m: Model, max_rows: u32, max_draft: u32) !Config {
+@@ -133,6 +137,8 @@ pub const Config = struct {
+             .context_copies = m.context_copies and m.copy_drafts,
+             .enter_match = @max(1, m.copy_match),
+             .lone_copies = m.lone_copies,
++            .short_copy_match = if (m.copy_drafts) m.short_copy_match else 0,
++            .short_copy_rows = m.short_copy_rows,
+             .lone_cost_tile = m.lone_cost_tile,
+             .family_width = width,
+             .max_copy = max_copy,
+diff --git a/zig/src/core/lanes/context_copy.zig b/zig/src/core/lanes/context_copy.zig
+index 28af088..73d6546 100644
+--- a/zig/src/core/lanes/context_copy.zig
++++ b/zig/src/core/lanes/context_copy.zig
+@@ -40,3 +40,22 @@ pub fn extend(e: *Engine, p: *Plan, copy: []const u32) !void {
+     p.branch_from = @intCast(first + 1);
+     p.context_copy = true;
+ }
++
++/// q38: a lone head CHAIN whose drafts all agree with the context match's continuation `copy` gets the next tokens of that
++/// continuation appended (at most `cap`), still a chain: the backend verifies it as any window. Drafts only.
++pub fn extendChain(e: *Engine, p: *Plan, copy: []const u32, cap: usize) !void {
++    const first = p.count();
++    if (p.held > 0 or p.parents != null or first == 0 or copy.len <= first) return;
++    if (!std.mem.eql(u32, copy[0..first], p.tokens[0..first])) return;
++    const limit: usize = @intCast(@max(1, @min(e.cfg.family_width, e.cfg.batch_rows, p.stream.draftRoom())));
++    const room = @min(limit -| (first + 1), cap);
++    const extra = copy[first..@min(copy.len, first + room)];
++    if (extra.len == 0) return;
++    const a = e.arena.allocator();
++    const parents = try a.alloc(i32, first + extra.len);
++    for (parents, 0..) |*up, i| up.* = @as(i32, @intCast(i)) - 1;
++    p.tokens = try std.mem.concat(a, u32, &.{ p.tokens, extra });
++    p.parents = parents;
++    p.branch_from = @intCast(first + 1);
++    p.context_copy = true;
++}
+diff --git a/zig/src/core/lanes/windows.zig b/zig/src/core/lanes/windows.zig
+index 16746be..135f87e 100644
+--- a/zig/src/core/lanes/windows.zig
++++ b/zig/src/core/lanes/windows.zig
+@@ -99,6 +99,15 @@ pub fn plan(e: *Engine, s: *Stream, copied: ?Copy) !Plan {
+             }
+             if (p.count() > 0) p.kind = .head;
+             if (extend and copy.tokens.len > 0) try @import("context_copy.zig").extend(e, &p, copy.tokens);
++            // q38: no copy of its own (the match is under enter_match): a shorter match that the head's drafts all agree with
++            // appends its continuation to the chain
++            if (!extend and copy.tokens.len == 0 and copied == null and e.cfg.short_copy_match > 0 and e.alone and p.kind == .head and p.held == 0 and p.parents == null and s.force.items.len == 0) {
++                if (s.proposer) |pr| if (!pr.vtable.priced) {
++                    const most = @min(@as(i64, @intCast(p.count() + e.cfg.short_copy_rows)), s.draftRoom() - 1);
++                    const got = pr.proposeAfter(s.context.items, &.{}, most) catch &.{};
++                    if (got.len > p.count() and pr.lastMatch() >= e.cfg.short_copy_match) try @import("context_copy.zig").extendChain(e, &p, got, e.cfg.short_copy_rows);
++                };
++            }
+             if (p.context_copy) p.copy_trusted = trustedCopy(s);
+         }
+     }
+diff --git a/zig/src/cuda/qmmf.zig b/zig/src/cuda/qmmf.zig
+index 210fbec..2f1f3fe 100644
+--- a/zig/src/cuda/qmmf.zig
++++ b/zig/src/cuda/qmmf.zig
+@@ -104,6 +104,39 @@ fn symbol(
+     return std.fmt.comptimePrint(name, .{ @backingInt(mode), bm, flags[0], flags[1], flags[2] });
+ }
+ 
++/// q38 (upstream #1171): the 16-row tile at 32 columns a block (MXFP8 and BF16): plain, then with a cluster.
++fn halfSymbol(comptime mode: Mode, comptime cluster: bool, comptime wide: bool) [:0]const u8 {
++    const name = "_ZN7tf_qmmf11qmmf_kernelILi{d}ELi16ELi32ELi1ELi4ELi4ELb{d}ELb{d}ELb0EEEvPK13__nv_bfloat16PKhS5_fPvPfiiiiiii";
++    return std.fmt.comptimePrint(name, .{ @backingInt(mode), @intFromBool(wide), @intFromBool(cluster) });
++}
++
++/// Dynamic shared bytes of the half tile: a stage holds half the weights (and scales) of the 64-column tile's.
++pub fn halfShared(mode: Mode) u32 {
++    const w: u32 = if (mode == .bf16) 32 * group * 2 else 32 * group;
++    const s: u32 = if (mode == .mxfp8) 32 * 2 else 0;
++    const stage = (16 * group * 2 + w + s + 127) / 128 * 128;
++    const partials = 1 * 1 * 4 * threads * 4;
++    return @max(4 * stage, partials);
++}
++
++/// TF_FLASHNEXT_Q38_HALF_BELOW=N (q38; default 0: never; upstream's value is 96): MXFP8 / BF16 decode calls of one 16-row tile take
++/// half tiles (32 columns a block, twice the blocks) when their 64-column grid has fewer than N blocks. Same sums a column.
++pub fn halfBelow() usize {
++    const st = struct {
++        var v: i64 = -1;
++    };
++    if (st.v < 0) st.v = if (std.c.getenv("TF_FLASHNEXT_Q38_HALF_BELOW")) |e| (std.fmt.parseInt(i64, std.mem.span(e), 10) catch 0) else 0;
++    return @intCast(st.v);
++}
++
++pub fn halfModeIndex(mode: Mode) ?usize {
++    return switch (mode) {
++        .mxfp8 => 0,
++        .bf16 => 1,
++        else => null,
++    };
++}
++
+ pub const reduce_symbols = [2][:0]const u8{
+     "_ZN7tf_qmmf13reduce_kernelILb0EEEvPKfPvxif",
+     "_ZN7tf_qmmf13reduce_kernelILb1EEEvPKfPvxif",
+@@ -151,6 +184,7 @@ pub const Lane = struct {
+     fns: [modes.len][7]Function, // per mode: lane16, lane16c, lane32, lane32c, lane64, lane64c, fused
+     f32_fns: [modes.len][7]Function,
+     reduce: [2]Function, // by Out
++    half: [2][2][2]Function = undefined, // q38: by halfModeIndex, Out, then plain / cluster
+     clusters: bool, // sm_90 on: slices meet in a cluster's shared memory
+ 
+     pub fn load(d: *const Driver, capability_major: u32) !Lane {
+@@ -178,6 +212,11 @@ pub const Lane = struct {
+             l.f32_fns[mi] = try loadTiles(mod, mode, true);
+         }
+         for (&l.reduce, reduce_symbols) |*f, name| f.* = try mod.function(name);
++        inline for (.{ Mode.mxfp8, Mode.bf16 }, 0..) |mode, mi| inline for (.{ false, true }, 0..) |wide, oi| inline for (.{ false, true }, 0..) |cl, ci| {
++            const f = try mod.function(halfSymbol(mode, cl, wide));
++            try f.allowDynamicShared(halfShared(mode));
++            l.half[mi][oi][ci] = f;
++        };
+         return l;
+     }
+ 
+@@ -262,8 +301,11 @@ pub const Lane = struct {
+         if (p.reduce and part == 0) return error.MissingLanePart;
+         const set = (if (out == .f32) l.f32_fns else l.fns)[modeIndex(w.mode)];
+         const ti: usize = if (p.bm == 16) 0 else if (p.bm == 32) 1 else 2;
+-        const f = if (p.fused) set[6] else set[ti * 2 + @intFromBool(p.cluster)];
+         const rows_t = (m + p.bm - 1) / p.bm;
++        const hm = halfModeIndex(w.mode);
++        const half = hm != null and p.bm == 16 and !p.fused and rows_t * ((w.n + bn - 1) / bn) * p.sk < halfBelow();
++        const f = if (half) l.half[hm.?][@backingInt(out)][@intFromBool(p.cluster)] else if (p.fused) set[6] else set[ti * 2 + @intFromBool(p.cluster)];
++        const cols: usize = if (half) 32 else bn;
+         const band = @max(1, @min(rows_t, (12 << 20) / (@as(usize, p.bm) * w.k * 2)));
+         var args: launch_.Args = .{};
+         args.add(x);
+@@ -280,9 +322,9 @@ pub const Lane = struct {
+         args.add(@as(i32, @intCast(if (m == 1) w.k else ldx)));
+         args.add(@as(i32, @intCast(band)));
+         try launch_.launch(f, .{
+-            .grid = .{ .x = @intCast(rows_t * ((w.n + bn - 1) / bn)), .y = 1, .z = if (p.fused) 1 else p.sk },
++            .grid = .{ .x = @intCast(rows_t * ((w.n + cols - 1) / cols)), .y = 1, .z = if (p.fused) 1 else p.sk },
+             .block = .{ .x = threads, .y = 1, .z = 1 },
+-            .shared = sharedBytesQ(w.mode, p.bm, p.cluster),
++            .shared = if (half) halfShared(w.mode) else sharedBytesQ(w.mode, p.bm, p.cluster),
+             .cluster = if (p.cluster) .{ .x = 1, .y = 1, .z = p.sk } else null,
+         }, s, &args);
+         if (p.reduce) {
+diff --git a/zig/src/families/flashnext/cuda_batch.zig b/zig/src/families/flashnext/cuda_batch.zig
+index d27904a..a4203ff 100644
+--- a/zig/src/families/flashnext/cuda_batch.zig
++++ b/zig/src/families/flashnext/cuda_batch.zig
+@@ -310,12 +310,31 @@ pub fn Pass(comptime Tri: type) type {
+             if (hc_w.down.native) |down| {
+                 const up = hc_w.up.native orelse return error.UnexpectedTensor;
+                 if (self.prompt and n >= knobs.hc2MinRows() and knobs.promptHc2() and tiles.nativeFused(hc_w) and std.meta.eql(keep, HcKeep{})) return tiles.readoutNative(self.tri, self.k, self.stream, self.s, hc_w, r0, n);
++                const q38 = knobs.q38Hcf();
++                const q38_on = q38 != 0 and n <= knobs.q38HcfMax() and tiles.nativeFused(hc_w) and dims % 256 == 0 and std.meta.eql(keep, HcKeep{}) and
++                    (q38 & 2 == 0 or (self.k.native_lane.clusters and cuda.qmmf.splitK(down.n, down.k) <= 8 and (wide / 64) % cuda.qmmf.splitK(down.n, down.k) == 0));
++                if (q38_on and !knobs.q38HcfCheck()) return tiles.readoutQ38(self.tri, self.k, self.stream, s, hc_w, h, pss, n, q38, s.mixed + r0 * dims * 2, s.xsm + r0 * (dims / 32) * 4, act, xs_act, inj, norm);
+                 try self.tri.hcNormalize(h, pss, hc_w.scale.ptr, norm, eps, n, dims, streams);
+                 try self.k.native_lane.matmulF32(self.stream, norm, wide, n, down, s.hc_part, s.native_part);
+                 const inj_ptr = if (hc_w.has_inj == 1) inj else act;
+                 try self.tri.hcReduceAct(s.hc_part, act, xs_act, inj_ptr, 1, n, streams, low, hc_w.n_down, hc_w.has_inj);
+                 try self.k.native_lane.matmul(self.stream, act, low, n, up, s.hc_up, s.native_part);
+                 try self.tri.hcDenseMix(s.hc_up, norm, s.mixed + r0 * dims * 2, s.xsm + r0 * (dims / 32) * 4, n, dims, streams);
++                if (q38_on) {
++                    // check aid: the fused kernels write their five outputs into native_part (free here: the lane's slices meet in
++                    // a cluster) and every word is compared with the chain's on the device
++                    const cdm = s.cap * dims;
++                    const c = s.native_part;
++                    const o = [_]u64{ c + r0 * dims * 2, c + 2 * cdm + r0 * (dims / 32) * 4, c + 3 * cdm + r0 * low * 2, c + 4 * cdm + r0 * (low / 32) * 4, c + 5 * cdm + r0 * streams * 2 };
++                    // mode 1's own normalize rewrites `norm` with the same bytes; its part goes to hc_part again
++                    try tiles.readoutQ38(self.tri, self.k, self.stream, s, hc_w, h, pss, n, q38, o[0], o[1], o[2], o[3], o[4], norm);
++                    try tiles.q38Compare(self.k, self.stream, s.mixed + r0 * dims * 2, o[0], n * dims);
++                    try tiles.q38Compare(self.k, self.stream, s.xsm + r0 * (dims / 32) * 4, o[1], n * (dims / 32) * 2);
++                    try tiles.q38Compare(self.k, self.stream, act, o[2], n * low);
++                    try tiles.q38Compare(self.k, self.stream, xs_act, o[3], n * (low / 32) * 2);
++                    if (hc_w.has_inj == 1) try tiles.q38Compare(self.k, self.stream, inj, o[4], n * streams);
++                    try tiles.q38CheckReport(self.stream, n);
++                }
+                 return;
+             }
+             if (n >= 64 and self.tri.readoutTilesOwned() and std.meta.eql(keep, HcKeep{})) return self.readoutTiles(hc_w, r0, n);
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index c209aa1..5c39065 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -150,3 +150,62 @@ pub fn windowRows() usize {
+     }
+     return window_rows_cache;
+ }
++
++/// TF_FLASHNEXT_Q38_HCF=N (q38; default 0: off): the native hyper-connection read-out of DECODE rows (passes of at most
++/// TF_FLASHNEXT_Q38_HCF_MAX rows, default 16) on fused kernels. 1: the up projection with its mix in one launch (hcn::upmix_body at a
++/// 16-row tile) = four launches; 3: also the down projection with the norm formed in its input stage and fn_hc_reduce_act in its
++/// epilogue (fn_q38_hcdn) = two launches instead of five. Every output byte is the five-launch chain's.
++var hcf_cache: i32 = -1;
++pub fn q38Hcf() u32 {
++    if (hcf_cache < 0) hcf_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_HCF")) |e| (std.fmt.parseInt(i32, std.mem.span(e), 10) catch 0) else 0;
++    return @intCast(hcf_cache);
++}
++var hcf_max_cache: i32 = -1;
++pub fn q38HcfMax() usize {
++    if (hcf_max_cache < 0) hcf_max_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_HCF_MAX")) |e| (std.fmt.parseInt(i32, std.mem.span(e), 10) catch 16) else 16;
++    return @intCast(hcf_max_cache);
++}
++/// TF_FLASHNEXT_Q38_HCF_CHECK=1 (q38 measuring aid): every fused read-out is also run as the five-launch chain and all five outputs
++/// (mixed rows, their sums, the activation, its sums, the inject gates) are compared word for word on the device ("q38 hcf check" lines).
++var hcf_check_cache: i32 = -1;
++pub fn q38HcfCheck() bool {
++    if (hcf_check_cache < 0) hcf_check_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_HCF_CHECK")) |v| @intFromBool(v[0] == '1') else 0;
++    return hcf_check_cache == 1;
++}
++/// TF_FLASHNEXT_Q38_HCF_ST=3|4|6: cp.async stages of fn_q38_hcdn's weight pipeline (default 4, the lane tile's).
++var hcf_st_cache: i32 = -1;
++pub fn q38HcfStages() usize {
++    if (hcf_st_cache < 0) hcf_st_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_HCF_ST")) |e| (std.fmt.parseInt(i32, std.mem.span(e), 10) catch 4) else 4;
++    return if (hcf_st_cache == 3) 0 else if (hcf_st_cache == 6) 2 else if (hcf_st_cache == 2) 3 else 1;
++}
++
++/// TF_FLASHNEXT_Q38_MTP_LAST=1 (q38; upstream #1925): a lone stream's MTP head call runs its experts on the call's last row only (the
++/// one row that reaches the draft); the head's cache is still written for every row. Same drafts, same replies.
++var mtp_last_cache: i32 = -1;
++pub fn q38MtpLast() bool {
++    if (mtp_last_cache < 0) mtp_last_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_MTP_LAST")) |v| @intFromBool(v[0] == '1') else 0;
++    return mtp_last_cache == 1;
++}
++/// TF_FLASHNEXT_Q38_HCF_HALF=1: fn_q38_hcdn on 32-column half tiles (twice the blocks; same sums a column).
++var hcf_half_cache: i32 = -1;
++pub fn q38HcfHalf() bool {
++    if (hcf_half_cache < 0) hcf_half_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_HCF_HALF")) |v| @intFromBool(v[0] == '1') else 0;
++    return hcf_half_cache == 1;
++}
++
++/// TF_FLASHNEXT_Q38_SHORT_COPY=M or M,C (q38; default off): a lone stream's head chain whose drafts ALL agree with the continuation of
++/// a context match of at least M tokens (under the 8 a copy of its own needs) gets up to C (default 7) more tokens of that
++/// continuation appended. Drafts only: every row is verified by the model.
++var short_copy_cache: ?[2]u32 = null;
++pub fn shortCopy() [2]u32 {
++    if (short_copy_cache == null) {
++        var v: [2]u32 = .{ 0, 7 };
++        if (std.c.getenv("TF_FLASHNEXT_Q38_SHORT_COPY")) |e| {
++            var it = std.mem.splitScalar(u8, std.mem.span(e), ',');
++            if (it.next()) |a| v[0] = std.fmt.parseInt(u32, a, 10) catch 0;
++            if (it.next()) |b| v[1] = std.fmt.parseInt(u32, b, 10) catch 7;
++        }
++        short_copy_cache = v;
++    }
++    return short_copy_cache.?;
++}
+diff --git a/zig/src/families/flashnext/cuda_lanes.zig b/zig/src/families/flashnext/cuda_lanes.zig
+index 7325b93..87711f3 100644
+--- a/zig/src/families/flashnext/cuda_lanes.zig
++++ b/zig/src/families/flashnext/cuda_lanes.zig
+@@ -239,6 +239,8 @@ pub fn Namespace(comptime Tri: type) type {
+                     // q38: with wider windows a stream's copy window still starts at the stock 15 tokens; the lane core doubles it
+                     // (to window rows - 1) only after a copy that landed whole, and returns to 15 when one breaks (engine.zig)
+                     .first_copy_rows = if (drafting and @import("cuda_knobs.zig").windowRows() > 16) 16 else 0,
++                    .short_copy_match = @import("cuda_knobs.zig").shortCopy()[0],
++                    .short_copy_rows = @import("cuda_knobs.zig").shortCopy()[1],
+                     .gpu_tokens = false,
+                     .mtp = drafting,
+                     .speculate = drafting,
+@@ -558,7 +560,8 @@ pub fn Namespace(comptime Tri: type) type {
+             var plain: usize = 0;
+             var held: usize = 0;
+             for (windows, out, 0..) |w, *o, wi| {
+-                if (w.held != 0 or w.parents != null) return error.HeldDraftsNotBuilt;
++                // q38: a chain written out as parents (a head chain with an appended context continuation) is a chain
++                if (w.held != 0 or (w.parents != null and !lanes.accept.isChain(w.parents.?))) return error.HeldDraftsNotBuilt;
+                 const l = try self.lane(w.stream);
+                 const rows = w.rows();
+                 if (l.draft != null) {
+diff --git a/zig/src/families/flashnext/cuda_lanes_verify.zig b/zig/src/families/flashnext/cuda_lanes_verify.zig
+index e80807d..6a4a7c8 100644
+--- a/zig/src/families/flashnext/cuda_lanes_verify.zig
++++ b/zig/src/families/flashnext/cuda_lanes_verify.zig
+@@ -32,7 +32,7 @@ pub fn windows(self: anytype, wins: []const be.Window, out: []be.Verified, draft
+         for (drafted[at..][0..n]) |wi| {
+             const w = wins[wi];
+             const greedy = if (w.stream.sampling) |sm| sm.temperature <= 0 else true;
+-            if (!greedy or w.masks.len != 0 or w.stream.logprobs != null or w.parents != null) all_greedy = false;
++            if (!greedy or w.masks.len != 0 or w.stream.logprobs != null or (w.parents != null and !lanes.accept.isChain(w.parents.?))) all_greedy = false;
+         }
+         cert.round_ok = all_greedy;
+         defer cert.round_ok = false;
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index a944dc6..45a1830 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -217,6 +217,28 @@ pub fn Ops(comptime Tri: type) type {
+                 try p.readout(h.layer.attn_hc, 0, m);
+                 try p.attnBlock(&h.layer, 0);
+                 try tri.hcWriteback(s.h, s.h, s.pss, s.part, "*fp32", s.inj, s.dummy, "*bf16", s.dummy, "*bf16", m * dims, m, dims, streams, 4, 1, 1, p.out_slices);
++                if (knobs.q38MtpLast()) {
++                    // q38 (upstream #1925): the cache is written; only the call's last row reaches d.out and the scores, so the
++                    // experts run on it alone (a row's experts read nothing of the other rows)
++                    d.len += m;
++                    at += m;
++                    if (at != next.len) continue;
++                    if (m > 1) {
++                        try p.copy(s.h, s.h + (m - 1) * wide * 2, wide * 2);
++                        try p.copy(s.pss, s.pss + (m - 1) * pss_n * 4, pss_n * 4);
++                        p.rows = 1;
++                    }
++                    try p.readout(h.layer.mlp_hc, 0, 1);
++                    try p.moeBlock(&h.layer);
++                    p.pending = 0;
++                    try p.writeback(0, 1);
++                    try p.copy(d.out.ptr, s.h, wide * 2);
++                    if (scores) {
++                        try p.readout(h.mixer, 0, 1);
++                        try h.project(&p, s.mixed, s.xsm, d.dlogits.ptr, 1);
++                    }
++                    continue;
++                }
+                 try p.readout(h.layer.mlp_hc, 0, m);
+                 try p.moeBlock(&h.layer);
+                 p.pending = 0;
+diff --git a/zig/src/families/flashnext/cuda_tile_kernels.zig b/zig/src/families/flashnext/cuda_tile_kernels.zig
+index b663d40..880f532 100644
+--- a/zig/src/families/flashnext/cuda_tile_kernels.zig
++++ b/zig/src/families/flashnext/cuda_tile_kernels.zig
+@@ -32,6 +32,10 @@ pub fn hcnUpSmem(mt: usize) u32 {
+     return @intCast(16 * mt * (640 + 256 + 16));
+ }
+ 
++/// fn_q38_hcdn's stage: 16 input rows of 64 bf16 and one 64-column tile of 64 bf16 weights.
++pub const q38_hcdn_stage: u32 = 16 * 128 + 64 * 64 * 2;
++pub const q38_hcdn_stage_half: u32 = 16 * 128 + 32 * 64 * 2;
++
+ pub const TileKernels = struct {
+     fact_mod: cuda.Module,
+     fact: cuda.Function,
+@@ -44,6 +48,10 @@ pub const TileKernels = struct {
+     hcn_dv2: [hcn_dv2_names.len]cuda.Function,
+     hcn_peak: cuda.Function,
+     hcn_updbg: [hcn_updbg_names.len]cuda.Function,
++    q38_hcdn: [4]cuda.Function, // stages 3, 4, 6, 2
++    q38_hcdn_half: [3]cuda.Function, // stages 3, 4, 2 on 32-column tiles
++    q38_hcup1: cuda.Function,
++    q38_cmp16: cuda.Function,
+     fexp_mod: cuda.Module,
+     fexp_up: cuda.Function,
+     fexp_down: cuda.Function,
+@@ -85,6 +93,17 @@ pub const TileKernels = struct {
+             f.* = try k.hcf_mod.function(name);
+             try f.allowDynamicShared(hcnUpSmem(3));
+         }
++        for (&k.q38_hcdn, [_][:0]const u8{ "fn_q38_hcdn3", "fn_q38_hcdn4", "fn_q38_hcdn6", "fn_q38_hcdn2" }, [_]u32{ 3, 4, 6, 2 }) |*f, name, st| {
++            f.* = try k.hcf_mod.function(name);
++            try f.allowDynamicShared(st * q38_hcdn_stage);
++        }
++        for (&k.q38_hcdn_half, [_][:0]const u8{ "fn_q38_hcdn3h", "fn_q38_hcdn4h", "fn_q38_hcdn2h" }, [_]u32{ 3, 4, 2 }) |*f, name, st| {
++            f.* = try k.hcf_mod.function(name);
++            try f.allowDynamicShared(st * q38_hcdn_stage_half);
++        }
++        k.q38_hcup1 = try k.hcf_mod.function("fn_hcn_up1_k5");
++        try k.q38_hcup1.allowDynamicShared(hcnUpSmem(1));
++        k.q38_cmp16 = try k.hcf_mod.function("fn_q38_cmp16");
+         return k;
+     }
+ 
+diff --git a/zig/src/families/flashnext/cuda_tiles.zig b/zig/src/families/flashnext/cuda_tiles.zig
+index 0f572a7..01ae0e3 100644
+--- a/zig/src/families/flashnext/cuda_tiles.zig
++++ b/zig/src/families/flashnext/cuda_tiles.zig
+@@ -151,6 +151,73 @@ pub fn readoutNative(tri: anytype, k: *const Kernels, stream: cuda.Stream, s: *S
+     try cuda.launch.launch(k.tiles.hcn_up[ui], .{ .grid = .{ .x = @intCast(cdiv(n, bm_u) * (dims / 32)) }, .block = .{ .x = 256 }, .shared = tk.hcnUpSmem(tk.hcn_up_mt[ui]) }, stream, &b);
+ }
+ 
++/// q38: decode rows' native read-out on fused kernels (knobs.q38Hcf): mode 1 = normalize, lane down, reduce_act, up + mix in one
++/// launch; mode 3 = fn_q38_hcdn (norm in the input stage, reduce_act in the epilogue) and up + mix: two launches. The outputs go
++/// to `mixed`, `xsm`, `act`, `xs_act`, `inj` (row-0 addresses of the pass's rows).
++pub fn readoutQ38(tri: anytype, k: *const Kernels, stream: cuda.Stream, s: *Scratch, hc_w: HcW, h: u64, pss: u64, n: usize, mode: u32, mixed: u64, xsm: u64, act: u64, xs_act: u64, inj: u64, norm: u64) !void {
++    const down = hc_w.down.native.?;
++    const up = hc_w.up.native.?;
++    const nc = dims / 256;
++    const inj_ptr = if (hc_w.has_inj == 1) inj else act;
++    if (mode & 2 != 0) {
++        const sk = cuda.qmmf.splitK(down.n, down.k);
++        var a: cuda.Args = .{};
++        for ([_]u64{ h, pss, hc_w.scale.ptr, down.codes, act, xs_act, inj_ptr, 0 }) |v| a.add(v);
++        for ([_]usize{ n, down.n, down.k, sk, dims, nc, streams, low, hc_w.has_inj }) |v| a.add(cint(v));
++        a.add(eps);
++        a.add(down.scale);
++        const si = knobs.q38HcfStages();
++        const st: u32 = ([_]u32{ 3, 4, 6, 2 })[si];
++        const half = knobs.q38HcfHalf();
++        const hi: usize = if (si == 0) 0 else if (si == 3) 2 else 1;
++        try cuda.launch.launch(if (half) k.tiles.q38_hcdn_half[hi] else k.tiles.q38_hcdn[si], .{
++            .grid = .{ .x = @intCast(cdiv(down.n, if (half) 32 else 64)), .y = @intCast(cdiv(n, 16)), .z = @intCast(sk) },
++            .block = .{ .x = 128 },
++            .shared = if (half) ([_]u32{ 3, 4, 2 })[hi] * tk.q38_hcdn_stage_half else st * tk.q38_hcdn_stage,
++            .cluster = .{ .x = 1, .y = 1, .z = @intCast(sk) },
++        }, stream, &a);
++    } else {
++        try tri.hcNormalize(h, pss, hc_w.scale.ptr, norm, eps, n, dims, streams);
++        try k.native_lane.matmulF32(stream, norm, wide, n, down, s.hc_part, s.native_part);
++        try tri.hcReduceAct(s.hc_part, act, xs_act, inj_ptr, 1, n, streams, low, hc_w.n_down, hc_w.has_inj);
++    }
++    var b: cuda.Args = .{};
++    for ([_]u64{ act, up.codes, h, pss, hc_w.scale.ptr, mixed, xsm }) |v| b.add(v);
++    for ([_]usize{ n, dims, nc }) |v| b.add(cint(v));
++    b.add(eps);
++    try cuda.launch.launch(k.tiles.q38_hcup1, .{ .grid = .{ .x = @intCast(cdiv(n, 16) * (dims / 32)) }, .block = .{ .x = 256 }, .shared = tk.hcnUpSmem(1) }, stream, &b);
++}
++
++/// q38 check aid: the fused read-out's five outputs (at `c`, laid out by q38CheckAt) against the chain's, counted on the device.
++pub const Q38Check = struct {
++    var cnt: ?cuda.DeviceBuffer = null;
++    var calls: u64 = 0;
++    var rows: u64 = 0;
++};
++pub fn q38Compare(k: *const Kernels, stream: cuda.Stream, a_ptr: u64, b_ptr: u64, words: usize) !void {
++    const d = stream.d;
++    if (Q38Check.cnt == null) {
++        Q38Check.cnt = try cuda.DeviceBuffer.alloc(d, 256);
++        try d.check(d.api.cuMemsetD32Async(Q38Check.cnt.?.ptr, 0, 64, stream.handle), "cuMemsetD32Async");
++    }
++    var a: cuda.Args = .{};
++    a.add(a_ptr);
++    a.add(b_ptr);
++    a.add(@as(i64, @intCast(words)));
++    a.add(Q38Check.cnt.?.ptr);
++    try cuda.launch.launch(k.tiles.q38_cmp16, .{ .grid = .{ .x = @intCast(cdiv(words, 256)) }, .block = .{ .x = 256 } }, stream, &a);
++}
++pub fn q38CheckReport(stream: cuda.Stream, n: usize) !void {
++    Q38Check.calls += 1;
++    Q38Check.rows += n;
++    if (Q38Check.calls % 20000 != 0 and Q38Check.calls != 97) return;
++    const d = stream.d;
++    try stream.synchronize();
++    var host: [2]u64 = .{ 0, 0 };
++    try d.check(d.api.cuMemcpyDtoH_v2(&host, Q38Check.cnt.?.ptr, 16), "cuMemcpyDtoH");
++    std.debug.print("q38 hcf check: {d} read-outs, {d} rows, {d} words compared with the five-launch chain, {d} differ\n", .{ Q38Check.calls, Q38Check.rows, host[1], host[0] });
++}
++
+ /// The grouped experts on flashnext_fexp.cu's 64-pair tiles (expert_rows' bits), wn column blocks a CTA.
+ pub fn experts(stream: cuda.Stream, f: cuda.Function, wn: usize, x: u64, x_stride: usize, slot_n: usize, w: u64, kg: usize, nb: usize, plan: cuda.grouped.Plan, out: u64, n: usize, items: usize) !void {
+     var a = cuda.experts.Affine4Experts.argsOf(x, x_stride, slot_n, w, kg, nb, plan, out, n);

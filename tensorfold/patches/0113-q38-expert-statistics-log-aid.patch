@@ -1,0 +1,77 @@
+diff --git a/zig/src/families/flashnext/cuda_batch.zig b/zig/src/families/flashnext/cuda_batch.zig
+index d42e214..d64c050 100644
+--- a/zig/src/families/flashnext/cuda_batch.zig
++++ b/zig/src/families/flashnext/cuda_batch.zig
+@@ -841,6 +841,7 @@ pub fn Pass(comptime Tri: type) type {
+             try self.copy(keep.moe_x, s.mixed, n * dims * 2);
+             try self.tri.routerMany(s.mixed, lw.router.ptr, s.router_l, dims, n);
+             try self.tri.topkMany(s.router_l, s.picks, s.wts, n);
++            if (@import("cuda_batch_moe.zig").Xstat.on()) try @import("cuda_batch_moe.zig").Xstat.dump(self, (@intFromPtr(lw) - @intFromPtr(self.m.layers.ptr)) / @sizeOf(Layer));
+             try self.copy(keep.moe_ids, s.picks, pairs * 4);
+             try self.copy(keep.moe_wts, s.wts, pairs * 4);
+             const e = experts_n + 1;
+diff --git a/zig/src/families/flashnext/cuda_batch_moe.zig b/zig/src/families/flashnext/cuda_batch_moe.zig
+index 82355b8..3f1a645 100644
+--- a/zig/src/families/flashnext/cuda_batch_moe.zig
++++ b/zig/src/families/flashnext/cuda_batch_moe.zig
+@@ -1,4 +1,5 @@
+ //! The shared pass's MoE write-back: the slots' fp32 sum, the adds and the kept branch.
++const std = @import("std");
+ const cuda = @import("cuda");
+ const wt = @import("cuda_prompt_wt.zig");
+ const batch = @import("cuda_batch.zig");
+@@ -7,6 +8,54 @@ const dims = wt.dims;
+ const slots = wt.slots;
+ const experts_n = wt.experts_n;
+ 
++extern "c" fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
++extern "c" fn write(fd: c_int, buf: [*]const u8, n: usize) isize;
++
++/// TF_FLASHNEXT_Q38_XSTAT=FILE (q38 measuring aid, off unless set): every MoE block's routed picks and weights are appended to
++/// FILE as one record: u32 magic 0x58333851, layers of the model, layer, rows, slots, lanes, then each lane's row count (u32),
++/// the picks [rows, slots] i32 and the weights [rows, slots] f32. It waits for the stream at each block; values never change.
++pub const Xstat = struct {
++    var state: i8 = -1;
++    var fd: c_int = -1;
++    var left: usize = 4000000;
++    var host: [256 * 16 * 4]u8 align(4) = undefined;
++
++    pub fn on() bool {
++        if (state < 0) {
++            state = 0;
++            if (std.c.getenv("TF_FLASHNEXT_Q38_XSTAT")) |e| {
++                if (std.c.getenv("TF_FLASHNEXT_Q38_XSTAT_MAX")) |m| left = std.fmt.parseInt(usize, std.mem.span(m), 10) catch left;
++                fd = open(e, 0x441, @as(c_int, 0o644));
++                if (fd >= 0) state = 1;
++                std.debug.print("q38: expert statistics to {s} (fd {d}, max blocks {d})\n", .{ std.mem.span(e), fd, left });
++            }
++        }
++        return state == 1 and left > 0;
++    }
++
++    pub fn dump(self: anytype, layer: usize) !void {
++        const n = self.rows;
++        if (n == 0 or n > 256 or slots > 16) return;
++        const d = self.stream.d;
++        try self.stream.synchronize();
++        var head: [6 + 64]u32 = @splat(0);
++        const nl = @min(self.lanes.len, 64);
++        head[0] = 0x58333851;
++        head[1] = @intCast(self.m.layers.len);
++        head[2] = @intCast(layer);
++        head[3] = @intCast(n);
++        head[4] = @intCast(slots);
++        head[5] = @intCast(nl);
++        for (0..nl) |i| head[6 + i] = @intCast(self.lanes[i].rows);
++        _ = write(fd, std.mem.asBytes(&head).ptr, (6 + nl) * 4);
++        try d.check(d.api.cuMemcpyDtoH_v2(&host, self.s.picks, n * slots * 4), "cuMemcpyDtoH");
++        _ = write(fd, &host, n * slots * 4);
++        try d.check(d.api.cuMemcpyDtoH_v2(&host, self.s.wts, n * slots * 4), "cuMemcpyDtoH");
++        _ = write(fd, &host, n * slots * 4);
++        left -|= 1;
++    }
++};
++
+ /// After a layer's experts, when something adds to or keeps its output: the slots' fp32 sum, adds, kept branch.
+ pub fn moeAdds(self: anytype, layer: usize, keep: LayerKeep) !void {
+     const add = self.addAt(layer);

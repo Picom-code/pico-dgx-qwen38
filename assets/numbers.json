@@ -1,0 +1,125 @@
+{
+ "banner": {
+  "subtitle": "Qwen3.8-Flash-Next on one DGX Spark  ·  official FP4 weights  ·  exact output  ·  262K  ·  16 users",
+  "stats": [
+   [
+    "54/88",
+    "chat/code, 1 user, tok/s"
+   ],
+   [
+    "66.9",
+    "320 held prompts, tok/s"
+   ],
+   [
+    "288",
+    "16 users, distinct, tok/s"
+   ],
+   [
+    "120 ms",
+    "first token (was 182)"
+   ]
+  ]
+ },
+ "charts": [
+  {
+   "file": "single.png",
+   "title": "one user: decode tok/s",
+   "sub": "spark-923b · temp 0 · thinking off · decode timed from the first token · ours and levers off: one window, same image, 2026-11-15",
+   "rows": [
+    [
+     "pico-dgx-qwen38  code",
+     88.2,
+     "bf16 KV · 3 prompts, median of 9",
+     true
+    ],
+    [
+     "levers off       code",
+     77.7,
+     "same image, our levers off (mean of 2 runs)",
+     false
+    ],
+    [
+     "pico-dgx-qwen38  held",
+     66.9,
+     "bf16 KV · 320 held prompts",
+     true
+    ],
+    [
+     "levers off       held",
+     58.7,
+     "same image, our levers off (mean of 2 runs)",
+     false
+    ],
+    [
+     "pico-dgx-qwen38  chat",
+     53.5,
+     "bf16 KV · 3 prompts, median of 9",
+     true
+    ],
+    [
+     "levers off       chat",
+     47.6,
+     "same image, our levers off (mean of 2 runs)",
+     false
+    ]
+   ],
+   "note": "levers off = the base recipe's patches and launcher, every lever of ours off, measured before and after. Other projects: see the second table in the README."
+  },
+  {
+   "file": "users.png",
+   "title": "many users: total decode tok/s, a different prompt per user",
+   "sub": "512 tok · temp 0 · thinking off · spark-923b (GB10) · distinct coding prompts · one window, 2026-11-15",
+   "rows": [
+    [
+     "pico-dgx-qwen38  c16",
+     288.1,
+     "bf16 KV, 16-lane pool",
+     true
+    ],
+    [
+     "base recipe      c16",
+     219.2,
+     "16 x 64K slots, fp8 KV, levers off",
+     false
+    ],
+    [
+     "pico-dgx-qwen38  c12",
+     260.7,
+     "bf16 KV, 16-lane pool",
+     true
+    ],
+    [
+     "base recipe      c12",
+     222.5,
+     "16 x 64K slots, fp8 KV, levers off",
+     false
+    ],
+    [
+     "pico-dgx-qwen38  c8",
+     218.9,
+     "bf16 KV, 16-lane pool",
+     true
+    ],
+    [
+     "base recipe      c8",
+     195.1,
+     "16 x 64K slots, fp8 KV, levers off",
+     false
+    ],
+    [
+     "pico-dgx-qwen38  c4",
+     160.0,
+     "bf16 KV, 16-lane pool",
+     true
+    ],
+    [
+     "base recipe      c4",
+     144.5,
+     "16 x 64K slots, fp8 KV, levers off",
+     false
+    ]
+   ],
+   "note": "c4 ... c16 = users at once, median of 3 runs. Same window, same engine build; the base recipe was measured before and after ours (mean)."
+  }
+ ]
+}

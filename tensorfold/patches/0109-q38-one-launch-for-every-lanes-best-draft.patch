@@ -1,0 +1,144 @@
+diff --git a/zig/kernels/cuda/flashnext_mtp.cu b/zig/kernels/cuda/flashnext_mtp.cu
+index 1e76c82..6a26529 100644
+--- a/zig/kernels/cuda/flashnext_mtp.cu
++++ b/zig/kernels/cuda/flashnext_mtp.cu
+@@ -106,6 +106,64 @@ extern "C" __global__ void __launch_bounds__(1024) fn_row_best(const __nv_bfloat
+     }
+ }
+ 
++// q38 (TF_FLASHNEXT_Q38_BEST_LANES): fn_row_best for up to 16 lanes' rows in one launch, a block a lane on the lane's own row: the same
++// program a row (1024 threads), so the same best, log-sum-exp and id as a launch a lane.
++struct FnBestLanes {
++    const __nv_bfloat16* p[16];
++};
++extern "C" __global__ void __launch_bounds__(1024) fn_row_best_lanes(const __grid_constant__ FnBestLanes T, int V,
++                                                                     float* __restrict__ out) {
++    using namespace fn_mtp;
++    const int r = blockIdx.x, t = threadIdx.x, lane = t & 31, warp = t >> 5;
++    const __nv_bfloat16* row = T.p[r];
++    float v = -CUDART_INF_F;
++    int at = 0x7fffffff;
++    for (int i = t; i < V; i += blockDim.x) {
++        const float x = __bfloat162float(row[i]);
++        if (x > v) {
++            v = x;
++            at = i;
++        }
++    }
++    for (int o = 16; o; o >>= 1) better(v, at, __shfl_xor_sync(0xffffffffu, v, o), __shfl_xor_sync(0xffffffffu, at, o));
++    __shared__ float sv[32];
++    __shared__ int si[32];
++    __shared__ float top;
++    __shared__ int top_at;
++    if (lane == 0) {
++        sv[warp] = v;
++        si[warp] = at;
++    }
++    __syncthreads();
++    if (warp == 0) {
++        v = lane < (int)(blockDim.x >> 5) ? sv[lane] : -CUDART_INF_F;
++        at = lane < (int)(blockDim.x >> 5) ? si[lane] : 0x7fffffff;
++        for (int o = 16; o; o >>= 1) better(v, at, __shfl_xor_sync(0xffffffffu, v, o), __shfl_xor_sync(0xffffffffu, at, o));
++        if (lane == 0) {
++            top = v;
++            top_at = at;
++        }
++    }
++    __syncthreads();
++    const float m = top;
++    float sum = 0.0f;
++    for (int i = t; i < V; i += blockDim.x) sum += expf(__bfloat162float(row[i]) - m);
++    for (int o = 16; o; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
++    __shared__ float ss[32];
++    if (lane == 0) ss[warp] = sum;
++    __syncthreads();
++    if (warp == 0) {
++        sum = lane < (int)(blockDim.x >> 5) ? ss[lane] : 0.0f;
++        for (int o = 16; o; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
++        if (lane == 0) {
++            out[r * 4 + 0] = m;
++            out[r * 4 + 1] = m + logf(sum);
++            out[r * 4 + 2] = __int_as_float(top_at);
++            out[r * 4 + 3] = 0.0f;
++        }
++    }
++}
++
+ // A sampled draw's candidates (cuda_mtp.zig topCandidates is its host form, and the spec). The idea, an exact selection of a
+ // row's k best on the device so that the host draws among k scores instead of a whole row, is Track B of the DeepSeek-V4.1
+ // recipe (MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold, patch 0021, Mia's AI Lab); this kernel is written for
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index e6f6276..270f34d 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -90,6 +90,13 @@ pub fn q38GdnLanesMany() u8 {
+     return if (std.mem.eql(u8, t, "1")) 1 else if (std.mem.eql(u8, t, "2")) 2 else 0;
+ }
+ 
++/// TF_FLASHNEXT_Q38_BEST_LANES=1 (q38, off unless set): a shared round's draft step reads every lane's best draft with one launch
++/// (fn_row_best_lanes) instead of one launch a lane. The same program a lane; drafts only.
++pub fn q38BestLanes() bool {
++    const v = std.c.getenv("TF_FLASHNEXT_Q38_BEST_LANES") orelse return false;
++    return std.mem.eql(u8, std.mem.span(v), "1");
++}
++
+ var wide_rows_cache: usize = 0;
+ /// TF_FLASHNEXT_Q38_WIDE_ROWS=N (q38; default 64, the stock value; 64 to 256): rows a shared drafted verify pass holds at most
+ /// and the rows the lane core lets a round's drafts fill. With many streams a pass's cost grows slowly with its rows (the rows share
+diff --git a/zig/src/families/flashnext/cuda_mtp.zig b/zig/src/families/flashnext/cuda_mtp.zig
+index 4c61b60..a067865 100644
+--- a/zig/src/families/flashnext/cuda_mtp.zig
++++ b/zig/src/families/flashnext/cuda_mtp.zig
+@@ -376,6 +376,7 @@ pub const Head = struct {
+     service: lanes.proposal_head.Service,
+     module: cuda.Module,
+     best_fn: cuda.Function,
++    best_lanes_fn: cuda.Function = undefined, // q38: fn_row_best for up to 16 lanes in one launch
+     /// fn_row_cand and the device scratch of its outputs, with TF_FLASHNEXT_SAMPLE_CAND=1 (else null).
+     cand_fn: ?cuda.Function,
+     cand_buf: ?cuda.DeviceBuffer,
+@@ -425,6 +426,7 @@ pub const Head = struct {
+         h.module = try cuda.Module.load(driver, cuda.kernels.flashnext_mtp);
+         errdefer h.module.unload();
+         h.best_fn = try h.module.function("fn_row_best");
++        h.best_lanes_fn = try h.module.function("fn_row_best_lanes");
+         h.cand_fn = null;
+         h.cand_buf = null;
+         if (candidatesOn()) {
+@@ -486,6 +488,18 @@ pub const Head = struct {
+     }
+ 
+     /// fn_row_best over `rows` rows of `v` scores `ld` apart: [rows, 4] fp32 at `out` (best, log-sum-exp, id bits).
++    /// q38: best() of one row for each of up to 16 lanes (`scores[i]` a lane's row) in one launch; out [lanes, 4] fp32.
++    pub fn bestLanes(h: *const Head, stream: cuda.Stream, scores: []const u64, v: usize, out: u64) !void {
++        std.debug.assert(scores.len >= 1 and scores.len <= 16);
++        var tab: [16]u64 = @splat(0);
++        @memcpy(tab[0..scores.len], scores);
++        var a: cuda.Args = .{};
++        a.add(tab);
++        a.add(cint(v));
++        a.add(out);
++        try cuda.launch.launch(h.best_lanes_fn, .{ .grid = .{ .x = @intCast(scores.len) }, .block = .{ .x = 1024 } }, stream, &a);
++    }
++
+     pub fn best(h: *const Head, stream: cuda.Stream, scores: u64, v: usize, ld: usize, rows: usize, out: u64) !void {
+         var a: cuda.Args = .{};
+         a.add(scores);
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index 45a1830..74f5e61 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -480,7 +480,12 @@ pub fn Ops(comptime Tri: type) type {
+             var cands: mtp.Cands = undefined;
+             while (n_act > 0 and j < max_chain) : (j += 1) {
+                 // every active lane's best draft (fn_row_best on its own scores), then one download of all of them
+-                for (act[0..n_act], 0..) |i, r| try h.best(o.stream(), ds[i].dlogits.ptr, h.ids.len, h.ids.len, 1, ds[0].best.ptr + r * 16);
++                if (n_act > 1 and @import("cuda_knobs.zig").q38BestLanes()) {
++                    // q38: one launch for all active lanes (a block a lane, fn_row_best's program on the lane's own scores)
++                    var rows_of: [max_lanes]u64 = undefined;
++                    for (act[0..n_act], 0..) |i, r| rows_of[r] = ds[i].dlogits.ptr;
++                    try h.bestLanes(o.stream(), rows_of[0..n_act], h.ids.len, ds[0].best.ptr);
++                } else for (act[0..n_act], 0..) |i, r| try h.best(o.stream(), ds[i].dlogits.ptr, h.ids.len, h.ids.len, 1, ds[0].best.ptr + r * 16);
+                 // a sampled lane's top_k best on the device too (TF_FLASHNEXT_SAMPLE_CAND=1), read back with the bests
+                 var cand_k: [max_lanes]usize = @splat(0);
+                 var any_cand = false;

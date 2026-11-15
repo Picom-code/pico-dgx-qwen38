@@ -1,0 +1,82 @@
+READY tfb/p16 in 204 s; MemAvailable 38 GiB; GPU MiB 77165
+distinct 16 users: 225.9 tok/s total  (7841 tokens in 34.7 s; max ttft 6.89 s; errors 0 [])
+copies 16 users: 271.3 tok/s total  (8192 tokens in 30.2 s; max ttft 6.41 s; errors 0 [])
+distinct 16 users: 233.8 tok/s total  (7879 tokens in 33.7 s; max ttft 6.79 s; errors 0 [])
+waves of 16: 192 prompts, 36974 tokens in 291.7 s = 126.8 tok/s total; last first-token of a wave mean 7.16 s max 7.54 s (first 0.30 s); errors 0
+waves of 8: 160 prompts, 18082 tokens in 173.3 s = 104.3 tok/s total; last first-token of a wave mean 3.21 s max 3.97 s (first 0.25 s); errors 0
+waves of 4: 64 prompts, 7466 tokens in 84.8 s = 88.1 tok/s total; last first-token of a wave mean 1.37 s max 1.82 s (first 0.21 s); errors 0
+O3_off done 07:12:26
+READY tfb/p16 in 202 s; MemAvailable 38 GiB; GPU MiB 77165
+distinct 16 users: 257.7 tok/s total  (7841 tokens in 30.4 s; max ttft 1.62 s; errors 0 [])
+copies 16 users: 333.4 tok/s total  (8192 tokens in 24.6 s; max ttft 1.12 s; errors 0 [])
+distinct 16 users: 265.5 tok/s total  (7845 tokens in 29.5 s; max ttft 1.09 s; errors 0 [])
+distinct 8 users: 212.8 tok/s total  (4096 tokens in 19.2 s; max ttft 0.75 s; errors 0 [])
+distinct 4 users: 146.9 tok/s total  (2048 tokens in 13.9 s; max ttft 0.52 s; errors 0 [])
+waves of 16: 192 prompts, 36974 tokens in 251.0 s = 147.3 tok/s total; last first-token of a wave mean 1.80 s max 2.79 s (first 1.12 s); errors 0
+waves of 8: 160 prompts, 18082 tokens in 144.2 s = 125.4 tok/s total; last first-token of a wave mean 1.12 s max 2.66 s (first 0.49 s); errors 0
+waves of 4: 64 prompts, 7466 tokens in 77.5 s = 96.3 tok/s total; last first-token of a wave mean 0.67 s max 1.44 s (first 0.32 s); errors 0
+q38: prompts of up to 256 tokens that wait together are prefilled in one pass
+q38 many: 15 prompts, 630 rows in one pass, 1229.5 ms
+q38 many: 15 prompts, 625 rows in one pass, 762.8 ms
+q38 many: 3 prompts, 233 rows in one pass, 336.9 ms
+58
+identical 192/192  mean shared-prefix fraction 1.000  differ: []
+identical 160/160  mean shared-prefix fraction 1.000  differ: []
+identical 64/64  mean shared-prefix fraction 1.000  differ: []
+lhash first: prompts in both 270  identical 270  differ 0  (only A 48, only B 60)
+lhash end: prompts in both 270  identical 17  differ 253  (only A 48, only B 60)
+O3_many done 07:25:43
+READY tfb/default in 196 s; MemAvailable 38 GiB; GPU MiB 77122
+waves of 5: 160 prompts, 25357 tokens in 260.2 s = 97.4 tok/s total; last first-token of a wave mean 1.83 s max 2.45 s (first 0.25 s); errors 0
+edit 24 agent 16 files from /usr/lib/python3.12
+heldpar 1 in flight: 24 prompts, 19505 tokens in 138.7 s = 140.6 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 156.5  tok/round 12.592  drafts proposed/round 12.533  accepted/round 11.584  accept rate 0.924  ms/round 80.48  rows/round 13.53
+fit over drafted requests: ms/round = 51.84 + 2.28 x drafts verified per round  (x range 9.34..14.73)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 42.3 s = 55.7 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 73.5  tok/round 4.638  drafts proposed/round 5.527  accepted/round 3.648  accept rate 0.660  ms/round 63.08  rows/round 6.53
+fit over drafted requests: ms/round = 45.77 + 3.13 x drafts verified per round  (x range 3.91..7.39)
+heldpar 1 in flight: 40 prompts, 10666 tokens in 191.0 s = 55.8 tok/s total; errors 0
+== chat
+drafted requests: n 34 tok/s 58.4  tok/round 3.267  drafts proposed/round 3.735  accepted/round 2.270  accept rate 0.608  ms/round 55.91  rows/round 4.74
+fit over drafted requests: ms/round = 40.23 + 4.20 x drafts verified per round  (x range 2.00..7.55)
+O3_d_off done 07:39:35
+READY tfb/default in 201 s; MemAvailable 39 GiB; GPU MiB 77122
+waves of 5: 160 prompts, 25357 tokens in 239.7 s = 105.8 tok/s total; last first-token of a wave mean 0.87 s max 2.36 s (first 0.54 s); errors 0
+edit 24 agent 16 files from /usr/lib/python3.12
+heldpar 1 in flight: 24 prompts, 19505 tokens in 114.6 s = 170.1 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 193.9  tok/round 18.384  drafts proposed/round 19.572  accepted/round 17.372  accept rate 0.888  ms/round 94.82  rows/round 20.57
+fit over drafted requests: ms/round = 54.24 + 2.07 x drafts verified per round  (x range 12.53..29.33)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 42.3 s = 55.7 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 73.3  tok/round 4.647  drafts proposed/round 5.639  accepted/round 3.658  accept rate 0.649  ms/round 63.37  rows/round 6.64
+fit over drafted requests: ms/round = 46.34 + 3.02 x drafts verified per round  (x range 3.91..7.71)
+heldpar 1 in flight: 40 prompts, 10666 tokens in 191.3 s = 55.7 tok/s total; errors 0
+== chat
+drafted requests: n 34 tok/s 58.3  tok/round 3.267  drafts proposed/round 3.740  accepted/round 2.270  accept rate 0.607  ms/round 56.01  rows/round 4.74
+fit over drafted requests: ms/round = 40.49 + 4.15 x drafts verified per round  (x range 2.00..9.00)
+q38: prompts of up to 256 tokens that wait together are prefilled in one pass
+q38 many: 3 prompts, 107 rows in one pass, 334.7 ms
+q38 many: 2 prompts, 267 rows in one pass, 339.0 ms
+q38 many: 4 prompts, 308 rows in one pass, 396.4 ms
+33
+identical 160/160  mean shared-prefix fraction 1.000  differ: []
+identical 24/24  mean shared-prefix fraction 1.000  differ: []
+identical 16/16  mean shared-prefix fraction 1.000  differ: []
+identical 40/40  mean shared-prefix fraction 1.000  differ: []
+lhash first: prompts in both 200  identical 200  differ 0  (only A 0, only B 0)
+lhash end: prompts in both 200  identical 53  differ 147  (only A 0, only B 0)
+O3_d_on done 07:52:46
+READY tfb/pc_16_262144 in 190 s; MemAvailable 38 GiB; GPU MiB 77274
+waves of 16: 320 prompts, 64097 tokens in 399.1 s = 160.6 tok/s total; last first-token of a wave mean 2.39 s max 7.26 s (first 1.12 s); errors 0
+heldpar 4 in flight: 24 prompts, 19435 tokens in 85.5 s = 227.4 tok/s total; errors 0
+q38 cert: calls 1000 rows 37961 whole-head 2 tiles/call 516.5 runs/call 146.1 checked-rows 37897 best-mismatch 0 value-mismatch 0 held 1413387328
+q38 cert: calls 2000 rows 83789 whole-head 3 tiles/call 351.3 runs/call 112.6 checked-rows 83690 best-mismatch 0 value-mismatch 0 held 2011638912
+q38: prompts of up to 256 tokens that wait together are prefilled in one pass
+q38 pool: 16 lanes share 24385 MiB (1524 MiB a lane at a 65536-token window); a full 262144-token stream takes 4877 MiB
+q38 many: 4 prompts, 212 rows in one pass, 446.7 ms
+q38 many: 15 prompts, 1012 rows in one pass, 975.2 ms
+22
+O3_chk done 08:04:04

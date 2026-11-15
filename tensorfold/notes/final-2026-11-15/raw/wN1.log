@@ -1,0 +1,50 @@
+### step prep 04:35:17 left 7080 s
+recipe.sh prepare rc 0 in 4 s; image before b052a3f158ad after b052a3f158ad UNCHANGED; recipe.sh sha 66fe0314fab8c18b; patches 29 sha 5249399d0d777385
+[prepare.sh] Verifying the checkpoint
+[prepare.sh] Checkpoint OK: qwen4_exp, ModelOpt MIXED_PRECISION (MXFP8+NVFP4+W4A16_NVFP4), 375487 tensors in 21 shards
+[prepare.sh] Done. Start the server with ./start.sh (port 8888).
+head2 file present: /home/picom/q38/hf/q38/head2_r9.bin
+### step u16s 04:35:22 left 7075 s
+READY recipe [USERS16=1] in 211 s; MemAvailable 35 GiB; GPU MiB 80464; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+env knobs: 68 -> TF_FLASHNEXT_CHUNK=6144 TF_FLASHNEXT_Q38_CACHE_ELASTIC=2 TF_FLASHNEXT_Q38_CERT=1 TF_FLASHNEXT_Q38_HEAD2=/root/.cache/huggingface/q38/head2_r9.bin TF_FLASHNEXT_Q38_LANE_REUSE=5 TF_FLASHNEXT_Q38_POOL_CTX=40960 TF_FLASHNEXT_Q38_SNAP_DELTA=1 TF_FLASHNEXT_Q38_WINDOW_ROWS=32 
+q38 qsa knobs: cert=1 cert_min=1 slack=100.0e-6 half=1 list=4096 rows=1 loop=0 stats=0
+q38 elastic: the prompt cache takes 680 MiB at start-up and up to 24839 MiB more of the 16 lanes' room while streams leave it
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 77.53 GiB; 16 streams at once, 1.71 GiB each at a 262144-token window, of 28.0 GiB left after a 9.0 GiB reserve; prompts in passes of up to 6144 rows, a 0.7 GiB prompt cache; own glue kernels
+info: prompt cache: 16 tokens, resumed at 0, kept 2; 2 states, 220 MiB and 0 MiB spare of 25049 MiB (hits 0, misses 1, evicted 0, refused 0, failed 0)
+image b052a3f158ad
+ttft short prompt: median 112 ms  [103, 103, 105, 114, 113, 112, 112]
+users 16: median 301.1 tok/s total, first / last first-token 0.14 / 0.91 s; runs [293.5, 301.1] last-ttft [1.329, 0.913] first-ttft [0.142, 0.136] errors 0
+q38 elastic: the prompt cache takes 680 MiB at start-up and up to 24839 MiB more of the 16 lanes' room while streams leave it
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 77.53 GiB; 16 streams at once, 1.71 GiB each at a 262144-token window, of 28.0 GiB left after a 9.0 GiB reserve; prompts in passes of up to 6144 rows, a 0.7 GiB prompt cache; own glue kernels
+info: prompt cache: 47 tokens, resumed at 0, kept 0; 12 states, 1330 MiB and 0 MiB spare of 17750 MiB (hits 11, misses 1, evicted 0, refused 0, failed 0)
+MemAvailable GiB 31
+crash lines: 0
+q38 head2: on, rank 512, block form, re-score 933 of 79591 rows
+N_u16s done 04:39:52
+USERS16 STARTS with [USERS16=1 ]
+### step ags 04:39:52 left 6805 s
+READY recipe [AGENTS=1] in 199 s; MemAvailable 35 GiB; GPU MiB 80838; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+env knobs: 69 -> TF_FLASHNEXT_CHUNK=6144 TF_FLASHNEXT_Q38_CACHE_ELASTIC=2 TF_FLASHNEXT_Q38_CERT=1 TF_FLASHNEXT_Q38_HEAD2=/root/.cache/huggingface/q38/head2_r9.bin TF_FLASHNEXT_Q38_LANE_REUSE=5 TF_FLASHNEXT_Q38_POOL_CTX=131072 TF_FLASHNEXT_Q38_SNAP_DELTA=1 TF_FLASHNEXT_Q38_WINDOW_ROWS=128 
+q38 qsa knobs: cert=1 cert_min=1 slack=100.0e-6 half=1 list=4096 rows=1 loop=0 stats=0
+q38 elastic: the prompt cache takes 4150 MiB at start-up and up to 20669 MiB more of the 5 lanes' room while streams leave it
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 77.53 GiB; 5 streams at once, 4.66 GiB each at a 262144-token window, of 27.4 GiB left after a 9.0 GiB reserve; prompts in passes of up to 6144 rows, a 4.1 GiB prompt cache; own glue kernels
+info: prompt cache: 16 tokens, resumed at 0, kept 2; 2 states, 220 MiB and 0 MiB spare of 23974 MiB (hits 0, misses 1, evicted 0, refused 0, failed 0)
+image b052a3f158ad
+ttft short prompt: median 116 ms  [106, 109, 117, 116, 117, 116, 117]
+users 5: median 182.9 tok/s total, first / last first-token 0.14 / 0.65 s; runs [182.9] last-ttft [0.652] first-ttft [0.135] errors 0
+| 2 agents x 2 turns, system 20000 (0 shared), tool results 300-2000 turn | ok | prompt tok | resumed tok | new tok | first token s med / max |
+| 0 | 2 | 19392 | 0 | 19392 | 12.62 / 15.48 |
+| 1 | 2 | 20463 | 19385 | 1078 | 0.98 / 1.24 |
+2 agents x 2 turns, system 20000 (0 shared), tool results 300-2000: 4/4 ok; follow-ups 2, resumed (over half the prompt from the cache) 2; cached share of follow-up prompt tokens 94.7 %; follow-up first token median 0.98 s max 1.24 s; sum of first-token waits 27.2 s
+wall 21.7 s
+q38 elastic: the prompt cache takes 4150 MiB at start-up and up to 20669 MiB more of the 5 lanes' room while streams leave it
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 77.53 GiB; 5 streams at once, 4.66 GiB each at a 262144-token window, of 27.4 GiB left after a 9.0 GiB reserve; prompts in passes of up to 6144 rows, a 4.1 GiB prompt cache; own glue kernels
+info: prompt cache: 20854 tokens, resumed at 20013, kept 1; 21 states, 3522 MiB and 0 MiB spare of 21925 MiB (hits 12, misses 3, evicted 0, refused 0, failed 0)
+MemAvailable GiB 29
+crash lines: 0
+q38 head2: on, rank 512, block form, re-score 933 of 79591 rows
+N_ags done 04:43:52
+AGENTS STARTS with [AGENTS=1 ]
+### step off 04:43:52 left 0 s
+N_off SKIPPED: 0 s left, need 4800
+off DID NOT RUN: chain stops 04:43:52

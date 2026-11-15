@@ -1,0 +1,199 @@
+READY recipe [CERT=0 MANY=0 COPY_ROWS=16 FUSED=0 HALF=0 MTP_LAST=0 GDN_MANY=0 BEST_LANES=0 ATTN_LANES=0 LATE_SKIP=0 KEEP_INPASS=0 LANE_REUSE=0 HEAD2=0 R9=0 R10=0] in 209 s; MemAvailable 37 GiB; GPU MiB 78215; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+heldpar 1 in flight: 24 prompts, 19505 tokens in 142.9 s = 136.5 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 152.2  tok/round 12.592  drafts proposed/round 12.533  accepted/round 11.584  accept rate 0.924  ms/round 82.75  rows/round 13.53
+fit over drafted requests: ms/round = 53.46 + 2.34 x drafts verified per round  (x range 9.34..14.73)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 43.9 s = 53.7 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 71.1  tok/round 4.638  drafts proposed/round 5.527  accepted/round 3.648  accept rate 0.660  ms/round 65.26  rows/round 6.53
+fit over drafted requests: ms/round = 47.52 + 3.21 x drafts verified per round  (x range 3.91..7.39)
+sq s07off: 46.33 tok/s (tokens/decode-time)  mean-of-prompts 48.16 sd 8.36  n 23  errors 0  ttft median 238 ms
+sq s07on: 47.51 tok/s (tokens/decode-time)  mean-of-prompts 48.70 sd 5.92  n 24  errors 0  ttft median 231 ms
+sq sd prose T0.7 think-on: mean 51.74 median 52.23 min 45.8 max 55.2  n 6  [54.7, 52.4, 55.2, 52.1, 50.3, 45.8]
+distinct 4 users: 151.9 tok/s total  (2048 tokens in 13.5 s; max ttft 1.30 s; errors 0 [])
+crash lines: 0
+F10_off done 15:10:24
+F10_on SKIPPED: 3497 s left, need 5400
+Traceback (most recent call last):
+  File "/home/picom/q38/kit-A/qk.py", line 289, in <module>
+    main()
+  File "/home/picom/q38/kit-A/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/picom/q38/kit-A/qk.py", line 187, in load
+    return json.load(open(p))["out"]
+                     ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/picom/q38/runs/F10_on/ident_on.json'
+Traceback (most recent call last):
+  File "/home/picom/q38/kit-A/qk.py", line 289, in <module>
+    main()
+  File "/home/picom/q38/kit-A/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/picom/q38/kit-A/qk.py", line 186, in load
+    if p.endswith(".jsonl"): return {str(d["id"]): d for d in map(json.loads, open(p)) if "text" in d}
+                                                                              ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/picom/q38/runs/F10_on/held.jsonl'
+Traceback (most recent call last):
+  File "/home/picom/q38/kit-A/qk.py", line 289, in <module>
+    main()
+  File "/home/picom/q38/kit-A/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/picom/q38/kit-A/qk.py", line 186, in load
+    if p.endswith(".jsonl"): return {str(d["id"]): d for d in map(json.loads, open(p)) if "text" in d}
+                                                                              ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/picom/q38/runs/F10_on/edit.jsonl'
+Traceback (most recent call last):
+  File "/home/picom/q38/kit-A/qk.py", line 289, in <module>
+    main()
+  File "/home/picom/q38/kit-A/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/picom/q38/kit-A/qk.py", line 186, in load
+    if p.endswith(".jsonl"): return {str(d["id"]): d for d in map(json.loads, open(p)) if "text" in d}
+                                                                              ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/picom/q38/runs/F10_on/agent.jsonl'
+/home/picom/q38/kit-A10/wF10.sh: line 18: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+/home/picom/q38/kit-A10/wF10.sh: line 18: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+/home/picom/q38/kit-A10/wF10.sh: line 18: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+  │ Error response from daemon: No such container: q38-run-A
+[start.sh] ERROR: another ./start.sh is already running; wait for it to finish
+F10_on ENGINE NOT UP
+crash lines: 0
+F10_on done 15:12:42
+Traceback (most recent call last):
+  File "/home/picom/q38/kit-A/qk.py", line 289, in <module>
+    main()
+  File "/home/picom/q38/kit-A/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/picom/q38/kit-A/qk.py", line 187, in load
+    return json.load(open(p))["out"]
+                     ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/picom/q38/runs/F10_on/ident_on.json'
+Traceback (most recent call last):
+  File "/home/picom/q38/kit-A/qk.py", line 289, in <module>
+    main()
+  File "/home/picom/q38/kit-A/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/picom/q38/kit-A/qk.py", line 186, in load
+    if p.endswith(".jsonl"): return {str(d["id"]): d for d in map(json.loads, open(p)) if "text" in d}
+                                                                              ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/picom/q38/runs/F10_on/held.jsonl'
+Traceback (most recent call last):
+  File "/home/picom/q38/kit-A/qk.py", line 289, in <module>
+    main()
+  File "/home/picom/q38/kit-A/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/picom/q38/kit-A/qk.py", line 186, in load
+    if p.endswith(".jsonl"): return {str(d["id"]): d for d in map(json.loads, open(p)) if "text" in d}
+                                                                              ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/picom/q38/runs/F10_on/edit.jsonl'
+Traceback (most recent call last):
+  File "/home/picom/q38/kit-A/qk.py", line 289, in <module>
+    main()
+  File "/home/picom/q38/kit-A/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/picom/q38/kit-A/qk.py", line 186, in load
+    if p.endswith(".jsonl"): return {str(d["id"]): d for d in map(json.loads, open(p)) if "text" in d}
+                                                                              ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/picom/q38/runs/F10_on/agent.jsonl'
+/home/picom/q38/kit-A10/wF10.sh: line 18: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+/home/picom/q38/kit-A10/wF10.sh: line 18: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+/home/picom/q38/kit-A10/wF10.sh: line 18: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+[start.sh] ERROR: another ./start.sh is already running; wait for it to finish
+F10_g0 ENGINE NOT UP
+crash lines: 0
+F10_g0 done 15:12:43
+/home/picom/q38/kit-A10/wF10.sh: line 24: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+/home/picom/q38/kit-A10/wF10.sh: line 24: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+/home/picom/q38/kit-A10/wF10.sh: line 24: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+READY fly/default in 33 s; MemAvailable 29 GiB; GPU MiB 85114
+distinct 1 users: 87.2 tok/s total  (512 tokens in 5.9 s; max ttft 0.16 s; errors 0 [])
+distinct 4 users: 137.3 tok/s total  (2048 tokens in 14.9 s; max ttft 0.85 s; errors 0 [])
+distinct 8 users: 166.6 tok/s total  (4096 tokens in 24.6 s; max ttft 2.17 s; errors 0 [])
+F10_fly done 15:46:23
+READY recipe [CERT=0 MANY=0 COPY_ROWS=16 FUSED=0 HALF=0 MTP_LAST=0 GDN_MANY=0 BEST_LANES=0 ATTN_LANES=0 LATE_SKIP=0 KEEP_INPASS=0 LANE_REUSE=0 HEAD2=0 R9=0 R10=0] in 184 s; MemAvailable 37 GiB; GPU MiB 78215; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+heldpar 1 in flight: 24 prompts, 19505 tokens in 142.8 s = 136.6 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 152.2  tok/round 12.592  drafts proposed/round 12.533  accepted/round 11.584  accept rate 0.924  ms/round 82.71  rows/round 13.53
+fit over drafted requests: ms/round = 53.82 + 2.31 x drafts verified per round  (x range 9.34..14.73)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 44.0 s = 53.6 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 70.8  tok/round 4.638  drafts proposed/round 5.527  accepted/round 3.648  accept rate 0.660  ms/round 65.50  rows/round 6.53
+fit over drafted requests: ms/round = 47.34 + 3.29 x drafts verified per round  (x range 3.91..7.39)
+sq s07off: 46.29 tok/s (tokens/decode-time)  mean-of-prompts 48.15 sd 8.37  n 23  errors 0  ttft median 235 ms
+crash lines: 0
+F10_off2 done 16:36:43
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+identical 320/320  mean shared-prefix fraction 1.000  differ: []
+identical 24/24  mean shared-prefix fraction 1.000  differ: []
+identical 16/16  mean shared-prefix fraction 1.000  differ: []
+READY recipe [USERS16=1] in 217 s; MemAvailable 36 GiB; GPU MiB 80064; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+distinct 1 users: 90.1 tok/s total  (512 tokens in 5.7 s; max ttft 0.17 s; errors 0 [])
+distinct 4 users: 153.3 tok/s total  (2048 tokens in 13.4 s; max ttft 0.63 s; errors 0 [])
+distinct 8 users: 213.2 tok/s total  (4096 tokens in 19.2 s; max ttft 0.80 s; errors 0 [])
+distinct 12 users: 257.1 tok/s total  (5860 tokens in 22.8 s; max ttft 1.07 s; errors 0 [])
+distinct 16 users: 274.4 tok/s total  (7878 tokens in 28.7 s; max ttft 1.16 s; errors 0 [])
+distinct 16 users: 288.7 tok/s total  (7866 tokens in 27.2 s; max ttft 0.81 s; errors 0 [])
+distinct 16 users: 284.6 tok/s total  (7879 tokens in 27.7 s; max ttft 0.81 s; errors 0 [])
+copies 16 users: 353.2 tok/s total  (8192 tokens in 23.2 s; max ttft 0.76 s; errors 0 [])
+waves of 16: 128 prompts, 26164 tokens in 161.2 s = 162.3 tok/s total; last first-token of a wave mean 1.24 s max 1.61 s (first 0.20 s); errors 0
+waves of 4: 64 prompts, 7466 tokens in 73.0 s = 102.2 tok/s total; last first-token of a wave mean 0.57 s max 1.26 s (first 0.18 s); errors 0
+pool 150000x1+15: wall 69.3 s; errors 0 []; long prompt_tokens [136607] recall [3] ttft [65.9] s; shorts 15: 3732 tokens, 53.9 tok/s while they ran (69.3 s), last first token 1.11 s; lowest MemAvailable 19 GiB
+heldpar 16 in flight: 107 prompts, 20185 tokens in 102.3 s = 197.2 tok/s total; errors 0
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+heldpar 16 in flight: 107 prompts, 20489 tokens in 109.4 s = 187.4 tok/s total; errors 0
+q38 cert: SM8 copy of the head made (625 MiB), mean residual 0.0087 of a row's norm, check 0, top-k up to 20
+q38 head2: on, rank 512, block form, re-score 933 of 79591 rows
+q38 head2: fast 3 (1 = integer preview, 2 = bf16 rotation)
+q38 qsa knobs: cert=1 cert_min=64 slack=100.0e-6 half=1 list=4096 rows=1 loop=0 stats=0
+q38 warm: a 3072-row prompt pass at start-up took 1378 ms
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 76.83 GiB; 16 streams at once, 1.66 GiB each at a 262144-token window (fp8 caches), of 28.4 GiB left after a 9.0 GiB reserve; prompts in passes of
+crash lines: 0
+q38 head2: on, rank 512, block form, re-score 933 of 79591 rows
+F10_mu done 16:51:48
+old chain stopped 16:52:16
+READY recipe [] in 212 s; MemAvailable 36 GiB; GPU MiB 80064; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+heldpar 1 in flight: 24 prompts, 19505 tokens in 89.1 s = 219.0 tok/s total; errors 0
+== edit
+drafted requests: n 24 tok/s 254.6  tok/round 26.646  drafts proposed/round 33.173  accepted/round 25.630  accept rate 0.773  ms/round 104.66  rows/round 34.17
+fit over drafted requests: ms/round = 64.38 + 1.21 x drafts verified per round  (x range 17.08..90.36)
+heldpar 1 in flight: 16 prompts, 2357 tokens in 37.5 s = 62.9 tok/s total; errors 0
+== agent
+drafted requests: n 10 tok/s 83.3  tok/round 5.088  drafts proposed/round 6.262  accepted/round 4.131  accept rate 0.660  ms/round 61.08  rows/round 7.26
+fit over drafted requests: ms/round = 40.94 + 3.22 x drafts verified per round  (x range 4.08..10.06)
+sq s07off: 51.72 tok/s (tokens/decode-time)  mean-of-prompts 53.83 sd 9.40  n 23  errors 0  ttft median 149 ms
+sq s07on: 52.58 tok/s (tokens/decode-time)  mean-of-prompts 53.84 sd 6.61  n 24  errors 0  ttft median 149 ms
+sq sd prose T0.7 think-on: mean 57.37 median 57.92 min 50.5 max 61.4  n 6  [61.4, 58.4, 60.8, 57.5, 55.8, 50.5]
+distinct 4 users: 162.0 tok/s total  (2048 tokens in 12.6 s; max ttft 0.42 s; errors 0 [])
+q38 cert: calls 20000 rows 86938 whole-head 0 tiles/call 17.0 runs/call 8.9 checked-rows 0 best-mismatch 0 value-mismatch 0 held 0
+q38 cert gather: calls 20000 tiles/call 12.9
+q38 cert topk: wide passes not tried 25
+q38 cert topk: calls 549 whole-head 0 tiles/call 290.6 runs/call 50.1 topk-rows-checked 0 topk-mismatch 0 bound-violations 0 of 0 K entries
+q38 cert gather: calls 25000 tiles/call 12.0
+q38 cert gather: calls 30000 tiles/call 11.3
+q38 cert gather: calls 35000 tiles/call 10.9
+q38 cert gather: calls 40000 tiles/call 10.9
+q38 cert: calls 40000 rows 236861 whole-head 0 tiles/call 13.3 runs/call 8.1 checked-rows 0 best-mismatch 0 value-mismatch 0 held 0
+q38 cert gather: calls 40000 tiles/call 10.9
+q38 cert topk: calls 549 whole-head 0 tiles/call 290.6 runs/call 50.1 topk-rows-checked 0 topk-mismatch 0 bound-violations 0 of 0 K entries
+q38 cert gather: calls 45000 tiles/call 27.6
+crash lines: 0
+q38 head2: on, rank 512, block form, re-score 933 of 79591 rows
+F10_on done 17:43:55
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+identical 320/320  mean shared-prefix fraction 1.000  differ: []
+identical 24/24  mean shared-prefix fraction 1.000  differ: []
+identical 16/16  mean shared-prefix fraction 1.000  differ: []
+/home/picom/q38/kit-A10/wF10c.sh: line 18: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+/home/picom/q38/kit-A10/wF10c.sh: line 18: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+/home/picom/q38/kit-A10/wF10c.sh: line 18: SQ_QK=/home/picom/q38/kit-A/qk.py: No such file or directory
+READY recipe [KV_DTYPE=bf16 PARALLEL=3] in 218 s; MemAvailable 36 GiB; GPU MiB 80062; image tensorfold-qwen38:v1.1.4-eab8582 entrypoint /opt/nvidia/nvidia_entrypoint.sh
+ttft short prompt: median 119 ms  [124, 113, 120, 120, 109, 119, 119]
+chat 1 user: median 52.3 tok/s  mean 51.0  [52.28, 45.86, 55.68, 54.64, 46.59]
+code 1 user: median 88.7 tok/s  mean 90.6  [86.02, 96.38, 82.41, 88.73, 99.25]

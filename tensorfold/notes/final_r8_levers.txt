@@ -1,0 +1,52 @@
+Round 8 levers (four builders in parallel, one Spark each). MEASURED unless a line says otherwise; every pair in one window, same binary, flag on / off.
++-----------------------------------------------+---------------------------------------------------------------+----------------------------------------------+
+| lever (flag, patch, builder)                  | measured                                                      | identity (texts)                             |
++-----------------------------------------------+---------------------------------------------------------------+----------------------------------------------+
+| attention lanes in one launch                 | 923b, 16 users distinct x3: ref 270.2 / on 275.2 / ref 268.0  | held 107 with 16 in flight 107/107, waves of |
+| ATTN_LANES=1 (TF_FLASHNEXT_Q38_ATTN_LANES),   | (+2.3 %); held 16 in flight 178.0 / 180.7 / 177.6 (+1.6 %);   | 16 96/96, one-user ident 51/51; flag off vs  |
+| patch 0110, A. Idea: upstream TensorFold      | waves of 16 149.7 / 154.1 / 150.9; 9 users 214.1 -> 218.8;    | the round-7 build: waves 96/96               |
+| #1739; own form (by-value lane table, fp8     | 12 users 250.4 -> 252.0. GPU time: QSA group 8.47 -> 5.68 ms  |                                              |
+| and bf16 caches)                              | of a 197.5 ms pass (pass 197.5 -> 193.9)                      |                                              |
++-----------------------------------------------+---------------------------------------------------------------+----------------------------------------------+
+| drafted windows skip the DeltaNet end-state   | 923b, 16 users (ATTN_LANES on in all): refs 273.9 / 268.6,    | held 16 in flight 107/107 at T = 8, 16, 32;  |
+| write, LATE_SKIP=16                           | T=16 275.1, T=32 274.2, T=8 276.6 (+1.5 %); held 16 in flight | waves of 16 96/96; one user held 107/107,    |
+| (TF_FLASHNEXT_Q38_LATE_SKIP), patch 0111, A   | 180.9 / 179.9 -> 182.8 / 182.6 / 183.0 (+1.3 %). GPU time:    | ident 51/51, edit set 4 in flight 24/24      |
+|                                               | DeltaNet group 34.08 -> 31.21 ms a pass. One user: 107 held x |                                              |
+|                                               | 256 tokens 346.2 / 345.4 s -> 344.8 s (+0.3 %)                |                                              |
++-----------------------------------------------+---------------------------------------------------------------+----------------------------------------------+
+| prompt-cache mark kept inside the prompt pass | 4e5c (builder C), one user, one engine switched by knob file: | ident 51/51, needle 109K 3/3, short 24/24,   |
+| KEEP_INPASS=4096 + a finished stream's fixed  | new short prompt first token 175.3 -> 112.6 ms (-36 %; KEEP   | agent 4/4, prefill 2/2, held 40/40; score    |
+| buffers reused, LANE_REUSE=N, patch 0112, C.  | alone 133, REUSE alone 155); agent follow-up turn -13 %; cold | hashes 71/71; 16 in flight 107/107           |
+| Ideas: upstream #1866 and #1763; own forms    | 2.7K prompt -8 %. 16 lanes: last first token 8 users 0.71 ->  |                                              |
+|                                               | 0.49 s, 4 users 0.52 -> 0.38 s; 16 users +2.9 % throughput    |                                              |
++-----------------------------------------------+---------------------------------------------------------------+----------------------------------------------+
+| prefix wait, PREFIX_WAIT=60000 (port of       | 4e5c (C), 16 lanes: 8 requests on a NEW 25.5K system prompt,  | texts 8/8, 16/16, 24/24                      |
+| upstream #1321), patch 0112, OPTION (not a    | last first token 86.7 -> 12.9 s; 16 on a new 11K prompt 76.9  |                                              |
+| default: final tables ran without it)         | -> 9.0 s; 8 agents x 3 turns wall 92.2 -> 35.9 s              |                                              |
++-----------------------------------------------+---------------------------------------------------------------+----------------------------------------------+
+| agents profile AGENTS=1 (pool 5 x 131K), C    | 5 agents, 56K system prompts: follow-up first token 85.1 ->   | texts 15/15                                  |
+| setting only, OPTION                          | 1.0 s (cache budget 4.1 -> 13.4 GiB), wall 365.6 -> 138.0 s   |                                              |
++-----------------------------------------------+---------------------------------------------------------------+----------------------------------------------+
+| two-stage draft head, HEAD2=1 after            | 923b documented path, image 0101-0115, one window: held-104   | ident 51/51, held 107/107 (923b, documented  |
+| `recipe.sh head2` (TF_FLASHNEXT_Q38_HEAD2),   | 62.46 / 62.42 -> 63.81 (+2.2 %; every category +2.1..2.4); | path); B: 51/51 + 107/107 in four tests;     |
+| patch 0115, builder B, OPTION (the rotation   | 3-prompt chat 50.7 -> 52.1, code 85.2 -> 85.6. 3d24 (B),      | image PASS                                   |
+| was fitted on the held prompts' head inputs). | paired: 61.85 / 62.15 -> 63.02 (+1.6 %); chain step 1.69 ->   |                                              |
+| Idea: SVD-softmax (Shim et al. 2017)          | 1.37 ms. Lone greedy chains only; +151 MiB                    |                                              |
++-----------------------------------------------+---------------------------------------------------------------+----------------------------------------------+
+Both of A's levers together, GPU time of a 16-user pass (GPROF, ~79 rows): 197.5 -> 191.5 ms (QSA 8.47 -> 5.65, DeltaNet 34.45 -> 31.21; MoE 130 unchanged).
+
+DEAD / ZERO this round (do not retry):
+- expert items of up to 64 pairs (D, TF_FLASHNEXT_Q38_EXP_PAIRS): 16 users -2.5 %, copies -6.7 %. Not integrated.
+- row-trimmed 64-row lane tiles (D, TF_FLASHNEXT_Q38_ROW_TRIM): zero; every dense group unchanged to 0.05 ms. Not integrated.
+- draft depth 8 / 10, gate 0.3 at 16 users (D): inside the reference spread or negative. MiaAI's 0.4 / 6 stays.
+- expert storage order by co-activation, exact expert skips, a certified coarse router (D, measured statistics): nothing to gain
+  (adjacent-id use 0.447 against 0.446 chance; zero routing weights 0 of 25.7 million; router 1.4 % of GPU time).
+- per-lane PLE conv + window shift (A): 32 launches a pass, ~0.04 % (ESTIMATE from KPROF: 0.03 ms of 28.8). Not built.
+- prompt cache sibling-first eviction (C, TF_FLASHNEXT_Q38_CACHE_SIBLINGS): zero. The flag is still in patch 0112 (off) because the measured
+  image was built from that version of C's patch.
+- exact prefill levers (C): none built; the one measured gap is the indexer's block scores on long prompts (design note only).
+Measured facts worth keeping (D): at 16 users a pass reads 228 distinct experts a layer (44.6 % of 512), 30.1 GiB of experts a pass, at >= 254 GB/s
+(93 % of the memory bus): the expert path is at the bus rate. (A): the DeltaNet chain kernel is the state read + write (2 x 3.1 MB a stream and layer)
+at ~215 GB/s; a build running on the box (3 CPUs) costs the engine ~1.5 % at 16 users (shared memory bus): never measure beside a build.
+The image `recipe.sh prepare` builds now holds patches 0101-0115 (0114 draft-study logging, 0115 two-stage head, both off by default). With HEAD2 off it gives
+the texts of the 0101-0113 image the tables above were measured on (ident 51/51, held 107/107) at the same speed (held-104 62.46 against 62.38).

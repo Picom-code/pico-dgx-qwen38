@@ -1,0 +1,477 @@
+diff --git a/zig/src/core/lanes/engine.zig b/zig/src/core/lanes/engine.zig
+index 05a82b4..4704e74 100644
+--- a/zig/src/core/lanes/engine.zig
++++ b/zig/src/core/lanes/engine.zig
+@@ -27,6 +27,8 @@ const int = trail.int;
+ const Outcome = struct { got: []const u32, path: []const u32, cut: ?usize, follow: []const u32 };
+ const Result = struct { rows: u32, keep: u32, got: []const u32 };
+ const Unread = struct { event: usize, handle: u64 };
++extern "c" fn clock_gettime(clk: c_int, ts: *[2]i64) c_int;
++const q38_clock_gettime = clock_gettime;
+ pub const Engine = struct {
+     const pieces_ = @import("pieces.zig");
+     pub const beginStream = pieces_.beginStream;
+@@ -329,7 +331,10 @@ pub const Engine = struct {
+         if (st.on == 0) return;
+         // round 11: a copy window's source (context, the client's prediction, Recall) and the match that let it in
+         if (p.kind == .copy) std.debug.print("QCOPY {s} {d}\n", .{ if (p.recalled) "recall" else if (q38_copy.last_side) "pred" else "ctx", q38_copy.last_match });
+-        std.debug.print("QSTEP {s} {d} {d}\n", .{ @tagName(p.kind), rows, kept });
++        // q38 (round 11): the line's monotonic time in microseconds, so a log gives each round's wall time (chain and verify apart)
++        var ts: [2]i64 = .{ 0, 0 };
++        _ = q38_clock_gettime(1, &ts);
++        std.debug.print("QSTEP {s} {d} {d} {d}\n", .{ @tagName(p.kind), rows, kept, @divTrunc(ts[0] * 1_000_000_000 + ts[1], 1000) });
+         if (st.on >= 2) {
+             // the window's draft tokens, then the tokens the round commits (kept drafts and the bonus token)
+             std.debug.print("QWIN", .{});
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index 97998a1..0d621ff 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -570,9 +570,143 @@ pub fn q38Deep() Deep {
+     }
+     // knob file word deep_off=1: a chain never passes the base depth (as without the flag at TF_FLASHNEXT_DRAFTS = base)
+     if (st.d.p > 0) if (q38KnobFile("deep_off")) |x| if (x != 0) return .{ .p = 2.0, .base = st.d.base };
++    if (st.d.p > 0 and std.c.getenv("TF_FLASHNEXT_Q38_KNOBFILE") != null) {
++        var d = st.d;
++        if (q38KnobFile("deep_p")) |x| d.p = @as(f64, @floatFromInt(std.math.clamp(x, 1, 1000))) / 1000.0;
++        if (q38KnobFile("deep_base")) |x| d.base = @intCast(std.math.clamp(x, 1, 64));
++        return d;
++    }
+     return st.d;
+ }
+ 
++/// TF_FLASHNEXT_Q38_SCHAIN=STOP2[,DEEP_P[,DEEP_BASE[,MAX]]] (q38 round 11; default unset = a sampled chain uses the greedy chain's
++/// values): a lone SAMPLED chain's own early-stop line (TF_FLASHNEXT_Q38_STOP2's meaning; negative: keep the greedy value), deep line
++/// and deep base (TF_FLASHNEXT_Q38_DEEP's meaning; 0: keep) and depth cap (0: none). The running-product line itself for sampled chains
++/// is TF_FLASHNEXT_Q38_SGATE's C. Knob-file words s_stop2, s_deep_p (thousandths), s_deep_base, s_max; deep_p (thousandths) and
++/// deep_base override TF_FLASHNEXT_Q38_DEEP for every chain. Drafts only: every kept token is still the main model's own draw.
++pub const SChain = struct { stop2: f64 = -1, deep_p: f64 = 0, deep_base: usize = 0, max: usize = 0 };
++pub fn q38SChain() SChain {
++    const st = struct {
++        var done: bool = false;
++        var c: SChain = .{};
++    };
++    if (!st.done) {
++        st.done = true;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_SCHAIN")) |v| {
++            var it = std.mem.splitScalar(u8, std.mem.span(v), ',');
++            if (it.next()) |x| st.c.stop2 = std.fmt.parseFloat(f64, x) catch -1;
++            if (it.next()) |x| st.c.deep_p = std.fmt.parseFloat(f64, x) catch 0;
++            if (it.next()) |x| st.c.deep_base = std.fmt.parseInt(usize, x, 10) catch 0;
++            if (it.next()) |x| st.c.max = std.fmt.parseInt(usize, x, 10) catch 0;
++            if (!(st.c.stop2 <= 1.0)) st.c.stop2 = -1;
++            if (!(st.c.deep_p >= 0 and st.c.deep_p <= 1.0)) st.c.deep_p = 0;
++        }
++    }
++    var c = st.c;
++    if (std.c.getenv("TF_FLASHNEXT_Q38_KNOBFILE") != null) {
++        if (q38KnobFile("s_stop2")) |x| c.stop2 = @as(f64, @floatFromInt(std.math.clamp(x, -1, 1000))) / 1000.0;
++        if (q38KnobFile("s_deep_p")) |x| c.deep_p = @as(f64, @floatFromInt(std.math.clamp(x, 0, 1000))) / 1000.0;
++        if (q38KnobFile("s_deep_base")) |x| c.deep_base = @intCast(std.math.clamp(x, 0, 64));
++        if (q38KnobFile("s_max")) |x| c.max = @intCast(std.math.clamp(x, 0, 64));
++    }
++    return c;
++}
++
++/// TF_FLASHNEXT_Q38_GCAL=FILE (q38 round 11; default unset = stock): a calibration of the lone chain's stop rule. The rule multiplies the
++/// draft head's probabilities and stops below a line, i.e. it reads them as "this draft will be kept"; measured on always-deep logs the
++/// head is over-confident (a drawn token of probability 0.7-0.8 is kept 0.52 of the time when sampling), and a sampled draw that is not
++/// the head's best token is kept more often than a best token of the same probability. FILE holds, a line each:
++///   g  x:y x:y ...   greedy chains: the head's probability x reads as y (piecewise linear between the knots, flat outside; x rising)
++///   st x:y ...       sampled chains, the drawn token is the head's best
++///   sn x:y ...       sampled chains, the drawn token is not the head's best
++///   set NAME VALUE   the lines that go with the calibrated product: c_g stop2_g deep_p_g deep_base_g (greedy), c_s stop2_s deep_p_s
++///                    deep_base_s (sampled); a name not set keeps the stock value
++/// Knob-file words: gcal=0 switches it off; gcal_c, gcal_stop2, gcal_deep_p (thousandths) and gcal_deep_base override the lines of
++/// whichever chain runs. Drafts only: which drafts are proposed changes, every kept token is still the main model's own.
++pub const GCal = struct {
++    pub const max_knots = 40;
++    n: [3]usize = .{ 0, 0, 0 },
++    x: [3][max_knots]f64 = undefined,
++    y: [3][max_knots]f64 = undefined,
++    /// [greedy, sampled] x [c, stop2, deep_p, deep_base]; negative: not set
++    thr: [2][4]f64 = .{ .{ -1, -1, -1, -1 }, .{ -1, -1, -1, -1 } },
++
++    pub fn map(c: *const GCal, kind: usize, p: f64) f64 {
++        const n = c.n[kind];
++        if (n == 0) return p;
++        const xs = c.x[kind][0..n];
++        const ys = c.y[kind][0..n];
++        if (!(p > xs[0])) return ys[0];
++        if (p >= xs[n - 1]) return ys[n - 1];
++        var k: usize = 1;
++        while (k < n - 1 and p > xs[k]) k += 1;
++        const t = (p - xs[k - 1]) / (xs[k] - xs[k - 1]);
++        return ys[k - 1] + t * (ys[k] - ys[k - 1]);
++    }
++
++    /// Line `which` (0 c, 1 stop2, 2 deep_p, 3 deep_base) for a greedy (0) or sampled (1) chain: knob word, else the file's, else `stock`.
++    pub fn line(c: *const GCal, mode: usize, which: usize, stock: f64) f64 {
++        const words = [4][]const u8{ "gcal_c", "gcal_stop2", "gcal_deep_p", "gcal_deep_base" };
++        if (q38KnobFile(words[which])) |v| return if (which == 3) @as(f64, @floatFromInt(v)) else @as(f64, @floatFromInt(v)) / 1000.0;
++        const v = c.thr[mode][which];
++        return if (v >= 0) v else stock;
++    }
++};
++var gcal_state: i8 = -1;
++var gcal_table: GCal = .{};
++pub fn q38GCal() ?*const GCal {
++    if (gcal_state < 0) {
++        gcal_state = 0;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_GCAL")) |path| {
++            var buf: [8192]u8 = undefined;
++            var len: usize = 0;
++            const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, @as(std.c.mode_t, 0));
++            if (fd >= 0) {
++                const got = std.c.pread(fd, &buf, buf.len, 0);
++                if (got > 0) len = @intCast(got);
++                _ = std.c.close(fd);
++            }
++            var ok = false;
++            var lines = std.mem.tokenizeScalar(u8, buf[0..len], '\n');
++            while (lines.next()) |ln| {
++                var it = std.mem.tokenizeAny(u8, ln, " \t\r");
++                const name = it.next() orelse continue;
++                if (std.mem.eql(u8, name, "set")) {
++                    const key = it.next() orelse continue;
++                    const val = std.fmt.parseFloat(f64, it.next() orelse continue) catch continue;
++                    const keys = [8][]const u8{ "c_g", "stop2_g", "deep_p_g", "deep_base_g", "c_s", "stop2_s", "deep_p_s", "deep_base_s" };
++                    for (keys, 0..) |k, i| if (std.mem.eql(u8, key, k)) {
++                        gcal_table.thr[i / 4][i % 4] = val;
++                    };
++                    continue;
++                }
++                const kind: usize = if (std.mem.eql(u8, name, "g")) 0 else if (std.mem.eql(u8, name, "st")) 1 else if (std.mem.eql(u8, name, "sn")) 2 else continue;
++                var n: usize = 0;
++                while (it.next()) |w| {
++                    if (n == GCal.max_knots) break;
++                    const colon = std.mem.indexOfScalar(u8, w, ':') orelse continue;
++                    const xv = std.fmt.parseFloat(f64, w[0..colon]) catch continue;
++                    const yv = std.fmt.parseFloat(f64, w[colon + 1 ..]) catch continue;
++                    if (n > 0 and !(xv > gcal_table.x[kind][n - 1])) continue;
++                    if (!(yv >= 0 and yv <= 1)) continue;
++                    gcal_table.x[kind][n] = xv;
++                    gcal_table.y[kind][n] = yv;
++                    n += 1;
++                }
++                if (n >= 2) {
++                    gcal_table.n[kind] = n;
++                    ok = true;
++                }
++            }
++            if (ok) gcal_state = 1;
++            std.debug.print("q38 gcal: {s} knots g {d} st {d} sn {d}\n", .{ if (ok) "on" else "no table read", gcal_table.n[0], gcal_table.n[1], gcal_table.n[2] });
++        }
++    }
++    if (gcal_state != 1) return null;
++    if (q38KnobFile("gcal")) |v| if (v == 0) return null;
++    return &gcal_table;
++}
++
+ /// TF_FLASHNEXT_Q38_HEAD2_SAMPLED=1 (q38; default off): a lone SAMPLED chain also drafts with the two-stage head (block form): its
+ /// keyed draw takes its candidates from the row of preview scores with the re-scored rows' 4-bit scores in place. Drafts only: the
+ /// main model's own keyed draw at each position decides, so a seeded request's text does not change.
+diff --git a/zig/src/families/flashnext/cuda_mtp.zig b/zig/src/families/flashnext/cuda_mtp.zig
+index f174e2f..955aff0 100644
+--- a/zig/src/families/flashnext/cuda_mtp.zig
++++ b/zig/src/families/flashnext/cuda_mtp.zig
+@@ -246,6 +246,10 @@ pub fn drawPickWith(gpa: std.mem.Allocator, row: []const u16, ids: []const u32,
+     return .{ .token = tok, .prob = @exp(@as(f64, promote(row[col])) - @as(f64, lse)) };
+ }
+ 
++/// q38 (TF_FLASHNEXT_Q38_GCAL): whether the lone chain's last pick was the head's best token (always for a greedy pick; a sampled
++/// draw from the whole row counts as the best).
++pub var pick_top: bool = true;
++
+ /// Whether `sm` draws keyed samples (a temperature above zero) rather than taking the best column.
+ pub fn isSampled(sm: ?Sampling) bool {
+     return if (sm) |s| s.temperature > 0 else false;
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index 733d8dc..fce13b0 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -288,6 +288,7 @@ pub fn Ops(comptime Tri: type) type {
+ 
+         /// The draft at `position` and its temperature-1 probability (Python Engine.sample_draft).
+         pub fn pick(o: Self, d: *Draft, position: u64, sm: ?Sampling) !Pick {
++            mtp.pick_top = true;
+             const h = o.h;
+             const view_ = h.view();
+             const n = view_.logical;
+@@ -313,6 +314,10 @@ pub fn Ops(comptime Tri: type) type {
+                 try o.candidates(1, &c);
+                 if (c.flags[0] == 0) {
+                     var got = try mtp.drawPickCandidates(o.e.gpa, c.vals[0..count], c.cols[0..count], h.ids, lse, position, sm);
++                    // q38 (GCAL): whether the keyed draw took the head's best candidate
++                    var best_v: f32 = c.vals[0];
++                    for (c.vals[1..count]) |v| best_v = @max(best_v, v);
++                    mtp.pick_top = got.prob >= @exp(@as(f64, best_v) - @as(f64, lse)) * (1.0 - 1e-9);
+                     // q38 (TF_FLASHNEXT_Q38_SGATE): the stop rule's input for a sampled draw
+                     got.prob = mtp.sampledGate(got.prob, got.token, c.vals[0..count], c.cols[0..count], h.ids, lse, position, sm);
+                     return got;
+@@ -367,12 +372,36 @@ pub fn Ops(comptime Tri: type) type {
+                 const sg = @import("cuda_knobs.zig").q38SGate();
+                 if (sg.c > 0 and confidence < 0) stop.c = -sg.c;
+             }
+-            const stop2 = @import("cuda_knobs.zig").q38Stop2();
+-            const deep = @import("cuda_knobs.zig").q38Deep();
++            // q38 (round 11, TF_FLASHNEXT_Q38_SCHAIN): a sampled chain's own early-stop line, deep line / base and depth cap
++            const sampled_chain = mtp.isSampled(sm);
++            const sch = @import("cuda_knobs.zig").q38SChain();
++            const stop2 = if (sampled_chain and sch.stop2 >= 0) sch.stop2 else @import("cuda_knobs.zig").q38Stop2();
++            var deep = @import("cuda_knobs.zig").q38Deep();
++            if (sampled_chain and deep.p > 0 and deep.p <= 1.0) {
++                if (sch.deep_p > 0) deep.p = sch.deep_p;
++                if (sch.deep_base > 0) deep.base = sch.deep_base;
++            }
++            // q38 (round 11, TF_FLASHNEXT_Q38_GCAL): the stop rule on calibrated probabilities, with the lines that go with them
++            const gcal = knobs.q38GCal();
++            var stop2_c = stop2;
++            if (gcal) |gc| if (stop.c < 0) {
++                const md: usize = @intFromBool(sampled_chain);
++                stop.c = -gc.line(md, 0, -stop.c);
++                stop2_c = gc.line(md, 1, stop2);
++                if (deep.p > 0 and deep.p <= 1.0) {
++                    deep.p = gc.line(md, 2, deep.p);
++                    deep.base = @intFromFloat(@max(1.0, gc.line(md, 3, @floatFromInt(deep.base))));
++                }
++            };
++            var chain_cap: usize = if (sampled_chain and sch.max > 0) @min(max_chain, sch.max) else max_chain;
++            // knob-file word chain_max (measuring aid): a depth cap for every lone chain
++            if (knobs.q38KnobFile("chain_max")) |x| chain_cap = @min(chain_cap, @as(usize, @intCast(std.math.clamp(x, 1, 64))));
+             const hp = cuda.launch.HostProf;
+             var hp_t: u64 = if (hp.on()) hp.now() else 0;
+-            while (j < @min(count, max_chain)) : (j += 1) {
++            var picks: usize = 0;
++            while (j < @min(count, chain_cap)) : (j += 1) {
+                 const got = try o.pick(d, position + j, sm);
++                picks += 1;
+                 if (stepLogLevel() >= 2) try o.logTop(d, j);
+                 if (hp.on()) {
+                     // q38 (TF_HOSTPROF): wall time of each chain step (the head's forward queued before it, its best read back here)
+@@ -380,7 +409,7 @@ pub fn Ops(comptime Tri: type) type {
+                     MtpStat.add(j, t1 - hp_t, o.h.ids.len);
+                     hp_t = t1;
+                 }
+-                const t = stop.take(j, got.prob);
++                const t = stop.take(j, if (gcal) |gc| (if (stop.c < 0) gc.map(if (!sampled_chain) 0 else if (mtp.pick_top) 1 else 2, got.prob) else got.prob) else got.prob);
+                 if (!t.propose) break;
+                 out.tokens[out.n] = got.token;
+                 out.probs[out.n] = got.prob;
+@@ -389,7 +418,7 @@ pub fn Ops(comptime Tri: type) type {
+                 if (!t.more) break;
+                 // q38 (TF_FLASHNEXT_Q38_STOP2): the next step is not computed when its draft would probably cross the gate
+                 // q38 (TF_FLASHNEXT_Q38_DEEP): past the base depth only a chain whose product is still high goes on
+-                if (stop.c < 0 and stop.product < (if (deep.p > 0 and j + 1 >= deep.base) deep.p else stop2)) break;
++                if (stop.c < 0 and stop.product < (if (deep.p > 0 and j + 1 >= deep.base) deep.p else stop2_c)) break;
+                 if (deep.p > 0 and stop.c >= 0 and j + 1 >= deep.base) break;
+                 if (j + 1 < count) {
+                     try o.forwardHead(d, &.{got.token}, d.out.ptr, true);
+@@ -401,6 +430,8 @@ pub fn Ops(comptime Tri: type) type {
+             if (ahead) |a| a.flush();
+             if (stepLogOn()) {
+                 // TF_STEP_LOG=1: the lone chain's draft probabilities, in order (the next QSTEP line is its verify)
++                // q38 (round 11): QCT = the chain's end time (monotonic us) and the head steps it computed
++                std.debug.print("QCT {d} {d}\n", .{ cuda.launch.HostProf.now() / 1000, picks });
+                 std.debug.print("QCHAIN {d}", .{out.n});
+                 for (out.probs[0..out.n]) |pr| std.debug.print(" {d:.4}", .{pr});
+                 std.debug.print("\n", .{});
+diff --git a/zig/src/families/flashnext/cuda_ple.zig b/zig/src/families/flashnext/cuda_ple.zig
+index f088066..6341f5c 100644
+--- a/zig/src/families/flashnext/cuda_ple.zig
++++ b/zig/src/families/flashnext/cuda_ple.zig
+@@ -540,6 +540,55 @@ pub const Ngram = struct {
+         }
+     };
+ 
++    /// q38 (round 11): one read of Ngram.small: part i = half (i % 2) of missing row miss[i / 2].
++    const Small = struct {
++        rd: *reader_mod.Reader,
++        ids: []const i64,
++        miss: []const u16,
++        raws: [][reader_mod.max_row]u8,
++
++        fn part(ctx: *const anyopaque, i: usize) anyerror!void {
++            const s: *const Small = @ptrCast(@alignCast(ctx));
++            const k = s.miss[i / 2];
++            try s.rd.readHalf(s.ids[k], i % 2, &s.raws[k]);
++        }
++    };
++
++    /// q38 (round 11, TF_FLASHNEXT_Q38_NGRAM_SPLIT): the gather of a few rows. Rows the reader's cache holds are copied here; every
++    /// missing row's codes and scales are read by two of the pool's threads, all woken together, and kept in the cache; then the
++    /// rows are dequantized as `fill` does. false: not this table form, too many rows or misses, or a read failed (the stock path runs).
++    fn small(g: *const Ngram, ids: []const i64, out: []u16) !bool {
++        const max_small = 256;
++        const rd = g.reader orelse return false;
++        const pool = g.pool orelse return false;
++        if (g.format != .nvfp4 or ids.len == 0 or ids.len > max_small) return false;
++        var raws: [max_small][reader_mod.max_row]u8 = undefined;
++        var miss: [max_small]u16 = undefined;
++        var n_miss: usize = 0;
++        for (ids, 0..) |id, i| {
++            if (!rd.peek(id, &raws[i])) {
++                raws[i] = @splat(0);
++                miss[n_miss] = @intCast(i);
++                n_miss += 1;
++            }
++        }
++        if (n_miss * 2 > ple_pool.max_parts) return false;
++        if (n_miss > 0) {
++            const s: Small = .{ .rd = rd, .ids = ids, .miss = miss[0..n_miss], .raws = raws[0..ids.len] };
++            pool.runWide(n_miss * 2, .{ .ctx = &s, .run = Small.part }) catch return false;
++            for (miss[0..n_miss]) |k| rd.put(ids[k], &raws[k]);
++        }
++        const dh = g.hash.dh;
++        for (ids, 0..) |id, i| {
++            const loc = try g.hash.locate(id);
++            const t = g.tables[loc.shard];
++            const rc = t.width / 2;
++            const one: core.nvfp4_rows.Table = .{ .codes = raws[i][0..rc], .scales = raws[i][rc..][0 .. t.width / 16], .rows = 1, .width = t.width, .global = t.global };
++            try one.gather(&.{0}, out[i * dh ..][0..dh]);
++        }
++        return true;
++    }
++
+     /// One call's rows split into `parts` equal ranges, part i filling [i * per, (i + 1) * per).
+     const Split = struct {
+         g: *const Ngram,
+@@ -576,8 +625,16 @@ pub const Ngram = struct {
+             for (0..history.len - 1) |i| hist[i] = hist[i + 1];
+             hist[history.len - 1] = token;
+         }
++        // q38 (round 11, TF_FLASHNEXT_Q38_NGRAM_SPLIT=N, default 0 = stock, at most 256; knob word ngram_split): a gather of at most N
++        // table rows takes the rows the cache holds on this thread and reads each missing row's codes and scales by two threads woken
++        // together (Ngram.small). A stream without drafts has nobody reading its next token's rows ahead, so on text the row cache has
++        // not seen, the stock gather (four rows a thread, two reads a row, workers woken one by one) holds the pass ~4 ms at the n-gram
++        // layer; this way it waits for about one read. The bytes are the file's either way.
++        const split_n = q38NgramSplit();
+         const n_threads = @min(ple_pool.max_parts, items / 4);
+-        if (n_threads <= 1 or g.pool == null) {
++        if (split_n > 0 and items <= split_n and try g.small(ids, out)) {
++            // done on this thread (cache hits) and by one thread a read (misses)
++        } else if (n_threads <= 1 or g.pool == null) {
+             try g.fill(ids, out, 0, items);
+         } else {
+             const split: Split = .{ .g = g, .ids = ids, .out = out, .per = (items + n_threads - 1) / n_threads };
+@@ -597,6 +654,15 @@ pub const Ngram = struct {
+     }
+ };
+ 
++fn q38NgramSplit() usize {
++    const st = struct {
++        var v: i64 = -1;
++    };
++    if (@import("cuda_knobs.zig").q38KnobFile("ngram_split")) |x| return @intCast(std.math.clamp(x, 0, 256));
++    if (st.v < 0) st.v = if (std.c.getenv("TF_FLASHNEXT_Q38_NGRAM_SPLIT")) |e| (std.fmt.parseInt(i64, std.mem.span(e), 10) catch 0) else 0;
++    return @intCast(std.math.clamp(st.v, 0, 256));
++}
++
+ /// A decode round's drafted tokens as the head picks them: their rows are read while the head drafts the next ones.
+ pub const Ahead = struct {
+     const max_lanes = 64;
+@@ -695,13 +761,17 @@ pub fn rowsMany(g: *const Ngram, parts: []const Part) !void {
+     var out = first;
+     out.len = total * w;
+     for (parts[1..], 0..) |q, k| if (q.out.ptr != parts[k].out.ptr + parts[k].out.len) return error.UnexpectedTensor;
++    // q38 (round 11, TF_FLASHNEXT_Q38_NGRAM_SPLIT): a small call gives every row its own thread (see Ngram.rows)
+     const n_threads = @min(ple_pool.max_parts, items / 4);
++    const split_n = q38NgramSplit();
+     const ts1 = if (Stat.on) Stat.now() else 0;
+     if (Stat.on) {
+         Stat.part_sum.store(0, .monotonic);
+         Stat.part_max.store(0, .monotonic);
+     }
+-    if (n_threads <= 1 or g.pool == null) {
++    if (split_n > 0 and items <= split_n and try g.small(ids, out)) {
++        // q38 (round 11, TF_FLASHNEXT_Q38_NGRAM_SPLIT): see Ngram.rows
++    } else if (n_threads <= 1 or g.pool == null) {
+         try g.fill(ids, out, 0, items);
+     } else {
+         const split: Ngram.Split = .{ .g = g, .ids = ids, .out = out, .per = (items + n_threads - 1) / n_threads };
+diff --git a/zig/src/families/flashnext/cuda_ple_pool.zig b/zig/src/families/flashnext/cuda_ple_pool.zig
+index 0fe8238..f0f9bb8 100644
+--- a/zig/src/families/flashnext/cuda_ple_pool.zig
++++ b/zig/src/families/flashnext/cuda_ple_pool.zig
+@@ -24,6 +24,7 @@ pub const Pool = struct {
+     waking: std.atomic.Value(u32) = .init(0), // workers woken
+     task: Task = undefined,
+     failed: [max_parts]?anyerror = undefined,
++    wide: std.atomic.Value(bool) = .init(false), // q38: the next call wakes its workers at once (runWide)
+ 
+     pub fn create(gpa: std.mem.Allocator, io: std.Io) !*Pool {
+         const p = try gpa.create(Pool);
+@@ -47,6 +48,14 @@ pub const Pool = struct {
+         return p.runWith(parts, task, Spawn{});
+     }
+ 
++    /// q38 (round 11): `run` with every worker the call can use woken before the caller takes its first part (not one more a
++    /// claim): for a few slow parts (drive reads) whose caller waits on the slowest.
++    pub fn runWide(p: *Pool, parts: usize, task: Task) !void {
++        p.wide.store(true, .release);
++        defer p.wide.store(false, .release);
++        return p.runWith(parts, task, Spawn{});
++    }
++
+     const Spawn = struct {
+         fn start(_: @This(), p: *Pool, w: usize) !std.Thread {
+             return std.Thread.spawn(.{}, work, .{ p, w });
+@@ -69,6 +78,10 @@ pub const Pool = struct {
+         p.waking.store(0, .monotonic);
+         const gen = (p.state.load(.monotonic) >> 32) +% 1;
+         p.state.store(gen << 32 | @as(u64, parts) << 16, .release);
++        if (p.wide.load(.acquire)) {
++            var k: usize = 1;
++            while (k < parts) : (k += 1) p.wakeOne(@intCast(parts - 1));
++        }
+         p.drain();
+         while (true) {
+             const done = p.done.load(.acquire);
+diff --git a/zig/src/families/flashnext/cuda_ple_reader.zig b/zig/src/families/flashnext/cuda_ple_reader.zig
+index 936dd39..a06ca0f 100644
+--- a/zig/src/families/flashnext/cuda_ple_reader.zig
++++ b/zig/src/families/flashnext/cuda_ple_reader.zig
+@@ -200,6 +200,43 @@ pub const Reader = struct {
+         }
+     }
+ 
++    /// q38 (round 11): row `id`'s bytes when the cache holds them; no read, no wait.
++    pub fn peek(r: *Reader, id: i64, out: *[max_row]u8) bool {
++        if (r.locate(id) == null) return false;
++        const want: u64 = @as(u64, @intCast(id)) + 1;
++        const slot = r.slotOf(want);
++        if (@atomicLoad(u64, &slot.tag, .acquire) != want) return false;
++        load(slot, out);
++        if (@atomicLoad(u64, &slot.tag, .acquire) != want) return false;
++        _ = r.stats.hits.fetchAdd(1, .monotonic);
++        return true;
++    }
++
++    /// q38 (round 11): one of row `id`'s two arrays from the file: half 0 the codes (out[0..row_codes]), half 1 the scales after them.
++    pub fn readHalf(r: *const Reader, id: i64, half: usize, out: *[max_row]u8) !void {
++        const loc = r.locate(id) orelse return error.UnexpectedTensor;
++        var buf: [2 * direct_io.alignment]u8 align(direct_io.alignment) = undefined;
++        const s = r.shards[loc.shard];
++        const f = r.files[s.file];
++        if (half == 0) {
++            @memcpy(out[0..r.row_codes], try f.read(&buf, s.codes_at + loc.local * r.row_codes, r.row_codes));
++        } else {
++            @memcpy(out[r.row_codes..][0..r.row_scales], try f.read(&buf, s.scales_at + loc.local * r.row_scales, r.row_scales));
++        }
++    }
++
++    /// q38 (round 11): keeps a row whose two halves readHalf read, unless it is there or its slot is being written.
++    pub fn put(r: *Reader, id: i64, raw: *const [max_row]u8) void {
++        const want: u64 = @as(u64, @intCast(id)) + 1;
++        const slot = r.slotOf(want);
++        const t = @atomicLoad(u64, &slot.tag, .acquire);
++        _ = r.stats.own_reads.fetchAdd(1, .monotonic);
++        if (t == want or t & busy != 0) return;
++        if (@cmpxchgStrong(u64, &slot.tag, t, want | busy, .acq_rel, .monotonic) != null) return;
++        store(slot, raw);
++        @atomicStore(u64, &slot.tag, want, .release);
++    }
++
+     /// Reads row `id` into the cache unless it is there or under way.
+     fn fetch(r: *Reader, id: i64) void {
+         const loc = r.locate(id) orelse return;

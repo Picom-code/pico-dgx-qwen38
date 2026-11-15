@@ -1,0 +1,4 @@
+# night 11-14: AGENTS profile with 3 lanes (4 x 131,072 misses the head's budget by 0.03 GiB: needs 18.65, 18.62 left beside the 13 GiB reserve)
+ENGINE ag3|def|on|AGENTS=1||PAR=3
+NEED=5 bash $RT/rj.sh ag run $HOME/q38/runs/D_RT_N_on/sess.jsonl.cases $O/ag.jsonl ag mode=n conc=3 order=fwd dl=$DL
+NEED=5 bash $RT/rj.sh ag4m run $RT/matrix/cases4.jsonl $O/agy.jsonl agy mode=both conc=3 order=shuf limit=150 pre=cancel dl=$DL

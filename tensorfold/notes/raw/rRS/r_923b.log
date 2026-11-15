@@ -1,0 +1,15 @@
+READY tfb/default in 211 s; MemAvailable 38 GiB; GPU MiB 77122
+heldpar 1 in flight: 107 prompts, 20185 tokens in 343.6 s = 58.8 tok/s total; errors 0
+drafted requests: n 96 tok/s 63.3  tok/round 3.456  drafts proposed/round 3.852  accepted/round 2.463  accept rate 0.640  ms/round 54.64  rows/round 4.85
+fit over drafted requests: ms/round = 41.61 + 3.38 x drafts verified per round  (x range 1.76..22.27)
+R_ref done 14:02:40
+READY tfb/default in 215 s; MemAvailable 40 GiB; GPU MiB 77122
+heldpar 1 in flight: 107 prompts, 20185 tokens in 343.7 s = 58.7 tok/s total; errors 0
+drafted requests: n 96 tok/s 63.3  tok/round 3.456  drafts proposed/round 3.852  accepted/round 2.463  accept rate 0.640  ms/round 54.58  rows/round 4.85
+fit over drafted requests: ms/round = 41.75 + 3.33 x drafts verified per round  (x range 1.76..22.27)
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+R_t1 done 14:12:01
+READY tfb/default in 217 s; MemAvailable 39 GiB; GPU MiB 77122
+heldpar 1 in flight: 107 prompts, 5642 tokens in 117.0 s = 48.2 tok/s total; errors 75
+identical 31/32  mean shared-prefix fraction 0.979  differ: ['93']
+Error response from daemon: removal of container q38-run-tf is already in progress

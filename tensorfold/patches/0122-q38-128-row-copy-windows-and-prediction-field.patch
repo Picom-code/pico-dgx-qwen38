@@ -1,0 +1,298 @@
+diff --git a/zig/src/core/engine_api.zig b/zig/src/core/engine_api.zig
+index e972a19..0f0acd0 100644
+--- a/zig/src/core/engine_api.zig
++++ b/zig/src/core/engine_api.zig
+@@ -101,6 +101,9 @@ pub const Request = struct {
+     images: []const Image = &.{},
+     /// The prompt as the prompt cache matches it (each image's placeholders by its content); empty: ``prompt``.
+     cache_key: []const u32 = &.{},
++    /// q38 round 10: the client's `prediction` as token ids (its parts separated by 0xFFFF_FFFF): text the reply is expected to repeat.
++    /// Drafts only: its tokens are proposed to the verify window and kept only where they equal the model's own.
++    prediction: []const u32 = &.{},
+ 
+     /// The prompt as the prompt cache matches it: an image request's placeholders stand for their images.
+     pub fn cacheKey(r: *const Request) []const u32 {
+diff --git a/zig/src/core/lane_stream.zig b/zig/src/core/lane_stream.zig
+index 74933fa..a5522f2 100644
+--- a/zig/src/core/lane_stream.zig
++++ b/zig/src/core/lane_stream.zig
+@@ -32,7 +32,10 @@ pub fn open(h: *LaneHost, job: *Job) bool {
+     } else |_| {};
+     if (h.proposers) |ps| {
+         job.custom = ps.make(ps.ctx, h.gpa, r.prompt, r.eos) catch return !h.drop(job, "the drafter could not start");
+-    } else job.proposer = lanes.SuffixLookup.init(h.gpa, .{ .min_match = h.min_match }) catch return !h.drop(job, "the drafter could not start");
++    } else {
++        job.proposer = lanes.SuffixLookup.init(h.gpa, .{ .min_match = h.min_match }) catch return !h.drop(job, "the drafter could not start");
++        if (r.prediction.len > 0) job.proposer.predict(r.prediction, r.prompt.len);
++    }
+     const recall = recalls.reader(h, job);
+     job.stream = lanes.Stream.init(h.gpa, .{
+         .id = "request",
+diff --git a/zig/src/core/lanes/engine.zig b/zig/src/core/lanes/engine.zig
+index aefc2ec..ecad84c 100644
+--- a/zig/src/core/lanes/engine.zig
++++ b/zig/src/core/lanes/engine.zig
+@@ -335,6 +335,14 @@ pub const Engine = struct {
+         }
+     }
+ 
++    fn copyResetHalf() bool {
++        const st = struct {
++            var on: i8 = -1;
++        };
++        if (st.on < 0) st.on = if (std.c.getenv("TF_Q38_COPY_RESET")) |v| @intFromBool(v[0] == 'h') else 0;
++        return st.on == 1;
++    }
++
+     /// TF_FLASHNEXT_COPY_LOG=1: every 400 verified windows, the windows, rows and kept drafts by plan kind since the last line.
+     fn copyLog(p: Plan, rows: usize, kept: usize) void {
+         const st = struct {
+@@ -400,7 +408,9 @@ pub const Engine = struct {
+                     } else if (s.proposer) |pr| pr.observe(@intCast(own), @intCast(own_kept));
+                     if (e.alone) {
+                         const width = s.copy_width orelse e.cfg.first_copy;
+-                        s.copy_width = if (own_kept == own) @min(e.cfg.max_copy, 2 * width + 1) else e.cfg.first_copy;
++                        // q38 round 10 (TF_Q38_COPY_RESET=half; default: back to the first width): a copy that broke halves the next one
++                        const back = if (copyResetHalf()) @max(e.cfg.first_copy, width / 2) else e.cfg.first_copy;
++                        s.copy_width = if (own_kept == own) @min(e.cfg.max_copy, 2 * width + 1) else back;
+                     }
+                 } else if (p.kind == .head) {
+                     if (p.lanes) |l| if (s.odds != null) s.observeLanes(l, path);
+diff --git a/zig/src/core/lanes/proposer.zig b/zig/src/core/lanes/proposer.zig
+index bdbc520..bb82dd0 100644
+--- a/zig/src/core/lanes/proposer.zig
++++ b/zig/src/core/lanes/proposer.zig
+@@ -78,6 +78,84 @@ pub const SuffixLookup = struct {
+     last_match: i64 = 0,
+     last_confident: bool = false,
+     last_end: usize = 0, // the history index the last match's continuation starts at
++    // q38 round 10: the client's `prediction` (OpenAI's predicted outputs): text the reply is expected to repeat, as ids; its parts are
++    // separated by `gap`. A second corpus for copies: its tokens are proposed as drafts and verified like any copy, never forced.
++    side: []const u32 = &.{},
++    side_index: std.AutoHashMapUnmanaged(Key, std.ArrayList(u32)) = .empty,
++    side_ready: bool = false,
++    side_min: i64 = 8, // matching tokens a copy out of the prediction needs (TF_Q38_PRED_MATCH; replay on agent logs: 8 beats 4)
++    side_cursor: usize = 0, // where the last copy out of the prediction started: equal matches prefer the first one after it
++    prompt_len: usize = 0, // the request's prompt length (0: unknown): the reply's first tokens are matched to the prediction's start
++    last_side: bool = false,
++    side_proposals: i64 = 0,
++    side_tokens: i64 = 0,
++
++    pub const gap: u32 = 0xFFFF_FFFF;
++    /// A copy out of the prediction reports at least this match, so the round loop's own match gate lets it through.
++    const side_pass: i64 = 32;
++    /// The reply's first tokens (this many at most) are compared with the prediction's start instead of a suffix match.
++    const side_anchor: usize = 3;
++
++    /// The request's prediction and prompt length; nothing is indexed until a copy is asked for.
++    pub fn predict(s: *SuffixLookup, side: []const u32, prompt_len: usize) void {
++        s.side = side;
++        s.prompt_len = prompt_len;
++        if (std.c.getenv("TF_Q38_PRED_MATCH")) |v| s.side_min = @max(1, std.fmt.parseInt(i64, std.mem.span(v), 10) catch 8);
++    }
++
++    fn sideCopy(s: *SuffixLookup, history: []const u32, tail: []const u32, len: usize, key: Key, own: i64, max_draft: i64) !bool {
++        const n = s.params.ngram;
++        if (!s.side_ready) {
++            var position: usize = n - 1;
++            while (position < s.side.len) : (position += 1) {
++                var k: Key = @splat(0xFFFF_FFFF);
++                @memcpy(k[0..n], s.side[position + 1 - n .. position + 1]);
++                const got = try s.side_index.getOrPut(s.gpa, k);
++                if (!got.found_existing) got.value_ptr.* = .empty;
++                try got.value_ptr.append(s.gpa, @intCast(position));
++            }
++            s.side_ready = true;
++        }
++        var end: usize = 0;
++        var match: i64 = 0;
++        const reply = len -| s.prompt_len;
++        if (s.prompt_len > 0 and len >= s.prompt_len and reply <= side_anchor and reply < s.side.len) {
++            var same = true;
++            for (0..reply) |i| same = same and joined(history, tail, s.prompt_len + i) == s.side[i];
++            if (same) {
++                end = reply;
++                match = side_pass;
++            }
++        }
++        if (match == 0) if (s.side_index.get(key)) |list| {
++            for (list.items) |position| {
++                const e: usize = position + 1;
++                if (e >= s.side.len) continue;
++                var l: usize = 0;
++                while (l < s.params.max_extension and l < e and l < len and s.side[e - 1 - l] == joined(history, tail, len - 1 - l)) l += 1;
++                const length: i64 = @intCast(l);
++                if (length > match or (length == match and end < s.side_cursor and e >= s.side_cursor)) {
++                    match = length;
++                    end = e;
++                }
++            }
++            if (match < s.side_min) match = 0;
++        };
++        if (match == 0 or (own >= s.params.min_match and own > match)) return false;
++        var count = @min(s.side.len - end, @as(usize, @intCast(max_draft)));
++        if (std.mem.indexOfScalar(u32, s.side[end..][0..count], gap)) |g| count = g;
++        if (count == 0) return false;
++        try s.out.appendSlice(s.gpa, s.side[end..][0..count]);
++        s.last_match = @max(match, side_pass);
++        s.last_end = 0;
++        s.last_side = true;
++        s.side_cursor = end;
++        s.proposals += 1;
++        s.proposed_tokens += @intCast(count);
++        s.side_proposals += 1;
++        s.side_tokens += @intCast(count);
++        return true;
++    }
+ 
+     pub fn init(gpa: Allocator, params: Params) !SuffixLookup {
+         if (params.ngram < 1 or params.ngram > max_ngram) return error.BadNgram;
+@@ -90,6 +168,9 @@ pub const SuffixLookup = struct {
+     pub fn deinit(s: *SuffixLookup) void {
+         s.clearIndex();
+         s.index.deinit(s.gpa);
++        var side_lists = s.side_index.valueIterator();
++        while (side_lists.next()) |list| list.deinit(s.gpa);
++        s.side_index.deinit(s.gpa);
+         s.recent.deinit(s.gpa);
+         s.out.deinit(s.gpa);
+     }
+@@ -160,6 +241,7 @@ pub const SuffixLookup = struct {
+         s.out.clearRetainingCapacity();
+         s.last_match = 0;
+         s.last_confident = false;
++        s.last_side = false;
+         const changed = s.indexed > history.len or (s.indexed != 0 and !std.mem.eql(u32, &s.keyAt(history, s.indexed), &s.last_key));
+         if (changed) {
+             s.clearIndex();
+@@ -176,7 +258,7 @@ pub const SuffixLookup = struct {
+         const len = std.math.add(usize, history.len, tail.len) catch return error.ContextTooLong;
+         var key: Key = @splat(0xFFFF_FFFF);
+         for (key[0..n], len - n..) |*k, i| k.* = joined(history, tail, i);
+-        const positions = (s.index.get(key) orelse return s.out.items).items;
++        const positions: []const u32 = if (s.index.get(key)) |list| list.items else &.{};
+         var best_end: usize = 0;
+         var best_len: i64 = 0;
+         var i = positions.len;
+@@ -192,6 +274,7 @@ pub const SuffixLookup = struct {
+                 if (length >= s.params.max_extension) break;
+             }
+         }
++        if (s.side.len > 0 and try s.sideCopy(history, tail, len, key, best_len, max_draft)) return s.out.items;
+         s.last_match = best_len;
+         s.last_end = best_end;
+         if (best_len < s.params.min_match) return s.out.items;
+@@ -246,3 +329,22 @@ test "a drafted tail continues the history's copy, and history alone is indexed"
+     try std.testing.expectEqual(history.len, s.indexed);
+     try std.testing.expectEqual(@as(usize, 0), (try s.proposeAfter(&history, &.{ 2, 3, 9 }, 3)).len);
+ }
++
++test "q38: a prediction is copied from its start, and again after the reply left it and came back" {
++    const gpa = std.testing.allocator;
++    var s = try SuffixLookup.init(gpa, .{ .ngram = 3, .min_match = 4 });
++    defer s.deinit();
++    const side = [_]u32{ 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, SuffixLookup.gap, 70, 71, 72, 73, 74 };
++    s.predict(&side, 4);
++    s.side_min = 4;
++    // the reply's first token agrees with the prediction's start: the rest of the first part is proposed, not past the gap
++    try std.testing.expectEqualSlices(u32, &.{ 51, 52, 53, 54, 55, 56, 57, 58, 59 }, try s.propose(&.{ 1, 2, 3, 4, 50 }, 31));
++    try std.testing.expect(s.last_side and s.last_match >= 8);
++    // the reply inserted its own tokens (90, 91) and is back in the prediction: four matching tokens start a copy again
++    try std.testing.expectEqualSlices(u32, &.{ 58, 59 }, try s.propose(&.{ 1, 2, 3, 4, 50, 51, 90, 91, 54, 55, 56, 57 }, 31));
++    // three matching tokens are not enough, and nothing in the context matches either
++    try std.testing.expectEqual(@as(usize, 0), (try s.propose(&.{ 1, 2, 3, 4, 9, 9, 9, 9, 9, 71, 72, 73 }, 31)).len);
++    try std.testing.expect(!s.last_side);
++    // a reply that does not start like the prediction gets nothing from the anchor
++    try std.testing.expectEqual(@as(usize, 0), (try s.propose(&.{ 1, 2, 3, 4, 99 }, 31)).len);
++}
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index bf8b939..0713c1a 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -253,7 +253,7 @@ pub fn windowRows() usize {
+     if (window_rows_cache == 0) {
+         var v: usize = 16;
+         if (std.c.getenv("TF_FLASHNEXT_Q38_WINDOW_ROWS")) |e| v = std.fmt.parseInt(usize, std.mem.span(e), 10) catch 16;
+-        window_rows_cache = @max(16, @min(32, v));
++        window_rows_cache = @max(16, @min(@import("cuda_mtp.zig").max_rows, v));
+     }
+     return window_rows_cache;
+ }
+diff --git a/zig/src/families/flashnext/cuda_mtp.zig b/zig/src/families/flashnext/cuda_mtp.zig
+index a3a50a8..8daa3db 100644
+--- a/zig/src/families/flashnext/cuda_mtp.zig
++++ b/zig/src/families/flashnext/cuda_mtp.zig
+@@ -93,7 +93,9 @@ test "the stop rules: per draft, running product, none" {
+ 
+ /// A verify window's rows at most: the pending token and a chain, or a copied continuation. q38: the buffers hold 32 rows; the
+ /// lane core is told cuda_knobs.windowRows() (16 unless TF_FLASHNEXT_Q38_WINDOW_ROWS says more), so stock behaviour is unchanged.
+-pub const max_rows: usize = 32;
++/// q38 round 10: the buffers hold 128 rows, so a copied continuation (context copy or a client's `prediction`) that keeps landing can be
++/// verified 127 tokens a window; the knob still decides what the lane core may use (TF_FLASHNEXT_Q38_WINDOW_ROWS, 16..128).
++pub const max_rows: usize = 128;
+ /// qmm.split_for(2560, 2560): fc_embedding and fc_hidden sum K in four slices, in order.
+ pub const fc_sk: usize = 4;
+ /// Head rows one launch takes at most (a prompt's rows go through in pieces).
+diff --git a/zig/src/server/chat.zig b/zig/src/server/chat.zig
+index a2e6e21..102f114 100644
+--- a/zig/src/server/chat.zig
++++ b/zig/src/server/chat.zig
+@@ -102,6 +102,37 @@ fn flag(f: Value, key: []const u8) ?bool {
+     return v.truthy();
+ }
+ 
++/// q38 round 10: OpenAI's `prediction` field ({"type": "content", "content": "..." or [{"type": "text", "text": "..."}]}) as token ids,
++/// parts separated by 0xFFFF_FFFF. The text is only a source of drafts (every drafted token is kept only if it equals the model's own),
++/// so a wrong or malformed prediction changes speed, never the reply: a shape that is not understood is ignored, not refused.
++/// TF_Q38_PREDICTION=0 ignores the field; TF_Q38_PRED_MAX caps its tokens (default 65536).
++fn predictionIds(srv: *Server, cx: *Cx, field: ?Value) Failure![]const u32 {
++    const p = field orelse return &.{};
++    if (std.c.getenv("TF_Q38_PREDICTION")) |v| if (v[0] == '0') return &.{};
++    var most: usize = 65536;
++    if (std.c.getenv("TF_Q38_PRED_MAX")) |v| most = std.fmt.parseInt(usize, std.mem.span(v), 10) catch most;
++    const content: Value = if (p == .object) (p.get("content") orelse return &.{}) else p;
++    var out: std.ArrayList(u32) = .empty;
++    const one = [_]Value{content};
++    const parts: []const Value = if (content == .array) content.array else if (content == .string) &one else return &.{};
++    for (parts) |part| {
++        const text: []const u8 = switch (part) {
++            .string => |t| t,
++            .object => if (part.get("text")) |t| (if (t == .string) t.string else continue) else continue,
++            else => continue,
++        };
++        if (text.len == 0) continue;
++        const part_ids = srv.text.encode(cx.a, text, false) catch |e| switch (e) {
++            error.OutOfMemory => return error.OutOfMemory,
++            else => continue,
++        };
++        if (out.items.len + part_ids.len + 1 > most) break;
++        if (out.items.len > 0) try out.append(cx.a, 0xFFFF_FFFF);
++        try out.appendSlice(cx.a, part_ids);
++    }
++    return out.items;
++}
++
+ /// A request rendered and checked but not submitted; it holds the preparing count until generate or release.
+ pub const Prepared = struct {
+     input: Input,
+@@ -173,6 +204,7 @@ pub fn prepare(srv: *Server, cx: *Cx, input: Input, gone: anytype) Failure!Prepa
+         .cache_key = rendered.cache_key,
+     };
+     try srv.checkFeatures(cx, f, input.tools.len > 0, thinking, rendered.ids, input.tools, &request);
++    if (drafts) request.prediction = try predictionIds(srv, cx, f.get("prediction"));
+     if (thinking) {
+         const budget_field = f.get("thinking_budget");
+         const budget: i64 = if (budget_field != null and budget_field.?.truthy()) budget_field.?.int64() orelse 0 else srv.config.thinking_budget;
+diff --git a/zig/src/server/openai.zig b/zig/src/server/openai.zig
+index 84da17e..fb5a66b 100644
+--- a/zig/src/server/openai.zig
++++ b/zig/src/server/openai.zig
+@@ -152,7 +152,7 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
+         input.temperature = if (t == .float) t.float else std.fmt.parseFloat(f64, t.int) catch 0;
+     };
+     const sampling = try json.newObject(cx.a);
+-    for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "seed", "priority", "draft", "thinking_budget", "ignore_eos", "stop" } ++ grammar.fields) |k| if (body.get(k)) |v| try sampling.put(cx.a, k, v);
++    for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "seed", "priority", "draft", "thinking_budget", "ignore_eos", "stop", "prediction" } ++ grammar.fields) |k| if (body.get(k)) |v| try sampling.put(cx.a, k, v);
+     try grammar.refusal(cx, body);
+     if (input.tools.len > 0 and try tool_specs.choiceRequiresCall(cx.a, body.get("tool_choice"))) try sampling.put(cx.a, "tool_call_required", .{ .bool = true });
+     if (body.field("parallel_tool_calls")) |p| if (p == .bool and !p.bool) try sampling.put(cx.a, "tool_call_single", .{ .bool = true });

@@ -1,0 +1,6 @@
+# night 11-14, extra (the first matrices came back clean and early): a second random matrix (new seed: other prompts x shapes, new copy / near-repeat texts, images) and STREAMED live sessions.
+ENGINE on3|def|on|||PAR=2
+NEED=3 bash $RT/rj.sh pairX pair $RT/matrix/cases3.jsonl $O/pairX.jsonl vars=off,off_s,on_s,on ids=x0606 dl=$DL
+NEED=6 bash $RT/rj.sh pair4 pair $RT/matrix/cases4.jsonl $O/pair4.jsonl vars=off,on dl=$DL
+NEED=6 bash $RT/rj.sh sess4 sess $RT/matrix/sess4.jsonl $O/sess4.jsonl vars=off_s,on_s dl=$DL
+NEED=6 bash $RT/rj.sh pairS4 pair $RT/matrix/cases4.jsonl $O/pairS4.jsonl vars=off_s,on_s limit=200 dl=$DL

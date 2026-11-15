@@ -1,0 +1,138 @@
+diff --git a/zig/src/core/lanes/engine.zig b/zig/src/core/lanes/engine.zig
+index e2dfe58..50e57a2 100644
+--- a/zig/src/core/lanes/engine.zig
++++ b/zig/src/core/lanes/engine.zig
+@@ -317,6 +317,16 @@ pub const Engine = struct {
+         if (e.backend.round_observer != null) e.backend.observed(paths);
+     }
+ 
++    /// TF_STEP_LOG=1 (q38 measuring aid, off unless set): one stderr line a verified window: its plan kind, rows and kept drafts.
++    fn stepLog(p: Plan, rows: usize, kept: usize) void {
++        const st = struct {
++            var on: i8 = -1;
++        };
++        if (st.on < 0) st.on = if (std.c.getenv("TF_STEP_LOG")) |v| @intFromBool(v[0] == '1') else 0;
++        if (st.on == 0) return;
++        std.debug.print("QSTEP {s} {d} {d}\n", .{ @tagName(p.kind), rows, kept });
++    }
++
+     /// TF_FLASHNEXT_COPY_LOG=1: every 400 verified windows, the windows, rows and kept drafts by plan kind since the last line.
+     fn copyLog(p: Plan, rows: usize, kept: usize) void {
+         const st = struct {
+@@ -364,6 +374,7 @@ pub const Engine = struct {
+             try committed.append(a, sampled[path[path.len - 1]]);
+             if (s.proposer) |pr| pr.round(@intCast(rows), @intCast(path.len - 1));
+             copyLog(p, rows, path.len - 1);
++            stepLog(p, rows, path.len - 1);
+             if (rows > 1) {
+                 const kept = path.len - 1;
+                 e.drafted += rows - 1;
+diff --git a/zig/src/cuda/launch.zig b/zig/src/cuda/launch.zig
+index f280a0d..2506e1b 100644
+--- a/zig/src/cuda/launch.zig
++++ b/zig/src/cuda/launch.zig
+@@ -82,10 +82,74 @@ pub const Config = struct {
+     }
+ };
+ 
++extern "c" fn clock_gettime(clk: c_int, ts: *[2]i64) c_int;
++
++/// TF_KPROF=N (q38 profiling aid, off unless set): every launch is bracketed by stream synchronizations and its wall time
++/// is summed by kernel; every N launches the table goes to stderr ("kprof <name> calls ns blocks") and restarts.
++/// It serialises the GPU (no overlap, no PDL benefit) and must not be combined with captured decode graphs.
++const KProf = struct {
++    const Slot = struct { h: usize = 0, n: u64 = 0, ns: u64 = 0, blocks: u64 = 0 };
++    var state: i64 = -1;
++    var slots: [1024]Slot = @splat(.{});
++    var launches: u64 = 0;
++    var busy: u8 = 0;
++
++    fn on() bool {
++        if (state < 0) {
++            var v: i64 = 0;
++            if (std.c.getenv("TF_KPROF")) |e| v = std.fmt.parseInt(i64, std.mem.span(e), 10) catch 0;
++            state = if (v > 0) v else 0;
++        }
++        return state > 0;
++    }
++
++    fn now() u64 {
++        var ts: [2]i64 = .{ 0, 0 };
++        _ = clock_gettime(1, &ts);
++        return @as(u64, @intCast(ts[0])) * 1_000_000_000 + @as(u64, @intCast(ts[1]));
++    }
++
++    fn add(d: anytype, handle: abi.Function, cfg: Config, ns: u64) void {
++        while (@atomicRmw(u8, &busy, .Xchg, 1, .acquire) != 0) {}
++        defer @atomicStore(u8, &busy, 0, .release);
++        const h: usize = @intFromPtr(handle);
++        var i: usize = (h >> 4) % slots.len;
++        var probes: usize = 0;
++        while (slots[i].h != 0 and slots[i].h != h and probes < slots.len) : (probes += 1) i = (i + 1) % slots.len;
++        if (slots[i].h == 0 or slots[i].h == h) {
++            slots[i].h = h;
++            slots[i].n += 1;
++            slots[i].ns += ns;
++            slots[i].blocks += @as(u64, cfg.grid.x) * cfg.grid.y * cfg.grid.z;
++        }
++        launches += 1;
++        if (launches % @as(u64, @intCast(state)) == 0) {
++            std.debug.print("kprof-begin launches {d}\n", .{launches});
++            for (&slots) |*sl| {
++                if (sl.h == 0) continue;
++                const fh: abi.Function = @ptrFromInt(sl.h);
++                std.debug.print("kprof {s} {d} {d} {d}\n", .{ d.functionName(fh), sl.n, sl.ns, sl.blocks });
++                sl.* = .{};
++            }
++            std.debug.print("kprof-end\n", .{});
++        }
++    }
++};
++
+ /// cuLaunchKernel for plain launches, cuLaunchKernelEx when a cluster, PDL or cooperative attribute is set.
+ pub fn launch(f: Function, cfg: Config, stream: Stream, args: *Args) Error!void {
+     try cfg.validate();
+     const d = f.d;
++    const prof = KProf.on();
++    var prof_t0: u64 = 0;
++    if (prof) {
++        _ = d.api.cuStreamSynchronize(stream.handle);
++        prof_t0 = KProf.now();
++    }
++    defer if (prof) {
++        _ = d.api.cuStreamSynchronize(stream.handle);
++        KProf.add(d, f.handle, cfg, KProf.now() - prof_t0);
++    };
+     const g = cfg.grid;
+     const b = cfg.block;
+     if (cfg.plain()) {
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index e5474f4..50fcda0 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -274,6 +274,12 @@ pub fn Ops(comptime Tri: type) type {
+                 }
+             }
+             if (ahead) |a| a.flush();
++            if (stepLogOn()) {
++                // TF_STEP_LOG=1: the lone chain's draft probabilities, in order (the next QSTEP line is its verify)
++                std.debug.print("QCHAIN {d}", .{out.n});
++                for (out.probs[0..out.n]) |pr| std.debug.print(" {d:.4}", .{pr});
++                std.debug.print("\n", .{});
++            }
+         }
+ 
+         /// forwardHead over several drafts in one pass, a lane each: every row's ops and sums as a lone forwardHead's.
+@@ -774,3 +780,12 @@ pub fn Ops(comptime Tri: type) type {
+         }
+     };
+ }
++
++/// TF_STEP_LOG=1 (q38 measuring aid, off unless set).
++fn stepLogOn() bool {
++    const st = struct {
++        var on: i8 = -1;
++    };
++    if (st.on < 0) st.on = if (std.c.getenv("TF_STEP_LOG")) |v| @intFromBool(v[0] == '1') else 0;
++    return st.on == 1;
++}

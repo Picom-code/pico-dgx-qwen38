@@ -1,0 +1,775 @@
+diff --git a/zig/src/core/engine_api.zig b/zig/src/core/engine_api.zig
+index 248f9d2..e972a19 100644
+--- a/zig/src/core/engine_api.zig
++++ b/zig/src/core/engine_api.zig
+@@ -233,6 +233,8 @@ pub const Info = struct {
+ pub const Admit = struct {
+     ctx: *anyopaque,
+     fits: *const fn (ctx: *anyopaque, prompt: u32, max_tokens: u32) bool,
++    /// q38: ask `fits` for every admission, also when nothing runs (a backend that counts what it admitted).
++    always: bool = false,
+ };
+ 
+ pub const PromptCachePlan = struct {
+diff --git a/zig/src/core/lane_host.zig b/zig/src/core/lane_host.zig
+index 68a0ae0..c5994d7 100644
+--- a/zig/src/core/lane_host.zig
++++ b/zig/src/core/lane_host.zig
+@@ -363,6 +363,8 @@ pub const LaneHost = struct {
+     /// The next filling job's next prompt chunk: the other streams' rounds run between chunks, not after the prompt.
+     fn fillOne(h: *LaneHost) void {
+         if (h.filling.items.len == 0) return;
++        // q38: fresh short prompts that wait together go in one prompt pass when the backend takes them (prefill_many)
++        if (h.filling.items.len >= 2 and fill.many(h)) return;
+         const at = fill.next(h);
+         const job = h.filling.items[at];
+         const first = !job.fill_began;
+diff --git a/zig/src/core/lane_host_admit.zig b/zig/src/core/lane_host_admit.zig
+index 09b3e6b..af9d897 100644
+--- a/zig/src/core/lane_host_admit.zig
++++ b/zig/src/core/lane_host_admit.zig
+@@ -7,7 +7,7 @@ const lanes = @import("lanes");
+ /// The queued job to admit (its index), or null to hold; the caller holds the lock and a lane is free.
+ pub fn pick(h: *LaneHost) ?usize {
+     const a = h.info_.admit orelse return 0;
+-    if (h.core.activeCount() == 0) return 0; // alone: the whole pool is free (kept prefixes give their blocks back)
++    if (!a.always and h.core.activeCount() == 0) return 0; // alone: the whole pool is free (kept prefixes give their blocks back)
+     const head = h.queued.items[0];
+     if (fits(a, head)) return 0;
+     if (head.waits_since == null) head.waits_since = h.admissions;
+diff --git a/zig/src/core/lane_host_fill.zig b/zig/src/core/lane_host_fill.zig
+index 8daa793..71b4987 100644
+--- a/zig/src/core/lane_host_fill.zig
++++ b/zig/src/core/lane_host_fill.zig
+@@ -1,5 +1,6 @@
+ //! Prefer foreground and least remaining prefill work, with bounded waiting for every admitted fill.
+ const LaneHost = @import("lane_host.zig").LaneHost;
++const lanes = @import("lanes");
+ 
+ pub const preference_rounds = 8;
+ 
+@@ -37,3 +38,48 @@ pub fn unfill(h: *LaneHost, job: anytype) void {
+         return;
+     };
+ }
++
++/// q38: a kept prefix of at most this many tokens (a chat template's opening) is not worth a pass of its own: the prompt runs whole.
++pub const small_prefix = 16;
++
++/// q38: whether a filling job's prompt may share a prompt pass: short, text only, and nothing kept to resume from but a small prefix
++/// (the backend then runs the prompt from its first token; the kept state stays in the cache untouched, and the prompt's own cache
++/// marks are not kept: a later request resumes a prompt this short from the small prefix again).
++fn together(h: *const LaneHost, j: *const LaneHost.Job) bool {
++    const n = h.core.backend.vtable.many_rows;
++    const s = &j.stream;
++    return n > 0 and s.prompt_len <= n and s.images.len == 0 and (s.reuse.saved == null or s.reuse.at <= small_prefix);
++}
++
++/// q38: the filling jobs whose prompt pass has not begun and that the backend batches (short text prompts, nothing kept to resume
++/// from), all in ONE prompt pass (Engine.addStreams -> the backend's prefill_many); false: fewer than two, nothing done. Requests
++/// that arrive together are admitted one by one into the fill list before the first chunk runs, so this is where they meet.
++pub fn many(h: *LaneHost) bool {
++    if (!h.core.batchesPrompts() or h.core.backend.vtable.many_rows == 0) return false;
++    var jobs: [lanes.Engine.max_together]*LaneHost.Job = undefined;
++    var n: usize = 0;
++    for (h.filling.items) |j| {
++        if (n == jobs.len) break;
++        if (j.fill_began or j.request.embedding != null or !together(h, j)) continue;
++        jobs[n] = j;
++        n += 1;
++    }
++    if (n < 2) return false;
++    var streams: [lanes.Engine.max_together]*lanes.Stream = undefined;
++    var errs: [lanes.Engine.max_together]?anyerror = undefined;
++    for (jobs[0..n], 0..) |j, i| {
++        unfill(h, j);
++        j.fill_began = true;
++        streams[i] = &j.stream;
++    }
++    h.core.addStreams(streams[0..n], errs[0..n]);
++    for (jobs[0..n], errs[0..n]) |job, err| {
++        if (err) |e| {
++            _ = h.failedPass(job, e);
++            continue;
++        }
++        h.prefilled(job, job.began);
++        _ = h.deliver(job);
++    }
++    return true;
++}
+diff --git a/zig/src/families/flashnext/cuda_batch.zig b/zig/src/families/flashnext/cuda_batch.zig
+index c4717bc..d27904a 100644
+--- a/zig/src/families/flashnext/cuda_batch.zig
++++ b/zig/src/families/flashnext/cuda_batch.zig
+@@ -100,6 +100,74 @@ const GatherStat = struct {
+     var rows: u64 = 0;
+ };
+ 
++/// TF_FLASHNEXT_Q38_GPROF=1 (q38 measuring aid, off unless set): where a main-model pass's GPU time goes, by group, from CUDA events
++/// recorded in the stream at group boundaries (no waits inside the pass; one wait at its end, which the pass makes anyway to read
++/// scores). A gap in which the GPU waits for the host counts to the group that follows it. Printed every 400 passes for passes of
++/// 1 row, 2-8 rows and more: mean ms a pass in each group. Values never change.
++pub const Gprof = struct {
++    pub const groups = [_][]const u8{ "embed", "hc-attn-side", "gdn", "hc-mlp-side", "moe", "ple", "head", "qsa-attn" };
++    const max_ev = 640;
++    var state: i8 = -1;
++    var evs: [max_ev]cuda.abi.Event = @splat(null);
++    var ids: [max_ev]u8 = undefined;
++    var n: usize = 0;
++    var sums: [3][groups.len]f64 = @splat(@splat(0));
++    var passes: [3]u64 = @splat(0);
++    var rows: [3]u64 = @splat(0);
++    var total: u64 = 0;
++
++    pub fn on() bool {
++        if (state < 0) state = if (std.c.getenv("TF_FLASHNEXT_Q38_GPROF")) |v| @intFromBool(v[0] == '1') else 0;
++        return state == 1;
++    }
++
++    /// An event in the stream here: the time since the last mark belongs to group `id` (255: the pass starts).
++    pub fn mark(st: cuda.Stream, id: u8) void {
++        if (!on()) return;
++        if (id == 255) n = 0;
++        if (n >= max_ev) return;
++        const d = st.d;
++        if (evs[n] == null) {
++            d.check(d.api.cuEventCreate(&evs[n], 0), "cuEventCreate") catch return;
++        }
++        d.check(d.api.cuEventRecord(evs[n], st.handle), "cuEventRecord") catch return;
++        ids[n] = id;
++        n += 1;
++    }
++
++    /// After the pass's last launch: wait for it, add each interval to its group, print now and then.
++    pub fn end(st: cuda.Stream, pass_rows: usize, layers: usize) void {
++        if (!on() or n < 2) return;
++        if (layers < 8) { // the MTP head's one-layer passes are not counted
++            n = 0;
++            return;
++        }
++        const d = st.d;
++        d.check(d.api.cuEventSynchronize(evs[n - 1]), "cuEventSynchronize") catch return;
++        const b: usize = if (pass_rows == 1) 0 else if (pass_rows <= 8) 1 else 2;
++        for (1..n) |i| {
++            var ms: f32 = 0;
++            d.check(d.api.cuEventElapsedTime(&ms, evs[i - 1], evs[i]), "cuEventElapsedTime") catch continue;
++            sums[b][ids[i]] += ms;
++        }
++        passes[b] += 1;
++        rows[b] += pass_rows;
++        total += 1;
++        n = 0;
++        if (total % 400 == 0) {
++            for (0..3) |k| {
++                if (passes[k] == 0) continue;
++                const pn: f64 = @floatFromInt(passes[k]);
++                var all: f64 = 0;
++                for (sums[k]) |v| all += v;
++                std.debug.print("q38 gprof {s}: {d} passes, {d:.2} rows a pass, {d:.3} ms a pass:", .{ ([_][]const u8{ "1-row", "2-8-rows", "9+rows" })[k], passes[k], @as(f64, @floatFromInt(rows[k])) / pn, all / pn });
++                for (groups, sums[k]) |name, v| std.debug.print(" {s} {d:.3}", .{ name, v / pn });
++                std.debug.print("\n", .{});
++            }
++        }
++    }
++};
++
+ pub fn Pass(comptime Tri: type) type {
+     return struct {
+         const Self = @This();
+@@ -128,6 +196,9 @@ pub fn Pass(comptime Tri: type) type {
+         prompt: bool = false,
+         /// The pending MoE write-back reads the shared expert's output from s.shared_out (never scattered into y's last slot).
+         shared_direct: bool = false,
++        /// q38: several fresh streams' prompt rows in one pass (lanes of prompt rows, `prompt` set): every lane's hidden rows are
++        /// kept (Lane.streams) and only each lane's LAST row is scored, lane i's scores at row i of hooks.logits_out.
++        lane_last: bool = false,
+ 
+         // ---- launches ----------------------------------------------------------------------------------------
+ 
+@@ -595,7 +666,7 @@ pub fn Pass(comptime Tri: type) type {
+                 // one rank: the routed kernels and the shared scatter write every slot of every row; ranks sum partial rows
+                 if (native.world != 1 or native.rank != 0) try self.stream.d.check(self.stream.d.api.cuMemsetD8Async(s.y, 0, pairs * dims * 4, self.stream.handle), "cuMemsetD8Async");
+                 // the next write-back reads the shared output where it lies (no copy into y's last slot) when nothing else reads y
+-                direct = native.rank == 0 and self.prompt and knobs.sharedDirect() and (self.hooks.logits == .none or self.hooks.streams != 0) and self.hooks.moe_add == null and self.m.pocket == null and keep.moe_branch == 0 and native.world == 1;
++                direct = native.rank == 0 and self.prompt and knobs.sharedDirect() and (self.hooks.logits == .none or self.hooks.streams != 0 or self.lane_last) and self.hooks.moe_add == null and self.m.pocket == null and keep.moe_branch == 0 and native.world == 1;
+                 if (native.rank == 0 and !direct) {
+                     if (try side_.get(&s.side, self.stream.d)) |sd| if (sd.applies(self.prompt)) {
+                         try sd.begin(self.stream);
+@@ -671,6 +742,7 @@ pub fn Pass(comptime Tri: type) type {
+                 std.debug.print("batch: {d} rows at {d} in {d:.1} ms\n", .{ n, pos0, @as(f64, @floatFromInt(std.Io.Clock.awake.now(self.io).toNanoseconds() - t0)) / 1e6 });
+             };
+             if (n == 0 or n > s.cap) return error.UnexpectedTensor;
++            Gprof.mark(self.stream, 255);
+             if (self.lanes.len > 0) {
+                 // shared rounds read every row's scores; a lane keeps its own rollback and hidden rows, nothing else
+                 if (self.hooks.logits != .all or self.hooks.keep != null or self.hooks.streams != 0 or self.hooks.moe_add != null) return error.UnexpectedTensor;
+@@ -695,6 +767,7 @@ pub fn Pass(comptime Tri: type) type {
+                 try self.tri.embed(s.ids, self.m.table_w, self.m.table_s, self.m.table_b, s.h, dims, streams, n);
+             }
+             try @import("cuda_media.zig").inject(self.seq.media, self.lanes, self.stream, s.h, self.pos0, n);
++            Gprof.mark(self.stream, 0);
+             for (self.m.layers, 0..) |*lw, layer| {
+                 const keep: LayerKeep = if (self.hooks.keep) |kp| kp.layers[layer] else .{};
+                 if (layer == ple_layer) {
+@@ -734,22 +807,29 @@ pub fn Pass(comptime Tri: type) type {
+                     if (!self.prepared) try s.uploaded();
+                     if (self.pending != null) try self.writeback(0, n);
+                     try self.pleBlock(lw, ids);
++                    Gprof.mark(self.stream, 5);
+                 }
+                 try self.writeback(0, n);
+                 try self.readoutKeep(lw.attn_hc, 0, n, keep.attn_hc);
++                Gprof.mark(self.stream, 1);
+                 if (lw.linear) {
+                     try self.gdnBlock(lw, layer, wt.linearIndex(layer), keep);
+                 } else {
+                     try self.attnBlockKeep(lw, wt.attnIndex(layer), keep);
+                 }
++                Gprof.mark(self.stream, if (lw.linear) 2 else 7);
+                 if (keep.mix_branch != 0) try self.sumSlices(s.part, keep.mix_branch, true, n * dims, self.out_slices);
+                 try self.tri.hcWriteback(s.h, s.h, s.pss, s.part, "*fp32", s.inj, s.dummy, "*bf16", s.dummy, "*bf16", n * dims, n, dims, streams, 4, 1, 1, self.out_slices);
+                 try self.readoutKeep(lw.mlp_hc, 0, n, keep.mlp_hc);
++                Gprof.mark(self.stream, 3);
+                 try self.moeBlockKeep(lw, keep);
+                 try self.moeAdds(layer, keep);
++                Gprof.mark(self.stream, 4);
+                 self.pending = layer;
+             }
+             try self.head(logits_host);
++            Gprof.mark(self.stream, 6);
++            Gprof.end(self.stream, n, self.m.layers.len);
+         }
+ 
+         pub fn complete(self: *Self) !void {
+diff --git a/zig/src/families/flashnext/cuda_batch_head.zig b/zig/src/families/flashnext/cuda_batch_head.zig
+index 58c8f05..43a52c7 100644
+--- a/zig/src/families/flashnext/cuda_batch_head.zig
++++ b/zig/src/families/flashnext/cuda_batch_head.zig
+@@ -23,6 +23,30 @@ pub fn head(self: anytype, logits_host: ?[]u8) !void {
+             return;
+         },
+         .all => {
++            if (self.lane_last) {
++                // q38: a prompt chunk's `.last` head for each lane: every row written back and kept, then each lane's last row's
++                // streams and sums moved to row i (rows r_i >= i ascend, so no source is overwritten), read out one row at a
++                // time as the lone pass reads its row 0, and scored together
++                try self.writeback(0, n);
++                var at: usize = 0;
++                for (self.lanes) |l| {
++                    try self.copy(l.streams, s.h + at * wide * 2, l.rows * wide * 2);
++                    at += l.rows;
++                }
++                at = 0;
++                for (self.lanes, 0..) |l, i| {
++                    const r = at + l.rows - 1;
++                    if (r != i) {
++                        try self.copy(s.h + i * wide * 2, s.h + r * wide * 2, wide * 2);
++                        try self.copy(s.pss + i * pss_n * 4, s.pss + r * pss_n * 4, pss_n * 4);
++                    }
++                    at += l.rows;
++                }
++                for (0..self.lanes.len) |i| try self.readout(self.m.mixer, i, 1);
++                const out_l = if (self.hooks.logits_out != 0) self.hooks.logits_out else return error.UnexpectedTensor;
++                try self.projectHead(out_l, self.lanes.len);
++                return;
++            }
+             try self.writeback(0, n);
+             try self.copy(self.hooks.streams, s.h, n * wide * 2);
+             var row0: usize = 0;
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index f701a57..c209aa1 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -94,3 +94,59 @@ pub fn wideRows() usize {
+     }
+     return wide_rows_cache;
+ }
++
++var many_rows_cache: i64 = -1;
++/// TF_FLASHNEXT_Q38_PREFILL_MANY=N (q38; default 0: off; at most 256): fresh text prompts of at most N tokens that wait together
++/// are prefilled in ONE prompt pass (cuda_lanes_many.zig) instead of one pass each between rounds. Each stream's rows run the
++/// lone chunk's kernels on its own caches, so its states and scores are its lone pass's; the pass reads the expert weights once.
++pub fn manyRows() usize {
++    if (many_rows_cache < 0) {
++        var v: usize = 0;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_PREFILL_MANY")) |e| v = std.fmt.parseInt(usize, std.mem.span(e), 10) catch 0;
++        many_rows_cache = @intCast(@min(256, v));
++    }
++    return @intCast(many_rows_cache);
++}
++
++var lhash_cache: i8 = -1;
++/// TF_FLASHNEXT_Q38_LHASH=1 (q38 measuring aid): print a hash of each stream's scores after its prompt pass and at its release.
++pub fn lhash() bool {
++    if (lhash_cache < 0) lhash_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_LHASH")) |v| @intFromBool(v[0] == '1') else 0;
++    return lhash_cache == 1;
++}
++
++var pool_ctx_cache: i64 = -1;
++/// TF_FLASHNEXT_Q38_POOL_CTX=N (q38; default 0: off): the streams' memory is a POOL of --parallel windows of N tokens instead of
++/// --parallel windows of --context tokens. A stream allocates caches for its own prompt + max_tokens (as it always did), a request
++/// is admitted when its bytes fit what the pool has left (else it waits in the queue), and --context stays the largest request.
++/// So 16 lanes can serve sixteen 64K requests, or one 262K request beside eleven 64K ones, from the same memory.
++pub fn poolCtx() usize {
++    if (pool_ctx_cache < 0) {
++        var v: usize = 0;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_POOL_CTX")) |e| v = std.fmt.parseInt(usize, std.mem.span(e), 10) catch 0;
++        pool_ctx_cache = @intCast(v);
++    }
++    return @intCast(pool_ctx_cache);
++}
++
++var cert_plain_cache: i8 = -1;
++/// TF_FLASHNEXT_Q38_CERT_PLAIN=1 (q38; needs TF_FLASHNEXT_Q38_CERT): one-row rounds of streams without drafts (--no-drafts) take
++/// the certified head too.
++pub fn certPlain() bool {
++    if (cert_plain_cache < 0) cert_plain_cache = if (std.c.getenv("TF_FLASHNEXT_Q38_CERT_PLAIN")) |v| @intFromBool(v[0] == '1') else 0;
++    return cert_plain_cache == 1;
++}
++
++var window_rows_cache: usize = 0;
++/// TF_FLASHNEXT_Q38_WINDOW_ROWS=N (q38; default 16, the stock value; 16 to 32): rows one stream's verify window holds at most. The
++/// MTP chain stays TF_FLASHNEXT_DRAFTS deep; what grows is the copied continuation the lane core's suffix-lookup proposer may put
++/// in one window (N - 1 tokens instead of 15) when the reply repeats text from the prompt or from itself (file rewrites, patches).
++/// Every row is still verified by the model: drafts only.
++pub fn windowRows() usize {
++    if (window_rows_cache == 0) {
++        var v: usize = 16;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_WINDOW_ROWS")) |e| v = std.fmt.parseInt(usize, std.mem.span(e), 10) catch 16;
++        window_rows_cache = @max(16, @min(32, v));
++    }
++    return window_rows_cache;
++}
+diff --git a/zig/src/families/flashnext/cuda_lanes.zig b/zig/src/families/flashnext/cuda_lanes.zig
+index b1203bd..7325b93 100644
+--- a/zig/src/families/flashnext/cuda_lanes.zig
++++ b/zig/src/families/flashnext/cuda_lanes.zig
+@@ -20,6 +20,7 @@ const living = @import("living");
+ const slide_mod = @import("cuda_slide.zig");
+ const train = @import("cuda_train.zig");
+ const bytes = @import("cuda_lanes_bytes.zig");
++const cert = @import("cuda_cert.zig");
+ 
+ const be = lanes.backend;
+ const ring = 1024;
+@@ -134,6 +135,8 @@ pub fn Namespace(comptime Tri: type) type {
+             filled: ?usize = 0,
+             /// The prompt row up to which the n-gram rows have been asked for ahead (TF_FLASHNEXT_WARM_AHEAD=1).
+             ahead_to: usize = 0,
++            /// q38: the device bytes this stream's caches took from the pool.
++            bytes: u64 = 0,
+         };
+ 
+         const Ops = mtp.Ops(Tri);
+@@ -161,6 +164,15 @@ pub fn Namespace(comptime Tri: type) type {
+             next: u64 = 0,
+             /// --slide: the pocket's layout, from config.json at load.
+             lay: living.Layout = undefined,
++            /// q38 pool admission (TF_FLASHNEXT_Q38_POOL_CTX): a lane's charge at start-up (0: off), the pool, the live streams' bytes
++            /// and the bytes of requests admitted but not opened yet.
++            pool_stream: u64 = 0,
++            pool_bytes: u64 = 0,
++            held_bytes: u64 = 0,
++            reserved_bytes: std.atomic.Value(u64) = .init(0),
++            reserved_at: std.atomic.Value(i64) = .init(0),
++            /// q38: the lane table with prefill_many when TF_FLASHNEXT_Q38_PREFILL_MANY is set (backend()).
++            many_table: be.Backend.VTable = undefined,
+ 
+             pub fn tri(self: *Cuda) Tri {
+                 return .{ .set = if (self.set) |*x| x else null, .own = &self.glue, .s = self.stream };
+@@ -207,6 +219,15 @@ pub fn Namespace(comptime Tri: type) type {
+                     .first_masked = firstMaskedFn,
+                 };
+                 const ranked_table = @import("cuda_score.zig").withoutScore(scoring_table);
++                const many_n = @import("cuda_knobs.zig").manyRows();
++                if (self.ranks == null and self.head != null and many_n > 0) {
++                    // q38: waiting short prompts go in one prompt pass (cuda_lanes_many.zig)
++                    self.many_table = scoring_table;
++                    self.many_table.prefill_many = prefillManyFn;
++                    self.many_table.many_rows = @intCast(many_n);
++                    std.debug.print("q38: prompts of up to {d} tokens that wait together are prefilled in one pass\n", .{many_n});
++                    return .{ .ptr = self, .proposal_head = &self.head.?.service, .vtable = &self.many_table };
++                }
+                 return .{ .ptr = self, .proposal_head = if (self.head) |h| &h.service else null, .vtable = if (self.ranks == null) &scoring_table else &ranked_table };
+             }
+ 
+@@ -214,7 +235,10 @@ pub fn Namespace(comptime Tri: type) type {
+             pub fn facts(self: *const Cuda) lanes.Model {
+                 const drafting = self.head != null;
+                 return .{
+-                    .exact_width = if (drafting) mtp.max_rows else 2,
++                    .exact_width = if (drafting) @intCast(@import("cuda_knobs.zig").windowRows()) else 2,
++                    // q38: with wider windows a stream's copy window still starts at the stock 15 tokens; the lane core doubles it
++                    // (to window rows - 1) only after a copy that landed whole, and returns to 15 when one breaks (engine.zig)
++                    .first_copy_rows = if (drafting and @import("cuda_knobs.zig").windowRows() > 16) 16 else 0,
+                     .gpu_tokens = false,
+                     .mtp = drafting,
+                     .speculate = drafting,
+@@ -262,12 +286,32 @@ pub fn Namespace(comptime Tri: type) type {
+                 return mtp.drawRow(self.gpa, row, null, position, s.sampling);
+             }
+ 
++            /// q38: device bytes of a stream's caches for a prompt of `prompt_len` tokens and `max_new` more (what `open` allocates).
++            pub fn need(self: *const Cuda, prompt_len: usize, max_new: usize) u64 {
++                const drafting = self.head != null;
++                const cap = @min(prompt_len + max_new + (if (drafting) mtp.max_rows else 0), prompt.max_tokens);
++                var n: u64 = prompt.seqBytesFor(self.engine.kv, cap);
++                if (self.head) |h| {
++                    const fmt = mtp.headFormat(self.engine.kv, cap, @min(self.context + mtp.max_rows, prompt.max_tokens), h.ids.len, self.engine.chunk);
++                    n += mtp.Draft.bytesFor(fmt, cap, h.ids.len, self.engine.chunk);
++                }
++                return n;
++            }
++
++            fn unreserve(self: *Cuda, n: u64) void {
++                var cur = self.reserved_bytes.load(.monotonic);
++                while (true) {
++                    const next = cur -| n;
++                    cur = self.reserved_bytes.cmpxchgWeak(cur, next, .monotonic, .monotonic) orelse return;
++                }
++            }
++
+             pub fn lane(self: *Cuda, s: *lanes.Stream) !*Lane {
+                 return self.lanes.getPtr(s) orelse return error.UnknownStream;
+             }
+ 
+             /// The stream's caches, from the kept state the cache names on a restore; its prompt pass starts there.
+-            fn open(self: *Cuda, s: *lanes.Stream) !*Lane {
++            pub fn open(self: *Cuda, s: *lanes.Stream) !*Lane {
+                 const ids = s.prompt();
+                 if (ids.len == 0 or ids.len + s.max_new > self.context) return error.PromptTooLong;
+                 const gop = try self.lanes.getOrPut(self.gpa, s);
+@@ -280,11 +324,23 @@ pub fn Namespace(comptime Tri: type) type {
+                 }
+                 // a window's rows past the reply's last token (its drafts) still need cache slots
+                 const cap = @min(ids.len + s.max_new + (if (drafting) mtp.max_rows else 0), prompt.max_tokens);
++                // q38 pool: this stream's bytes leave the admitted-not-opened count and must fit beside the live ones
++                const pool_need: u64 = if (self.pool_bytes > 0) self.need(ids.len, s.max_new) else 0;
++                if (self.pool_bytes > 0) {
++                    self.unreserve(pool_need);
++                    if (self.held_bytes > 0 and self.held_bytes + pool_need > self.pool_bytes) {
++                        std.debug.print("q38 pool: a {d}-token stream ({d} MiB) does not fit beside {d} MiB held of {d} MiB\n", .{ cap, pool_need >> 20, self.held_bytes >> 20, self.pool_bytes >> 20 });
++                        self.lanes.removeByPtr(gop.key_ptr);
++                        return error.LaneMemory; // the lane host puts the request back at the queue's head until a stream ends
++                    }
++                }
+                 gop.value_ptr.* = .{ .seq = (if (self.ranks) |r| r.create(cap) else self.engine.newSeq(cap)) catch |err| {
+                     self.lanes.removeByPtr(gop.key_ptr);
+                     return err;
+                 } };
+                 const l = gop.value_ptr;
++                l.bytes = pool_need;
++                self.held_bytes += pool_need;
+                 l.seq.untaught = s.untaught;
+                 errdefer {
+                     dropLane(self, l);
+@@ -400,7 +456,32 @@ pub fn Namespace(comptime Tri: type) type {
+             own.gpa.destroy(own);
+         }
+ 
++        /// q38: the pool for `streams` lanes; false when TF_FLASHNEXT_Q38_POOL_CTX is off (the caller then admits as before).
++        pub fn q38Pool(ptr: *anyopaque, streams: u32) bool {
++            const self = of(ptr);
++            if (self.pool_stream == 0 or self.ranks != null) return false;
++            self.pool_bytes = self.pool_stream * streams;
++            std.debug.print("q38 pool: {d} lanes share {d} MiB ({d} MiB a lane at a {d}-token window); a full {d}-token stream takes {d} MiB\n", .{ streams, self.pool_bytes >> 20, self.pool_stream >> 20, @import("cuda_knobs.zig").poolCtx(), self.context, self.need(self.context -| 1, 0) >> 20 });
++            return true;
++        }
++
++        /// q38: whether a request's caches fit what the pool has left; a yes is counted until the stream opens (or 120 s pass).
++        pub fn q38Fits(ptr: *anyopaque, prompt_len: u32, max_new: u32) bool {
++            const self = of(ptr);
++            if (self.pool_bytes == 0) return true;
++            const now: i64 = @intCast(@divTrunc(std.Io.Clock.awake.now(self.engine.io).toNanoseconds(), 1_000_000));
++            if (self.reserved_bytes.load(.monotonic) > 0 and now - self.reserved_at.load(.monotonic) > 120_000) self.reserved_bytes.store(0, .monotonic);
++            const nb = self.need(prompt_len, max_new);
++            const busy = self.held_bytes + self.reserved_bytes.load(.monotonic);
++            if (busy != 0 and busy + nb > self.pool_bytes) return false;
++            _ = self.reserved_bytes.fetchAdd(nb, .monotonic);
++            self.reserved_at.store(now, .monotonic);
++            return true;
++        }
++
+         fn dropLane(self: *Cuda, l: *Lane) void {
++            self.held_bytes -|= l.bytes;
++            l.bytes = 0;
+             if (l.draft) |*d| d.deinit();
+             if (self.ranks) |r| r.drop(&l.seq) else l.seq.deinit(self.gpa);
+         }
+@@ -415,6 +496,15 @@ pub fn Namespace(comptime Tri: type) type {
+             while (!try self.step(s, l)) {}
+         }
+ 
++        fn prefillManyFn(ptr: *anyopaque, ss: []const *lanes.Stream) anyerror!bool {
++            return @import("cuda_lanes_many.zig").prefillMany(of(ptr), ss);
++        }
++
++        fn lhashPrint(what: []const u8, s: *lanes.Stream, l: *Lane) void {
++            if (!@import("cuda_knobs.zig").lhash()) return;
++            std.debug.print("q38 lhash {s} pid={x} plen={d} fed={d} h={x}\n", .{ what, std.hash.Wyhash.hash(7, std.mem.sliceAsBytes(s.prompt())), s.prompt().len, l.seq.fed, std.hash.Wyhash.hash(7, l.seq.logits) });
++        }
++
+         /// One chunk of the stream's prompt between the other streams' rounds; the first call opens its caches.
+         fn prefillStepFn(ptr: *anyopaque, s: *lanes.Stream) anyerror!bool {
+             const self = of(ptr);
+@@ -426,6 +516,7 @@ pub fn Namespace(comptime Tri: type) type {
+             const self = of(ptr);
+             const l = try self.lane(s);
+             if (l.filled != null or position != l.seq.fed) return error.PositionMismatch;
++            lhashPrint("first", s, l);
+             return self.take(try self.tokenAt(&l.seq, s, position, &.{}));
+         }
+ 
+@@ -493,6 +584,15 @@ pub fn Namespace(comptime Tri: type) type {
+             var at: usize = 0;
+             while (at < plain) : (at += round_streams) {
+                 const n = @min(round_streams, plain - at);
++                // q38: a plain round whose streams are all greedy, unmasked and want no log-probabilities takes the certified head
++                var plain_greedy = cert.active != null;
++                for (at_window[at..][0..n]) |wi| {
++                    const w = windows[wi];
++                    const greedy = if (w.stream.sampling) |sm| sm.temperature <= 0 else true;
++                    if (!greedy or w.masks.len != 0 or w.stream.logprobs != null) plain_greedy = false;
++                }
++                cert.round_ok = plain_greedy and @import("cuda_knobs.zig").certPlain();
++                defer cert.round_ok = false;
+                 if (self.ranks) |r| try r.round(Tri, self.tri(), seqs[at..][0..n], ids[at..][0..n], self.logits.ptr) else try self.engine.round(Tri, self.tri(), seqs[at..][0..n], ids[at..][0..n], self.logits.ptr);
+             }
+             for (seqs[0..plain], at_window[0..plain]) |q, wi| out[wi].sampled[0] = try self.tokenAt(q, windows[wi].stream, windows[wi].positions[0], windows[wi].masks);
+@@ -568,6 +668,7 @@ pub fn Namespace(comptime Tri: type) type {
+             const self = of(ptr);
+             if (self.lanes.fetchRemove(s)) |kv| {
+                 var l = kv.value;
++                lhashPrint("end", s, &l);
+                 // its rounds drain first, or the process ends: a failed wait never frees what the GPU may still use
+                 @import("qwen_vision").completion.drain(self.engine.driver, self.stream);
+                 dropLane(self, &l);
+diff --git a/zig/src/families/flashnext/cuda_lanes_load.zig b/zig/src/families/flashnext/cuda_lanes_load.zig
+index 22c854a..ec89f33 100644
+--- a/zig/src/families/flashnext/cuda_lanes_load.zig
++++ b/zig/src/families/flashnext/cuda_lanes_load.zig
+@@ -82,12 +82,18 @@ pub fn open(comptime F: type, gpa: std.mem.Allocator, io: std.Io, ctx: *const cu
+     own.lanes = .empty;
+     own.next = 0;
+     if (o.slide) own.lay = try @import("cuda_slide.zig").layoutOf(gpa, io, dir);
+-    const stream_bytes = streamBytes(own.engine.kv, window, if (own.head) |h| h.ids.len else null, own.engine.chunk, o.drafts and o.tp == 2) + if (o.vision) |v| visionStreamBytes(v, o.context) else 0;
++    // q38: with TF_FLASHNEXT_Q38_POOL_CTX the start-up budget charges each lane a pool window, not the full one (cuda_lanes.zig q38Pool)
++    const pool_ctx = @import("cuda_knobs.zig").poolCtx();
++    const pooled = pool_ctx > 0 and pool_ctx < o.context and o.tp == 1;
++    const charge_ctx = if (pooled) pool_ctx else o.context;
++    const charge_window = if (pooled) @min(pool_ctx + mtp.max_rows, prompt.max_tokens) else window;
++    const stream_bytes = streamBytes(own.engine.kv, charge_window, if (own.head) |h| h.ids.len else null, own.engine.chunk, o.drafts and o.tp == 2) + if (o.vision) |v| visionStreamBytes(v, charge_ctx) else 0;
++    if (pooled) own.pool_stream = stream_bytes;
+     return .{
+         .vision = own.vision,
+         .backend = own.backend(),
+         .facts = own.facts(),
+-        .rows = if (own.head != null) mtp.max_rows else 2,
++        .rows = if (own.head != null) @intCast(@import("cuda_knobs.zig").windowRows()) else 2,
+         .prompt_rows = @intCast(own.engine.chunk),
+         .stream_bytes = stream_bytes,
+         .ctx = own,
+diff --git a/zig/src/families/flashnext/cuda_lanes_many.zig b/zig/src/families/flashnext/cuda_lanes_many.zig
+new file mode 100644
+index 0000000..32b4c68
+--- /dev/null
++++ b/zig/src/families/flashnext/cuda_lanes_many.zig
+@@ -0,0 +1,54 @@
++//! q38: several waiting streams' prompts in one prompt pass (the lane backend's prefill_many; TF_FLASHNEXT_Q38_PREFILL_MANY).
++const std = @import("std");
++const lanes = @import("lanes");
++const knobs = @import("cuda_knobs.zig");
++const batch_state = @import("cuda_batch_state.zig");
++
++pub const max_together = 16;
++const small_prefix = 16;
++
++/// True: every stream's prompt is in, each left as its own pass leaves it. False (nothing touched): they go one by one.
++pub fn prefillMany(self: anytype, ss: []const *lanes.Stream) !bool {
++    const limit = knobs.manyRows();
++    if (limit == 0 or self.ranks != null or self.head == null or ss.len < 2 or ss.len > max_together) return false;
++    var total: usize = 0;
++    for (ss) |s| {
++        const n = s.prompt().len;
++        if (!s.drafts or s.images.len != 0 or s.untaught) return refused("a stream has no drafts, images or is untaught", 0);
++        // a kept prefix of a few tokens (a chat template's opening) is not restored: the prompt runs from its first token
++        if (s.reuse.saved != null and s.reuse.at > small_prefix) return refused("a stream resumes a kept prefix", s.reuse.at);
++        if (n == 0 or n > limit or n > batch_state.att_rows or n + s.max_new > self.context) return refused("a prompt is too long", n);
++        total += n;
++    }
++    if (total > self.engine.chunk) return refused("too many rows", total);
++    for (ss) |s| s.reuse.saved = null; // the host reports the kept state untouched (its entry is released, not consumed)
++    const t0 = std.Io.Clock.awake.now(self.engine.io).toNanoseconds();
++    var seqs: [max_together]*@import("cuda_prompt.zig").Seq = undefined;
++    var ds: [max_together]*@import("cuda_mtp.zig").Draft = undefined;
++    var idss: [max_together][]const u32 = undefined;
++    var ats: [max_together]usize = undefined;
++    var stops: [max_together]usize = undefined;
++    // every stream's caches first: opening one may move the lane table, so the pointers are taken after the last
++    for (ss) |s| _ = try self.open(s);
++    for (ss, 0..) |s, i| {
++        const l = try self.lane(s);
++        if (l.filled == null or l.filled.? != 0 or l.draft == null) return error.PositionMismatch;
++        seqs[i] = &l.seq;
++        ds[i] = &l.draft.?;
++        idss[i] = s.prompt();
++        ats[i] = 0;
++        stops[i] = idss[i].len;
++    }
++    const n = ss.len;
++    try self.ops().prefillChunkMany(seqs[0..n], ds[0..n], idss[0..n], ats[0..n], stops[0..n], self.logits.ptr);
++    for (ss) |s| (try self.lane(s)).filled = null;
++    std.debug.print("q38 many: {d} prompts, {d} rows in one pass, {d:.1} ms\n", .{ n, total, @as(f64, @floatFromInt(std.Io.Clock.awake.now(self.engine.io).toNanoseconds() - t0)) / 1e6 });
++    return true;
++}
++
++var refusals: u32 = 0;
++fn refused(why: []const u8, n: usize) bool {
++    refusals += 1;
++    if (refusals <= 20) std.debug.print("q38 many: not batched ({s}; {d})\n", .{ why, n });
++    return false;
++}
+diff --git a/zig/src/families/flashnext/cuda_mtp.zig b/zig/src/families/flashnext/cuda_mtp.zig
+index fd5b451..4c61b60 100644
+--- a/zig/src/families/flashnext/cuda_mtp.zig
++++ b/zig/src/families/flashnext/cuda_mtp.zig
+@@ -91,8 +91,9 @@ test "the stop rules: per draft, running product, none" {
+     try std.testing.expect(c.take(5, 0.01).propose);
+ }
+ 
+-/// A verify window's rows at most: the pending token and a chain, or a copied continuation.
+-pub const max_rows: usize = 16;
++/// A verify window's rows at most: the pending token and a chain, or a copied continuation. q38: the buffers hold 32 rows; the
++/// lane core is told cuda_knobs.windowRows() (16 unless TF_FLASHNEXT_Q38_WINDOW_ROWS says more), so stock behaviour is unchanged.
++pub const max_rows: usize = 32;
+ /// qmm.split_for(2560, 2560): fc_embedding and fc_hidden sum K in four slices, in order.
+ pub const fc_sk: usize = 4;
+ /// Head rows one launch takes at most (a prompt's rows go through in pieces).
+@@ -707,7 +708,7 @@ test "a masked row draws only allowed tokens, greedy the best of them" {
+ }
+ 
+ test "draft chains fit one verify window while the default stays six" {
+-    try std.testing.expectEqual(@as(usize, 16), max_chain + 1);
++    try std.testing.expectEqual(@as(usize, 32), max_chain + 1);
+     try std.testing.expectEqual(@as(usize, 6), default_depth);
+     try std.testing.expect(default_depth <= max_chain);
+ }
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index ec682ec..a944dc6 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -123,6 +123,32 @@ pub fn Ops(comptime Tri: type) type {
+             if (last) d.prompt_last = d.streams.ptr + (stop - 1 - at) * wide * 2;
+         }
+ 
++        /// q38: prefillChunk for several fresh streams in ONE prompt pass (Engine.prompts): stream k's rows [ats[k], stops[k]) of
++        /// its prompt `idss[k]`, each on its own caches with the lone chunk's kernels, then each stream's head rows as its
++        /// lone chunk runs them. `out`: device scores for one row a stream.
++        pub fn prefillChunkMany(o: Self, seqs: []const *prompt.Seq, ds: []const *Draft, idss: []const []const u32, ats: []const usize, stops: []const usize, out: u64) !void {
++            if (o.main != null) return error.UnsupportedRankOperation;
++            const e = o.e;
++            const wins = try e.gpa.alloc(prompt.Engine.Window, seqs.len);
++            defer e.gpa.free(wins);
++            const last = try e.gpa.alloc(bool, seqs.len);
++            defer e.gpa.free(last);
++            for (seqs, ds, idss, ats, stops, wins, last) |seq, d, ids, at, stop, *w, *fin| {
++                if (stop > d.cap or stop <= at or stop - at > d.rows_cap or stop > ids.len) return error.PromptTooLong;
++                if (seq.fed != at or d.len != at or d.drafted != 0 or seq.media != null) return error.PositionMismatch;
++                d.media = null;
++                try o.flushLate(seq, d);
++                fin.* = stop == ids.len;
++                w.* = .{ .seq = seq, .ids = ids[at..stop], .keep = null, .streams = d.streams.ptr, .logits = 0 };
++            }
++            try e.prompts(Tri, o.tri, wins, last, out);
++            for (ds, idss, ats, stops, last) |d, ids, at, stop, fin| {
++                const head_to = @min(stop, ids.len - 1);
++                if (head_to > at) try o.forwardHeadPieces(d, ids[at + 1 .. head_to + 1], d.streams.ptr, false, knobs.headPiece());
++                if (fin) d.prompt_last = d.streams.ptr + (stop - 1 - at) * wide * 2;
++            }
++        }
++
+         /// The whole prompt a chunk of the engine's rows at a time, from an empty head cache.
+         pub fn prefill(o: Self, seq: *prompt.Seq, d: *Draft, ids: []const u32) !void {
+             d.reset();
+diff --git a/zig/src/families/flashnext/cuda_prompt.zig b/zig/src/families/flashnext/cuda_prompt.zig
+index 61bbe60..5f6b023 100644
+--- a/zig/src/families/flashnext/cuda_prompt.zig
++++ b/zig/src/families/flashnext/cuda_prompt.zig
+@@ -419,6 +419,7 @@ pub const Engine = struct {
+     /// A stream's window in a shared pass and the pass over several (cuda_prompt_windows.zig).
+     pub const Window = @import("cuda_prompt_windows.zig").Window;
+     pub const windows = @import("cuda_prompt_windows.zig").windows;
++    pub const prompts = @import("cuda_prompt_windows.zig").prompts;
+ 
+     /// One decode round: each of `seqs` takes its token of `ids` in one batched pass; scores as if alone.
+     pub fn round(e: *Engine, comptime Tri: type, tri: Tri, seqs: []const *Seq, ids: []const u32, out: u64) !void {
+diff --git a/zig/src/families/flashnext/cuda_prompt_windows.zig b/zig/src/families/flashnext/cuda_prompt_windows.zig
+index 0f04a3f..a659fef 100644
+--- a/zig/src/families/flashnext/cuda_prompt_windows.zig
++++ b/zig/src/families/flashnext/cuda_prompt_windows.zig
+@@ -65,3 +65,52 @@ pub fn windows(e: *Engine, comptime Tri: type, tri: Tri, wins: []const Window, o
+         w.seq.fed += w.ids.len;
+     }
+ }
++
++/// q38: several fresh streams' prompt rows in one batched prompt pass (TF_FLASHNEXT_Q38_PREFILL_MANY). Each lane is one stream's
++/// next rows (at most one attention block), run with the prompt pass's kernels (`prompt` set) on its own caches, as its lone
++/// chunk runs them; every row's hidden streams go to `Window.streams`, and each lane's last row is scored: lane i's scores at
++/// row i of `out`, copied to the stream's host scores when `last[i]`. Expert weights are read once for all the prompts.
++pub fn prompts(e: *Engine, comptime Tri: type, tri: Tri, wins: []const Window, last: []const bool, out: u64) !void {
++    if (wins.len == 0 or wins.len != last.len) return error.UnexpectedTensor;
++    var total: usize = 0;
++    var cap: usize = 0;
++    for (wins) |w| {
++        if (w.ids.len == 0 or w.seq.fed + w.ids.len > w.seq.cap or w.keep != null or w.streams == 0 or w.seq.untaught or w.seq.media != null) return error.UnexpectedTensor;
++        total += w.ids.len;
++        cap = @max(cap, w.seq.cap);
++    }
++    if (total > e.chunk or e.collective != null) return error.UnexpectedTensor;
++    const lanes = try e.gpa.alloc(batch.Lane, wins.len);
++    defer e.gpa.free(lanes);
++    const ids = try e.gpa.alloc(u32, total);
++    defer e.gpa.free(ids);
++    const s = try e.reserve(total);
++    const scores = try e.reserveScores(cap, s.cap);
++    var at: usize = 0;
++    for (wins, lanes) |w, *l| {
++        l.* = .{ .seq = w.seq.view(scores), .pos = w.seq.fed, .rows = w.ids.len, .keep = null, .streams = w.streams, .logits = 0 };
++        @memcpy(ids[at..][0..w.ids.len], w.ids);
++        at += w.ids.len;
++    }
++    var p: batch.Pass(Tri) = .{
++        .gpa = e.gpa,
++        .io = e.io,
++        .stream = e.stream.*,
++        .tri = tri,
++        .k = &e.batch_k,
++        .s = s,
++        .m = e.model(),
++        .seq = lanes[0].seq,
++        .lanes = lanes,
++        .hooks = .{ .logits = .all, .logits_out = out },
++        .prompt = true,
++        .lane_last = true,
++    };
++    try p.chunk(ids, 0, null);
++    try e.complete();
++    const d = e.stream.d;
++    for (wins, last, 0..) |w, fin, i| {
++        if (fin) try d.check(d.api.cuMemcpyDtoH_v2(w.seq.logits.ptr, out + i * vocab * 2, vocab * 2), "cuMemcpyDtoH");
++        w.seq.fed += w.ids.len;
++    }
++}
+diff --git a/zig/src/native/cuda.zig b/zig/src/native/cuda.zig
+index 879c137..698265c 100644
+--- a/zig/src/native/cuda.zig
++++ b/zig/src/native/cuda.zig
+@@ -441,7 +441,7 @@ fn openWith(comptime F: type, a: Allocator, gpa: Allocator, io: std.Io, o: api.O
+     }
+     errdefer if (h.recording) |r| r.free(gpa);
+     // the family cuts its own prompt grid from position 0, as `tensorfold run` does: prefill_step 0
+-    const admit: ?api.Admit = if (comptime !@hasDecl(F, "fits")) null else if (paged != null) .{ .ctx = loaded.ctx, .fits = F.fits } else null;
++    const admit: ?api.Admit = if (comptime @hasDecl(F, "q38Pool")) (if (F.q38Pool(loaded.ctx, streams)) api.Admit{ .ctx = loaded.ctx, .fits = F.q38Fits, .always = true } else null) else if (comptime !@hasDecl(F, "fits")) null else if (paged != null) .{ .ctx = loaded.ctx, .fits = F.fits } else null;
+     try h.serve(io, served.facts, loaded.rows, .{
+         .lanes = streams,
+         .context_window = @intCast(window),

@@ -1,0 +1,18 @@
+READY tfb/default in 200 s; MemAvailable 38 GiB; GPU MiB 77122
+heldpar 1 in flight: 54 prompts, 10137 tokens in 174.1 s = 58.2 tok/s total; errors 0
+drafted requests: n 49 tok/s 62.4  tok/round 3.527  drafts proposed/round 3.928  accepted/round 2.535  accept rate 0.646  ms/round 56.48  rows/round 4.93
+fit over drafted requests: ms/round = 41.96 + 3.70 x drafts verified per round  (x range 2.24..13.22)
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+0
+XC_mtplast done 08:42:59
+READY tfb/default in 196 s; MemAvailable 38 GiB; GPU MiB 77122
+heldpar 1 in flight: 54 prompts, 10137 tokens in 173.2 s = 58.5 tok/s total; errors 0
+drafted requests: n 49 tok/s 62.9  tok/round 3.527  drafts proposed/round 3.928  accepted/round 2.535  accept rate 0.646  ms/round 56.11  rows/round 4.93
+fit over drafted requests: ms/round = 41.40 + 3.74 x drafts verified per round  (x range 2.24..13.22)
+identical 54/54  mean shared-prefix fraction 1.000  differ: []
+0
+XC_f3s2 done 08:49:12
+Error response from daemon: No such container: q38-run-tf
+heldpar 1 in flight: 27 prompts, 0 tokens in 0.0 s = 0.0 tok/s total; errors 27
+XC_chkh done 08:49:33
+x c lane done 08:49:33

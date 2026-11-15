@@ -1,0 +1,575 @@
+{
+ "ttft_ms": {
+  "off": "180",
+  "on": "120",
+  "off2": "183"
+ },
+ "chat3": {
+  "off": "48.2",
+  "on": "53.5",
+  "off2": "47.0"
+ },
+ "code3": {
+  "off": "78.4",
+  "on": "88.2",
+  "off2": "76.9"
+ },
+ "held": {
+  "off": "59.10",
+  "on": "66.87",
+  "off2": "58.35"
+ },
+ "held_n": {
+  "off": "315",
+  "on": "315",
+  "off2": "315"
+ },
+ "held_chat": {
+  "off": "51.63",
+  "on": "57.52",
+  "off2": "50.94"
+ },
+ "held_code": {
+  "off": "76.25",
+  "on": "89.40",
+  "off2": "75.37"
+ },
+ "held_math": {
+  "off": "73.99",
+  "on": "86.49",
+  "off2": "73.11"
+ },
+ "sdm_prose": {
+  "off": "60.0",
+  "on": "70.7",
+  "off2": "59.1"
+ },
+ "sdm_prose_t07": {
+  "off": "53.7",
+  "on": "53.4",
+  "off2": "47.7"
+ },
+ "sdm_code": {
+  "off": "94.5",
+  "on": "118.6",
+  "off2": "93.0"
+ },
+ "sdm_code8": {
+  "off": "89.2",
+  "on": "108.5",
+  "off2": "88.2"
+ },
+ "sdm_struct": {
+  "off": "109.0",
+  "on": "164.1",
+  "off2": "107.7"
+ },
+ "sd_prose": {
+  "off": "59.4",
+  "on": "70.2",
+  "off2": "59.0"
+ },
+ "sd_code": {
+  "off": "93.6",
+  "on": "117.1",
+  "off2": "92.6"
+ },
+ "sd_structured": {
+  "off": "107.8",
+  "on": "162.9",
+  "off2": "106.4"
+ },
+ "sdcat_prose": {
+  "off": "44.5",
+  "on": "49.1",
+  "off2": "44.0"
+ },
+ "sdcat_structural": {
+  "off": "67.0",
+  "on": "77.3",
+  "off2": "66.2"
+ },
+ "sdcat_code": {
+  "off": "81.0",
+  "on": "97.6",
+  "off2": "80.7"
+ },
+ "prefill_8000": {
+  "off": "2325",
+  "on": "2561",
+  "off2": "2306"
+ },
+ "prefill_32000": {
+  "off": "2366",
+  "on": "2564",
+  "off2": "2359"
+ },
+ "prefill_128000": {
+  "off": "2192",
+  "on": "2455",
+  "off2": "2186"
+ },
+ "edit": {
+  "off": "140.0",
+  "on": "227.3",
+  "off2": "138.2"
+ },
+ "agent": {
+  "off": "56.4",
+  "on": "64.3",
+  "off2": "55.7"
+ },
+ "pred0_all": {
+  "off": "105.06",
+  "on": "152.26",
+  "off2": "103.81"
+ },
+ "pred1_all": {
+  "off": "134.09",
+  "on": "265.11",
+  "off2": "132.57"
+ },
+ "pred0_num": {
+  "off": "77.62",
+  "on": "95.20",
+  "off2": "76.77"
+ },
+ "pred1_num": {
+  "off": "140.62",
+  "on": "295.94",
+  "off2": "139.05"
+ },
+ "loop0": {
+  "off": "64.89",
+  "on": "82.53",
+  "off2": "64.08"
+ },
+ "loop1": {
+  "off": "73.58",
+  "on": "96.80",
+  "off2": "72.62"
+ },
+ "samp_chat": {
+  "off": "46.32",
+  "on": "51.09",
+  "off2": "45.85"
+ },
+ "samp_think": {
+  "off": "49.80",
+  "on": "54.41",
+  "off2": "49.26"
+ },
+ "samp_sd": {
+  "off": "49.22",
+  "on": "53.75",
+  "off2": "48.60"
+ },
+ "needle_ttft": {
+  "off": "86.9",
+  "on": "75.4",
+  "off2": null
+ },
+ "needle_recall": {
+  "off": "3/3",
+  "on": "3/3",
+  "off2": null
+ },
+ "ctx_ttft": {
+  "off": "112.9",
+  "on": "94.5",
+  "off2": "113.9"
+ },
+ "ctx_tokens": {
+  "off": "227621",
+  "on": "227621",
+  "off2": "227621"
+ },
+ "ctx_recall": {
+  "off": "3/3",
+  "on": "3/3",
+  "off2": "3/3"
+ },
+ "img": {
+  "off": "PASS",
+  "on": "PASS",
+  "off2": null
+ },
+ "qeval": {
+  "off": "32/35",
+  "on": "32/35",
+  "off2": null
+ },
+ "users3": {
+  "off": "131.7",
+  "on": "140.2",
+  "off2": null
+ },
+ "mem_min_mib": {
+  "off": "26000",
+  "on": "8941",
+  "off2": "31108"
+ },
+ "gpu_max_mib": {
+  "off": "91662",
+  "on": "108911",
+  "off2": "87116"
+ },
+ "window": {
+  "off": "04:49-05:36",
+  "on": "06:01-06:42",
+  "off2": "07:07-07:51"
+ },
+ "users": {
+  "miafp": {
+   "1": {
+    "tps": 75.3,
+    "first": 0.208,
+    "last": 0.208,
+    "runs": [
+     77.4,
+     75.3,
+     75.1
+    ],
+    "lasts": [
+     0.201,
+     0.208,
+     0.211
+    ],
+    "errors": 0
+   },
+   "4": {
+    "tps": 143.9,
+    "first": 0.193,
+    "last": 1.24,
+    "runs": [
+     143.9,
+     142.2,
+     144.7
+    ],
+    "lasts": [
+     1.24,
+     1.131,
+     1.133
+    ],
+    "errors": 0
+   },
+   "8": {
+    "tps": 195.7,
+    "first": 0.207,
+    "last": 2.925,
+    "runs": [
+     195.2,
+     195.7,
+     196.6
+    ],
+    "lasts": [
+     2.89,
+     2.925,
+     2.794
+    ],
+    "errors": 0
+   },
+   "12": {
+    "tps": 222.6,
+    "first": 0.209,
+    "last": 4.804,
+    "runs": [
+     223.0,
+     222.6,
+     217.3
+    ],
+    "lasts": [
+     4.828,
+     4.804,
+     4.826
+    ],
+    "errors": 0
+   },
+   "16": {
+    "tps": 219.9,
+    "first": 0.204,
+    "last": 6.752,
+    "runs": [
+     221.5,
+     219.9,
+     217.1
+    ],
+    "lasts": [
+     6.753,
+     6.752,
+     6.772
+    ],
+    "errors": 0
+   }
+  },
+  "mu": {
+   "1": {
+    "tps": 86.3,
+    "first": 0.141,
+    "last": 0.141,
+    "runs": [
+     87.4,
+     86.3,
+     85.7
+    ],
+    "lasts": [
+     0.136,
+     0.141,
+     0.131
+    ],
+    "errors": 0
+   },
+   "4": {
+    "tps": 160.0,
+    "first": 0.143,
+    "last": 0.392,
+    "runs": [
+     159.7,
+     160.0,
+     162.6
+    ],
+    "lasts": [
+     0.543,
+     0.392,
+     0.386
+    ],
+    "errors": 0
+   },
+   "8": {
+    "tps": 218.9,
+    "first": 0.131,
+    "last": 0.643,
+    "runs": [
+     218.9,
+     217.4,
+     223.1
+    ],
+    "lasts": [
+     0.643,
+     0.522,
+     0.529
+    ],
+    "errors": 0
+   },
+   "12": {
+    "tps": 260.7,
+    "first": 0.134,
+    "last": 0.722,
+    "runs": [
+     260.9,
+     260.7,
+     259.5
+    ],
+    "lasts": [
+     0.814,
+     0.722,
+     0.737
+    ],
+    "errors": 0
+   },
+   "16": {
+    "tps": 288.1,
+    "first": 0.142,
+    "last": 0.922,
+    "runs": [
+     289.6,
+     285.5,
+     288.1
+    ],
+    "lasts": [
+     1.006,
+     0.934,
+     0.922
+    ],
+    "errors": 0
+   }
+  },
+  "miafp2": {
+   "1": {
+    "tps": 75.1,
+    "first": 0.242,
+    "last": 0.242,
+    "runs": [
+     75.1,
+     76.0,
+     74.1
+    ],
+    "lasts": [
+     0.242,
+     0.206,
+     0.207
+    ],
+    "errors": 0
+   },
+   "4": {
+    "tps": 145.1,
+    "first": 0.348,
+    "last": 1.137,
+    "runs": [
+     142.4,
+     145.1,
+     146.2
+    ],
+    "lasts": [
+     1.175,
+     1.137,
+     1.142
+    ],
+    "errors": 0
+   },
+   "8": {
+    "tps": 194.6,
+    "first": 0.351,
+    "last": 2.765,
+    "runs": [
+     197.2,
+     194.6,
+     191.8
+    ],
+    "lasts": [
+     2.857,
+     2.765,
+     2.767
+    ],
+    "errors": 0
+   },
+   "12": {
+    "tps": 222.4,
+    "first": 0.204,
+    "last": 4.82,
+    "runs": [
+     216.8,
+     224.7,
+     222.4
+    ],
+    "lasts": [
+     4.81,
+     4.79,
+     4.82
+    ],
+    "errors": 0
+   },
+   "16": {
+    "tps": 218.6,
+    "first": 0.211,
+    "last": 6.79,
+    "runs": [
+     219.3,
+     216.1,
+     218.6
+    ],
+    "lasts": [
+     6.811,
+     6.776,
+     6.79
+    ],
+    "errors": 0
+   }
+  }
+ },
+ "agents": {
+  "agA_at10": {
+   "ok": 30,
+   "n": 30,
+   "followups": 20,
+   "resumed": 13,
+   "fu_med": 64.52,
+   "fu_max": 138.19,
+   "wall": 376.8,
+   "ptoks": 53189
+  },
+  "agA_at5": {
+   "ok": 30,
+   "n": 30,
+   "followups": 25,
+   "resumed": 25,
+   "fu_med": 1.29,
+   "fu_max": 3.76,
+   "wall": 76.2,
+   "ptoks": 54704
+  },
+  "agmia_at10": {
+   "ok": 30,
+   "n": 30,
+   "followups": 20,
+   "resumed": 0,
+   "fu_med": 199.76,
+   "fu_max": 326.28,
+   "wall": 701.3,
+   "ptoks": 53204
+  },
+  "agmia5_at5": {
+   "ok": 30,
+   "n": 30,
+   "followups": 25,
+   "resumed": 15,
+   "fu_med": 11.59,
+   "fu_max": 126.08,
+   "wall": 373.0,
+   "ptoks": 54710
+  }
+ },
+ "identity_lines": [
+  "pred1 vs pred0: identical 56/56 (only in A 0, only in B 0)",
+  "loop1 vs loop0: identical 46/46 (only in A 0, only in B 0)",
+  "ident_on.json F11_off vs N_off: identical 51/51  mean shared-prefix fraction 1.000  differ: []",
+  "held.jsonl F11_off vs N_off: identical 320/320  mean shared-prefix fraction 1.000  differ: []",
+  "edit.jsonl F11_off vs N_off: identical 24/24  mean shared-prefix fraction 1.000  differ: []",
+  "agent.jsonl F11_off vs N_off: identical 16/16  mean shared-prefix fraction 1.000  differ: []",
+  "sq07off: cmp: identical 24/24  A 45.13 -> B 46.32 tok/s (+2.64 %)  per-prompt ratio +2.68 % +- 0.12 (95 %)  identical-only +2.68 % n 23",
+  "sq07on: cmp: identical 24/24  A 48.32 -> B 49.80 tok/s (+3.06 %)  per-prompt ratio +3.05 % +- 0.10 (95 %)  identical-only +3.05 % n 24",
+  "sqsd: cmp: identical 6/6  A 47.78 -> B 49.22 tok/s (+3.02 %)  per-prompt ratio +3.03 % +- 0.15 (95 %)  identical-only +3.03 % n 6",
+  "pred0: identical 56/56 (only in A 0, only in B 0)",
+  "pred1: identical 56/56 (only in A 0, only in B 0)",
+  "loop0: identical 46/46 (only in A 0, only in B 0)",
+  "loop1: identical 46/46 (only in A 0, only in B 0)",
+  "pred1 vs pred0: identical 56/56 (only in A 0, only in B 0)",
+  "loop1 vs loop0: identical 46/46 (only in A 0, only in B 0)",
+  "chat      no prediction   106.8 tok/s  with prediction   423.2 tok/s  texts identical 4/4  non-200 0",
+  "responses no prediction   105.8 tok/s  with prediction   424.5 tok/s  texts identical 4/4  non-200 0",
+  "messages  no prediction   105.7 tok/s  with prediction   423.9 tok/s  texts identical 4/4  non-200 0",
+  "ident_on.json N_off vs N_on: identical 51/51  mean shared-prefix fraction 1.000  differ: []",
+  "held.jsonl N_off vs N_on: identical 320/320  mean shared-prefix fraction 1.000  differ: []",
+  "edit.jsonl N_off vs N_on: identical 24/24  mean shared-prefix fraction 1.000  differ: []",
+  "agent.jsonl N_off vs N_on: identical 16/16  mean shared-prefix fraction 1.000  differ: []",
+  "sq07off: cmp: identical 24/24  A 46.32 -> B 51.09 tok/s (+10.29 %)  per-prompt ratio +9.57 % +- 1.22 (95 %)  identical-only +9.57 % n 23",
+  "sq07on: cmp: identical 24/24  A 49.80 -> B 54.41 tok/s (+9.26 %)  per-prompt ratio +9.32 % +- 0.87 (95 %)  identical-only +9.32 % n 24",
+  "sqsd: cmp: identical 6/6  A 49.22 -> B 53.75 tok/s (+9.21 %)  per-prompt ratio +9.29 % +- 0.94 (95 %)  identical-only +9.29 % n 6",
+  "pred0: identical 56/56 (only in A 0, only in B 0)",
+  "pred1: identical 56/56 (only in A 0, only in B 0)",
+  "loop0: identical 46/46 (only in A 0, only in B 0)",
+  "loop1: identical 46/46 (only in A 0, only in B 0)",
+  "pred1 vs pred0: identical 56/56 (only in A 0, only in B 0)",
+  "loop1 vs loop0: identical 46/46 (only in A 0, only in B 0)",
+  "ident_on.json N_off vs N_off2: identical 51/51  mean shared-prefix fraction 1.000  differ: []",
+  "held.jsonl N_off vs N_off2: identical 320/320  mean shared-prefix fraction 1.000  differ: []",
+  "edit.jsonl N_off vs N_off2: identical 24/24  mean shared-prefix fraction 1.000  differ: []",
+  "agent.jsonl N_off vs N_off2: identical 16/16  mean shared-prefix fraction 1.000  differ: []",
+  "sq07off: cmp: identical 24/24  A 46.32 -> B 45.85 tok/s (-1.01 %)  per-prompt ratio -1.02 % +- 0.12 (95 %)  identical-only -1.02 % n 23",
+  "sq07on: cmp: identical 24/24  A 49.80 -> B 49.26 tok/s (-1.09 %)  per-prompt ratio -1.08 % +- 0.11 (95 %)  identical-only -1.08 % n 24",
+  "sqsd: cmp: identical 6/6  A 49.22 -> B 48.60 tok/s (-1.25 %)  per-prompt ratio -1.24 % +- 0.20 (95 %)  identical-only -1.24 % n 6",
+  "pred0: identical 56/56 (only in A 0, only in B 0)",
+  "pred1: identical 56/56 (only in A 0, only in B 0)",
+  "loop0: identical 46/46 (only in A 0, only in B 0)",
+  "loop1: identical 46/46 (only in A 0, only in B 0)",
+  "ident_on.json N_off2 vs N_on: identical 51/51  mean shared-prefix fraction 1.000  differ: []",
+  "held.jsonl N_off2 vs N_on: identical 320/320  mean shared-prefix fraction 1.000  differ: []",
+  "edit.jsonl N_off2 vs N_on: identical 24/24  mean shared-prefix fraction 1.000  differ: []",
+  "agent.jsonl N_off2 vs N_on: identical 16/16  mean shared-prefix fraction 1.000  differ: []",
+  "sq07off: cmp: identical 24/24  A 45.85 -> B 51.09 tok/s (+11.42 %)  per-prompt ratio +10.70 % +- 1.24 (95 %)  identical-only +10.70 % n 23",
+  "sq07on: cmp: identical 24/24  A 49.26 -> B 54.41 tok/s (+10.47 %)  per-prompt ratio +10.52 % +- 0.90 (95 %)  identical-only +10.52 % n 24",
+  "sqsd: cmp: identical 6/6  A 48.60 -> B 53.75 tok/s (+10.59 %)  per-prompt ratio +10.66 % +- 0.89 (95 %)  identical-only +10.66 % n 6",
+  "pred0: identical 56/56 (only in A 0, only in B 0)",
+  "pred1: identical 56/56 (only in A 0, only in B 0)",
+  "loop0: identical 46/46 (only in A 0, only in B 0)",
+  "loop1: identical 46/46 (only in A 0, only in B 0)",
+  "chk ident vs N_on: identical 51/51  mean shared-prefix fraction 1.000  differ: []",
+  "chk ident vs N_off: identical 51/51  mean shared-prefix fraction 1.000  differ: []",
+  "chk seeded sampled (12) vs on: cmp: identical 12/12  A 52.44 -> B 42.61 tok/s (-18.76 %)  per-prompt ratio -18.85 % +- 0.29 (95 %)  identical-only -18.85 % n 11",
+  "chk rewrite(held) vs on: identical 28/28 (only in A 28, only in B 0)",
+  "ALL 320 held, 16 in flight (USERS16) vs SOLO levers-off (N_off, window 1): identical 320/320  mean shared-prefix fraction 1.000  differ: []",
+  "ALL 320 held, 16 in flight (USERS16) vs solo recipe default (N_on): identical 320/320  mean shared-prefix fraction 1.000  differ: []",
+  "identity set on USERS16 (one at a time) vs solo levers-off (N_off): identical 51/51  mean shared-prefix fraction 1.000  differ: []",
+  "seeded sampled held/3: 16 in flight (USERS16, N_mu) vs SOLO levers-off: identical 107/107  mean shared-prefix fraction 1.000  differ: []"
+ ]
+}

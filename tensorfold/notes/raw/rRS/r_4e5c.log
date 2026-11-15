@@ -1,0 +1,20 @@
+  down  tile rt4 s4 p64    126.031 ms a step   179.7 GB/s   +47.0 %  hash ba881fc6b68ce8f7 BITS SAME
+  down  tile rt2 s3 p32    128.843 ms a step   175.8 GB/s   +43.8 %  hash ba881fc6b68ce8f7 BITS SAME
+  down  tile rt2 s3 p16    127.009 ms a step   178.3 GB/s   +45.9 %  hash ba881fc6b68ce8f7 BITS SAME
+  SUM stock 395.012 ms (172.0 GB/s); best gate 'tile rt2 s4 p16' + best down 'tile rt4 s4 p64' 333.265 ms (+18.5 %)
+microbench done 13:54:20
+READY tfb/default in 205 s; MemAvailable 38 GiB; GPU MiB 77122
+heldpar 1 in flight: 107 prompts, 20185 tokens in 343.6 s = 58.7 tok/s total; errors 0
+drafted requests: n 96 tok/s 63.3  tok/round 3.456  drafts proposed/round 3.852  accepted/round 2.463  accept rate 0.640  ms/round 54.63  rows/round 4.85
+fit over drafted requests: ms/round = 41.69 + 3.36 x drafts verified per round  (x range 1.76..22.27)
+R3_ref done 14:03:30
+READY tfb/default in 190 s; MemAvailable 39 GiB; GPU MiB 77122
+heldpar 1 in flight: 107 prompts, 20185 tokens in 343.7 s = 58.7 tok/s total; errors 0
+drafted requests: n 96 tok/s 63.2  tok/round 3.456  drafts proposed/round 3.852  accepted/round 2.463  accept rate 0.640  ms/round 54.67  rows/round 4.85
+fit over drafted requests: ms/round = 41.87 + 3.32 x drafts verified per round  (x range 1.76..22.27)
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+R3_t2 done 14:12:27
+READY tfb/default in 170 s; MemAvailable 38 GiB; GPU MiB 77122
+heldpar 1 in flight: 107 prompts, 6619 tokens in 138.0 s = 47.9 tok/s total; errors 70
+identical 36/37  mean shared-prefix fraction 0.986  differ: ['108']
+Error response from daemon: removal of container q38-run-tf is already in progress

@@ -1,0 +1,261 @@
+diff --git a/zig/kernels/cuda/flashnext_batch.cu b/zig/kernels/cuda/flashnext_batch.cu
+index 9f4127a..c059ecd 100644
+--- a/zig/kernels/cuda/flashnext_batch.cu
++++ b/zig/kernels/cuda/flashnext_batch.cu
+@@ -302,7 +302,7 @@ extern "C" __global__ void __launch_bounds__(128) fn_gdn_rows_late(
+ // One layer of a shared verify round with every lane's rows logged (TF_FLASHNEXT_KEEP_LATE): what the per-lane loop launches as
+ // copy proj, copy history, fn_gdn_front, fn_gdn_rows_late and fn_shift_window a lane, as three launches for all lanes. Each lane's
+ // program is the per-lane kernel's on that lane's pointers, so every output byte is the same; the lanes touch disjoint memory.
+-constexpr int FN_LANES_MAX = 8;
++constexpr int FN_LANES_MAX = 16;   // q38: 16 lanes a table (stock 8); the host still sends at most 8 unless TF_FLASHNEXT_Q38_GDN_LANES_MANY=2
+ struct FnGdnLane {
+     const __nv_bfloat16* proj;   // the lane's projection rows [rows, PW]
+     __nv_bfloat16* conv;         // the lane's conv window [TAPS - 1, C], shifted past the rows at the end
+diff --git a/zig/kernels/cuda/qmmf.cu b/zig/kernels/cuda/qmmf.cu
+index 1e4fdc7..1a7a206 100644
+--- a/zig/kernels/cuda/qmmf.cu
++++ b/zig/kernels/cuda/qmmf.cu
+@@ -452,6 +452,17 @@ template __global__ void qmmf_kernel<BF16, 32, 64, 1, 4, 4, true, true, false>(c
+ template __global__ void qmmf_kernel<BF16, 64, 64, 1, 4, 4, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<BF16, 64, 64, 1, 4, 4, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<BF16, 64, 64, 1, 4, 4, true, false, true>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++// q38 (TF_FLASHNEXT_Q38_ROWS128): one 128-row tile a block, two stages, for passes of more than 64 rows: the block reads its weight tile once
++// where two 64-row tiles side by side read it twice. The same mma sequence a row tile and K group as every other BM.
++template __global__ void qmmf_kernel<MXFP8, 128, 64, 1, 4, 2, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 128, 64, 1, 4, 2, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 128, 64, 1, 4, 2, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<MXFP8, 128, 64, 1, 4, 2, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 128, 64, 1, 4, 2, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 128, 64, 1, 4, 2, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 128, 64, 1, 4, 2, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<BF16, 128, 64, 1, 4, 2, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++
+ // q38 (upstream #1171): the 16-row tile at 32 columns a block, for decode calls whose 64-column grid leaves SMs idle; same sums.
+ template __global__ void qmmf_kernel<MXFP8, 16, 32, 1, 4, 4, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<MXFP8, 16, 32, 1, 4, 4, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+diff --git a/zig/src/cuda/qmmf.zig b/zig/src/cuda/qmmf.zig
+index 2f1f3fe..882a258 100644
+--- a/zig/src/cuda/qmmf.zig
++++ b/zig/src/cuda/qmmf.zig
+@@ -129,6 +129,31 @@ pub fn halfBelow() usize {
+     return @intCast(st.v);
+ }
+ 
++/// TF_FLASHNEXT_Q38_ROWS128=N (q38; default 0: never; 2048 is the measured choice): MXFP8 / BF16 decode calls of more than 64 rows
++/// whose weight has at least N output columns take one 128-row tile a block (two stages) instead of 64-row tiles side by side,
++/// so a pass of 65-128 rows reads each weight tile once, not twice. Same sums a row and column (kit/mb/mb3.cu compares the bits).
++pub fn rows128MinN() usize {
++    const st = struct {
++        var v: i64 = -1;
++    };
++    if (st.v < 0) st.v = if (std.c.getenv("TF_FLASHNEXT_Q38_ROWS128")) |e| (std.fmt.parseInt(i64, std.mem.span(e), 10) catch 0) else 0;
++    return @intCast(st.v);
++}
++
++/// Dynamic shared bytes of the 128-row tile at two stages (qmmf.cu Tile<MODE, 128, 64, 1, 4, 2>::SMEM).
++pub fn rows128Shared(mode: Mode) u32 {
++    const w: u32 = if (mode == .bf16) bn * group * 2 else bn * group;
++    const s: u32 = if (mode == .mxfp8) bn * 2 else 0;
++    const stage = (128 * group * 2 + w + s + 127) / 128 * 128;
++    const partials = (128 / 16) * 2 * 4 * threads * 4;
++    return @max(2 * stage, partials);
++}
++
++fn rows128Symbol(comptime mode: Mode, comptime cluster: bool, comptime wide: bool) [:0]const u8 {
++    const name = "_ZN7tf_qmmf11qmmf_kernelILi{d}ELi128ELi64ELi1ELi4ELi2ELb{d}ELb{d}ELb0EEEvPK13__nv_bfloat16PKhS5_fPvPfiiiiiii";
++    return std.fmt.comptimePrint(name, .{ @backingInt(mode), @intFromBool(wide), @intFromBool(cluster) });
++}
++
+ pub fn halfModeIndex(mode: Mode) ?usize {
+     return switch (mode) {
+         .mxfp8 => 0,
+@@ -185,6 +210,7 @@ pub const Lane = struct {
+     f32_fns: [modes.len][7]Function,
+     reduce: [2]Function, // by Out
+     half: [2][2][2]Function = undefined, // q38: by halfModeIndex, Out, then plain / cluster
++    rows128: [2][2][2]Function = undefined, // q38: the 128-row tile, same indices
+     clusters: bool, // sm_90 on: slices meet in a cluster's shared memory
+ 
+     pub fn load(d: *const Driver, capability_major: u32) !Lane {
+@@ -216,6 +242,9 @@ pub const Lane = struct {
+             const f = try mod.function(halfSymbol(mode, cl, wide));
+             try f.allowDynamicShared(halfShared(mode));
+             l.half[mi][oi][ci] = f;
++            const g = try mod.function(rows128Symbol(mode, cl, wide));
++            try g.allowDynamicShared(rows128Shared(mode));
++            l.rows128[mi][oi][ci] = g;
+         };
+         return l;
+     }
+@@ -301,12 +330,15 @@ pub const Lane = struct {
+         if (p.reduce and part == 0) return error.MissingLanePart;
+         const set = (if (out == .f32) l.f32_fns else l.fns)[modeIndex(w.mode)];
+         const ti: usize = if (p.bm == 16) 0 else if (p.bm == 32) 1 else 2;
+-        const rows_t = (m + p.bm - 1) / p.bm;
+         const hm = halfModeIndex(w.mode);
++        // q38: more than 64 rows on a wide weight: 128-row tiles (each block reads its weight tile once)
++        const r128 = hm != null and m > 64 and !p.fused and !p.reduce and rows128MinN() > 0 and w.n >= rows128MinN();
++        const bm: usize = if (r128) 128 else p.bm;
++        const rows_t = (m + bm - 1) / bm;
+         const half = hm != null and p.bm == 16 and !p.fused and rows_t * ((w.n + bn - 1) / bn) * p.sk < halfBelow();
+-        const f = if (half) l.half[hm.?][@backingInt(out)][@intFromBool(p.cluster)] else if (p.fused) set[6] else set[ti * 2 + @intFromBool(p.cluster)];
++        const f = if (r128) l.rows128[hm.?][@backingInt(out)][@intFromBool(p.cluster)] else if (half) l.half[hm.?][@backingInt(out)][@intFromBool(p.cluster)] else if (p.fused) set[6] else set[ti * 2 + @intFromBool(p.cluster)];
+         const cols: usize = if (half) 32 else bn;
+-        const band = @max(1, @min(rows_t, (12 << 20) / (@as(usize, p.bm) * w.k * 2)));
++        const band = @max(1, @min(rows_t, (12 << 20) / (bm * w.k * 2)));
+         var args: launch_.Args = .{};
+         args.add(x);
+         args.add(w.codes);
+@@ -324,7 +356,7 @@ pub const Lane = struct {
+         try launch_.launch(f, .{
+             .grid = .{ .x = @intCast(rows_t * ((w.n + cols - 1) / cols)), .y = 1, .z = if (p.fused) 1 else p.sk },
+             .block = .{ .x = threads, .y = 1, .z = 1 },
+-            .shared = if (half) halfShared(w.mode) else sharedBytesQ(w.mode, p.bm, p.cluster),
++            .shared = if (r128) rows128Shared(w.mode) else if (half) halfShared(w.mode) else sharedBytesQ(w.mode, p.bm, p.cluster),
+             .cluster = if (p.cluster) .{ .x = 1, .y = 1, .z = p.sk } else null,
+         }, s, &args);
+         if (p.reduce) {
+diff --git a/zig/src/families/flashnext/cuda_batch.zig b/zig/src/families/flashnext/cuda_batch.zig
+index a4203ff..eb47823 100644
+--- a/zig/src/families/flashnext/cuda_batch.zig
++++ b/zig/src/families/flashnext/cuda_batch.zig
+@@ -435,55 +435,64 @@ pub fn Pass(comptime Tri: type) type {
+         /// of the projection rows and the conv history, the front, the late chain and the window shift as three launches. False
+         /// (nothing queued) when a lane does not log or there are more lanes than a launch takes.
+         fn gdnLanesBatched(self: *Self, lw: *const Layer, layer: usize, li: usize) !bool {
+-            if (!knobs.gdnLanes() or self.lanes.len > gdn.lanes_max) return false;
++            // q38 (TF_FLASHNEXT_Q38_GDN_LANES_MANY=1): more than 8 lanes go in groups of 8 (=2: one table of up to 16), each
++            // group its own three launches. A lane's rows, state, conv window and logs are its own in every group size, so each
++            // lane's kernel program and bytes are those of the one-group call. Off: more than gdn.lanes_max lanes run a lane at a time.
++            const many = knobs.q38GdnLanesMany();
++            if (!knobs.gdnLanes() or (self.lanes.len > gdn.lanes_stock and many == 0)) return false;
++            const group_max: usize = if (many == 2) gdn.lanes_max else gdn.lanes_stock;
+             const s = self.s;
+             for (self.lanes) |l| {
+                 const kp = l.keep orelse return false;
+                 const lk = kp.layers[layer];
+                 if (lk.log_k == 0 or lk.log_v == 0 or lk.log_gb == 0 or lk.proj % 4 != 0) return false;
+             }
+-            var tab: gdn.Lanes = std.mem.zeroes(gdn.Lanes);
+             var row0: usize = 0;
+-            var max_rows: usize = 0;
+-            for (self.lanes, 0..) |l, i| {
+-                const kp = l.keep.?;
+-                const lk = kp.layers[layer];
+-                const st = l.seq.state[li].ptr;
+-                tab.lane[i] = .{
+-                    .proj = s.proj + row0 * gdn.proj_width * 2,
+-                    .conv = l.seq.conv[li].ptr,
+-                    .proj_save = lk.proj,
+-                    .hist_save = lk.hist,
+-                    .qn = s.gq + row0 * gdn.nk * gdn.dk * 4,
+-                    .log_k = lk.log_k,
+-                    .log_v = lk.log_v,
+-                    .log_gb = lk.log_gb,
+-                    .state_in = st,
+-                    .state_out = if (lk.state_out != 0) lk.state_out else st,
+-                    .ys = s.ys + row0 * gdn.value_dim * 4,
+-                    .rows = cint(l.rows),
+-                    .np = cint(kp.pend),
+-                };
+-                max_rows = @max(max_rows, l.rows);
+-                row0 += l.rows;
++            var first: usize = 0;
++            while (first < self.lanes.len) : (first += group_max) {
++                const group = self.lanes[first..@min(first + group_max, self.lanes.len)];
++                var tab: gdn.Lanes = std.mem.zeroes(gdn.Lanes);
++                var max_rows: usize = 0;
++                for (group, 0..) |l, i| {
++                    const kp = l.keep.?;
++                    const lk = kp.layers[layer];
++                    const st = l.seq.state[li].ptr;
++                    tab.lane[i] = .{
++                        .proj = s.proj + row0 * gdn.proj_width * 2,
++                        .conv = l.seq.conv[li].ptr,
++                        .proj_save = lk.proj,
++                        .hist_save = lk.hist,
++                        .qn = s.gq + row0 * gdn.nk * gdn.dk * 4,
++                        .log_k = lk.log_k,
++                        .log_v = lk.log_v,
++                        .log_gb = lk.log_gb,
++                        .state_in = st,
++                        .state_out = if (lk.state_out != 0) lk.state_out else st,
++                        .ys = s.ys + row0 * gdn.value_dim * 4,
++                        .rows = cint(l.rows),
++                        .np = cint(kp.pend),
++                    };
++                    max_rows = @max(max_rows, l.rows);
++                    row0 += l.rows;
++                }
++                tab.count = cint(group.len);
++                tab.max_rows = cint(max_rows);
++                const z: u32 = @intCast(group.len);
++                var f: cuda.Args = .{};
++                f.add(tab);
++                f.add(lw.cw.ptr);
++                f.add(lw.a_log.ptr);
++                f.add(lw.dt.ptr);
++                try cuda.launch.launch(self.k.front_lanes, .{ .grid = .{ .x = @intCast(max_rows), .y = gdn.nk + gdn.nv, .z = z }, .block = .{ .x = 256 } }, self.stream, &f);
++                var a: cuda.Args = .{};
++                a.add(tab);
++                try cuda.launch.launch(self.k.chain_lanes, .{ .grid = .{ .x = gdn.nv, .y = gdn.dv / 16, .z = z }, .block = .{ .x = 128 } }, self.stream, &a);
++                var h: cuda.Args = .{};
++                h.add(tab);
++                h.add(cint(gdn.taps - 1));
++                h.add(cint(gdn.conv_dim));
++                try cuda.launch.launch(self.k.shift_lanes, .{ .grid = .{ .x = @intCast(cdiv(gdn.conv_dim, 256)), .y = z }, .block = .{ .x = 256 } }, self.stream, &h);
+             }
+-            tab.count = cint(self.lanes.len);
+-            tab.max_rows = cint(max_rows);
+-            const z: u32 = @intCast(self.lanes.len);
+-            var f: cuda.Args = .{};
+-            f.add(tab);
+-            f.add(lw.cw.ptr);
+-            f.add(lw.a_log.ptr);
+-            f.add(lw.dt.ptr);
+-            try cuda.launch.launch(self.k.front_lanes, .{ .grid = .{ .x = @intCast(max_rows), .y = gdn.nk + gdn.nv, .z = z }, .block = .{ .x = 256 } }, self.stream, &f);
+-            var a: cuda.Args = .{};
+-            a.add(tab);
+-            try cuda.launch.launch(self.k.chain_lanes, .{ .grid = .{ .x = gdn.nv, .y = gdn.dv / 16, .z = z }, .block = .{ .x = 128 } }, self.stream, &a);
+-            var h: cuda.Args = .{};
+-            h.add(tab);
+-            h.add(cint(gdn.taps - 1));
+-            h.add(cint(gdn.conv_dim));
+-            try cuda.launch.launch(self.k.shift_lanes, .{ .grid = .{ .x = @intCast(cdiv(gdn.conv_dim, 256)), .y = z }, .block = .{ .x = 256 } }, self.stream, &h);
+             return true;
+         }
+ 
+diff --git a/zig/src/families/flashnext/cuda_gdn.zig b/zig/src/families/flashnext/cuda_gdn.zig
+index b15f52a..a2aebe3 100644
+--- a/zig/src/families/flashnext/cuda_gdn.zig
++++ b/zig/src/families/flashnext/cuda_gdn.zig
+@@ -39,7 +39,9 @@ pub const Lane = extern struct {
+ };
+ 
+ /// The lanes of a shared round passed by value (FnGdnLanes).
+-pub const lanes_max = 8;
++pub const lanes_max = 16; // q38: the table holds 16 lanes (stock 8)
++/// Lanes the stock engine sends in one table.
++pub const lanes_stock = 8;
+ pub const Lanes = extern struct {
+     lane: [lanes_max]Lane,
+     count: c_int,
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index 5c39065..e6f6276 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -82,6 +82,14 @@ pub fn gdnLanes() bool {
+     return std.mem.eql(u8, std.mem.span(v), "1");
+ }
+ 
++/// TF_FLASHNEXT_Q38_GDN_LANES_MANY=1 (q38, off unless set): TF_FLASHNEXT_GDN_LANES also serves rounds of more than gdn.lanes_max (8)
++/// lanes, in groups of 8 (cuda_batch.zig gdnLanesBatched). Stock: such rounds take five launches a lane a DeltaNet layer.
++pub fn q38GdnLanesMany() u8 {
++    const v = std.c.getenv("TF_FLASHNEXT_Q38_GDN_LANES_MANY") orelse return 0;
++    const t = std.mem.span(v);
++    return if (std.mem.eql(u8, t, "1")) 1 else if (std.mem.eql(u8, t, "2")) 2 else 0;
++}
++
+ var wide_rows_cache: usize = 0;
+ /// TF_FLASHNEXT_Q38_WIDE_ROWS=N (q38; default 64, the stock value; 64 to 256): rows a shared drafted verify pass holds at most
+ /// and the rows the lane core lets a round's drafts fill. With many streams a pass's cost grows slowly with its rows (the rows share

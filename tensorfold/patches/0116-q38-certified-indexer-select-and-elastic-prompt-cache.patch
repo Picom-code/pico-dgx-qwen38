@@ -1,0 +1,1286 @@
+diff --git a/zig/kernels/cuda/flashnext_attn.cu b/zig/kernels/cuda/flashnext_attn.cu
+index 43d4e83..ed5984a 100644
+--- a/zig/kernels/cuda/flashnext_attn.cu
++++ b/zig/kernels/cuda/flashnext_attn.cu
+@@ -740,6 +740,14 @@ extern "C" __global__ void __launch_bounds__(256) fn_q38_qsa_scores_lanes(
+                                 &p0, SC + static_cast<long long>(L.row0) * NB, NB, RATIO, TOP, L.rows);
+ }
+ 
++// q38 (TF_FLASHNEXT_Q38_QSA_LOOP): qsa_tile::scores<8, 4> with L row tiles a CTA (the same sums, the blocks' keys read once a CTA).
++extern "C" __global__ void __launch_bounds__(256) fn_q38_qsa_scores_loop(const __nv_bfloat16* __restrict__ IQ,
++                                                                         const __nv_bfloat16* __restrict__ POOLED,
++                                                                         const int* __restrict__ POS0, float* __restrict__ SC, int NB,
++                                                                         int RATIO, int TOP, int rows, int L) {
++    qsa_tile::scores_loop_body<8, 4>(IQ, POOLED, POS0, SC, NB, RATIO, TOP, rows, L);
++}
++
+ // fn_attn_chunks_ahead (bf16 caches, lanes of at most 16 rows) / fn_attn_chunks_kv8, program (pass row, KV head, chunk).
+ extern "C" __global__ void __launch_bounds__(128) fn_q38_attn_chunks_lanes(
+         const __grid_constant__ FnAttnLanes T, const __nv_bfloat16* __restrict__ Q, float* __restrict__ PO, float* __restrict__ PM,
+diff --git a/zig/kernels/cuda/flashnext_batch.cu b/zig/kernels/cuda/flashnext_batch.cu
+index 77d48d4..82da385 100644
+--- a/zig/kernels/cuda/flashnext_batch.cu
++++ b/zig/kernels/cuda/flashnext_batch.cu
+@@ -521,6 +521,7 @@ extern "C" __global__ void __launch_bounds__(1024) fn_qsa_select(const float* __
+     fn_qsa_select_body(sc, pos0, ids, nkr, spr, nb, idw, top, ratio);
+ }
+ 
++#include "q38_qsa_cert.cuh"
+ #include "q38_attn_lanes.cuh"
+ // q38 (TF_FLASHNEXT_Q38_ATTN_LANES): fn_qsa_select over a shared round's rows, each row's position from its lane (a block a pass row;
+ // scores, lists and counts are the round's, rows nb apart).
+diff --git a/zig/kernels/cuda/flashnext_qsa_tile.cuh b/zig/kernels/cuda/flashnext_qsa_tile.cuh
+index 013a587..4bdb94e 100644
+--- a/zig/kernels/cuda/flashnext_qsa_tile.cuh
++++ b/zig/kernels/cuda/flashnext_qsa_tile.cuh
+@@ -82,4 +82,72 @@ __global__ void __launch_bounds__(256) scores(const __nv_bfloat16* __restrict__
+                                               int rows) {
+     scores_body<R, HI>(IQ, POOLED, POS0, SC, NB, RATIO, TOP, rows);
+ }
++// q38 (TF_FLASHNEXT_Q38_QSA_LOOP=L): scores<R, HI> with L row tiles a CTA over the same 256 blocks, one after the other, so the
++// blocks' keys come from memory once a CTA and from the cache L - 1 times. Every (row, block) sum is scores_body's code: its bits.
++template <int R, int HI>
++__device__ __forceinline__ void scores_loop_body(const __nv_bfloat16* __restrict__ IQ, const __nv_bfloat16* __restrict__ POOLED,
++                                                   const int* __restrict__ POS0, float* __restrict__ SC, int NB, int RATIO, int TOP,
++                                                   int rows, int L) {
++    __shared__ float4 qs[R][HI][DI / 4];
++    const int b = blockIdx.y * 256 + threadIdx.x;
++    const int pos0 = POS0[0];
++    for (int it = 0; it < L; ++it) {
++        const int r0 = (blockIdx.x * L + it) * R;
++        if (r0 >= rows) break;
++        const int last = min(r0 + R, rows) - 1;
++        const int cmax = (pos0 + last + 1) / RATIO;
++        if (cmax <= TOP || blockIdx.y * 256 >= cmax) continue;
++        __syncthreads();                                  // the previous tile's sums are done with qs
++        for (int e = threadIdx.x; e < R * HI * DI / 4; e += blockDim.x) {
++            const int ri = e / (HI * DI / 4), rem = e % (HI * DI / 4), r = min(r0 + ri, rows - 1);
++            const __nv_bfloat162* src = reinterpret_cast<const __nv_bfloat162*>(IQ + (static_cast<long long>(r) * HI * DI + rem * 4));
++            const float2 a = __bfloat1622float2(src[0]), c = __bfloat1622float2(src[1]);
++            reinterpret_cast<float4*>(qs)[e] = make_float4(a.x, a.y, c.x, c.y);
++        }
++        __syncthreads();
++        if (b >= cmax) continue;
++        Stack st[R][HI];
++        const __nv_bfloat16* kb = POOLED + static_cast<long long>(b) * DI;
++#pragma unroll
++        for (int half = 0; half < 2; ++half) {
++            float k[16][4];
++#pragma unroll
++            for (int c = 0; c < 16; ++c) {
++                const int l = rev5(c + 16 * half);
++                const uint2 raw = *reinterpret_cast<const uint2*>(kb + 4 * l);
++                const __nv_bfloat16* p = reinterpret_cast<const __nv_bfloat16*>(&raw);
++#pragma unroll
++                for (int e = 0; e < 4; ++e) k[c][e] = __bfloat162float(p[e]);
++            }
++#pragma unroll
++            for (int c = 0; c < 16; ++c) {
++                const int cc = c + 16 * half, l = rev5(cc);
++#pragma unroll
++                for (int ri = 0; ri < R; ++ri)
++#pragma unroll
++                    for (int h = 0; h < HI; ++h) {
++                        const float4 q4 = qs[ri][h][l];
++                        float part = 0.0f;
++                        part = __fmaf_rn(k[c][0], q4.x, part);
++                        part = __fmaf_rn(k[c][1], q4.y, part);
++                        part = __fmaf_rn(k[c][2], q4.z, part);
++                        part = __fmaf_rn(k[c][3], q4.w, part);
++                        st[ri][h].push(cc, part);
++                    }
++            }
++        }
++        const float scale = __fsqrt_rn(static_cast<float>(DI));
++#pragma unroll
++        for (int ri = 0; ri < R; ++ri) {
++            const int r = r0 + ri;
++            if (r >= rows) break;
++            const int complete = (pos0 + r + 1) / RATIO;
++            if (complete <= TOP || b >= complete) continue;
++            float total = 0.0f;
++#pragma unroll
++            for (int h = 0; h < HI; ++h) total = __fadd_rn(total, fmaxf(st[ri][h].v[0], 0.0f));
++            SC[static_cast<long long>(r) * NB + b] = __fdiv_rn(total, scale);
++        }
++    }
++}
+ }  // namespace qsa_tile
+diff --git a/zig/kernels/cuda/q38_qsa_cert.cuh b/zig/kernels/cuda/q38_qsa_cert.cuh
+new file mode 100644
+index 0000000..e50c73b
+--- /dev/null
++++ b/zig/kernels/cuda/q38_qsa_cert.cuh
+@@ -0,0 +1,684 @@
++// q38 certified indexer select (TF_FLASHNEXT_Q38_QSA_CERT). The indexer's block scores (qsa_tile::scores, scalar fp32 sums in a fixed
++// tree order) feed only fn_qsa_select, which keeps each row's `top` best blocks: the first `top` in the order (score descending, block
++// ascending), written in block order. That list is a function of the ORDER of the exact scores, not of their values, so:
++//   1 fn_q38_qsa_coarse: every row against every block on tensor cores (bf16 x bf16 -> fp32 mma, the heads' relu sums) = F, and each
++//     64-block tile's largest key norm;
++//   2 fn_q38_qsa_select_cert, a row a block: v = the top-th largest F . With
++//     |F - exact| <= eps for every block of the row, the exact cut lies in [v - eps, v + eps], so a block with F > v + 2 eps is
++//     strictly above the exact cut (always listed) and one with F < v - 2 eps strictly below it (never listed). Only the blocks in between get the exact sum (the scalar kernel's operations in
++//     its order: the same bits), and the first (top - certain) of them in the exact order complete the list. Ties only ever occur
++//     between exact values, so the tie rule is the stock one.
++//   eps = SLACK * (sum over heads of |q_h|) * (largest |k| of the row's blocks) / sqrt(128): both sums are sums of the same 128 exact
++//   products a head, so each is within gamma * sum |q_i k_i| <= gamma * |q_h| |k| of the real dot product (Cauchy-Schwarz); relu is
++//   1-Lipschitz; the head sum and the division add a few ulps. A row whose bound is not finite, or with more than 1024 blocks in
++//   between, takes the exact sums for all of its blocks and the stock selection (the fallback), inside the same kernel.
++//   MODE 2 (check): SC2 holds the stock kernel's scores of the same rows; the kernel also runs the stock selection on them and counts
++//   rows whose list differs, in-between sums whose bits differ from the stock kernel's, and blocks with |F - exact| > eps.
++#pragma once
++#include <cuda_fp16.h>
++#include "flashnext_qsa_tile.cuh"
++
++namespace q38cert {
++constexpr int DI = 128, HI = 4, BT = 64, CMAX = 1024;
++
++__device__ __forceinline__ void mma(float (&d)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
++    asm("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};\n"
++        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
++        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
++}
++__device__ __forceinline__ float bfbits(uint32_t lo16) { return __uint_as_float((lo16 & 0xFFFFu) << 16); }
++__device__ __forceinline__ float key_value(uint32_t k) { return __uint_as_float((k & 0x80000000u) ? (k & 0x7FFFFFFFu) : ~k); }
++__device__ __forceinline__ bool finite(float x) { return fabsf(x) < CUDART_INF_F; }
++
++// qsa_tile::scores' sum of one row (q [HI, DI] bf16) and one block (kb [DI] bf16): its operations in its order (its bits).
++__device__ __forceinline__ float exact_one(const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ kb) {
++    qsa_tile::Stack st[HI];
++#pragma unroll
++    for (int cc = 0; cc < 32; ++cc) {
++        const int l = qsa_tile::rev5(cc);
++        float k[4];
++#pragma unroll
++        for (int e = 0; e < 4; ++e) k[e] = __bfloat162float(kb[4 * l + e]);
++#pragma unroll
++        for (int h = 0; h < HI; ++h) {
++            const __nv_bfloat16* qp = q + h * DI + 4 * l;
++            float part = 0.0f;
++            part = __fmaf_rn(k[0], __bfloat162float(qp[0]), part);
++            part = __fmaf_rn(k[1], __bfloat162float(qp[1]), part);
++            part = __fmaf_rn(k[2], __bfloat162float(qp[2]), part);
++            part = __fmaf_rn(k[3], __bfloat162float(qp[3]), part);
++            st[h].push(cc, part);
++        }
++    }
++    const float scale = __fsqrt_rn(static_cast<float>(DI));
++    float total = 0.0f;
++#pragma unroll
++    for (int h = 0; h < HI; ++h) total = __fadd_rn(total, fmaxf(st[h].v[0], 0.0f));
++    return __fdiv_rn(total, scale);
++}
++
++// fn_qsa_select_body's four radix passes: the key of the top-th largest of row[0, complete) and how many keys equal to it are listed.
++__device__ __forceinline__ void cut_of(const float* __restrict__ row, int complete, int top, int* hist, uint32_t* cut_s, int* need_s,
++                                       uint32_t& cut_o, int& need_o) {
++    uint32_t cut = 0;
++    int need = top;
++    for (int p = 0; p < 4; ++p) {
++        const int shift = 24 - 8 * p;
++        for (int i = threadIdx.x; i < 256; i += blockDim.x) hist[i] = 0;
++        __syncthreads();
++        for (int b = threadIdx.x; b < complete; b += blockDim.x) {
++            const uint32_t k = fn_qsa_key(row[b]);
++            if (p == 0 || (k >> (shift + 8)) == (cut >> (shift + 8))) atomicAdd(&hist[(k >> shift) & 0xFF], 1);
++        }
++        __syncthreads();
++        if (threadIdx.x == 0) {
++            int above = 0;
++            int d = 255;
++            for (; d > 0; --d) {
++                if (above + hist[d] >= need) break;
++                above += hist[d];
++            }
++            *need_s = need - above;
++            *cut_s = cut | (static_cast<uint32_t>(d) << shift);
++        }
++        __syncthreads();
++        cut = *cut_s;
++        need = *need_s;
++        __syncthreads();
++    }
++    cut_o = cut;
++    need_o = need;
++}
++
++// fn_qsa_select_body's placement (every key above the cut, then the first `need` equal to it, in block order). cmp: the list is not
++// written but compared with `out`; *bad_s is set where they differ. Returns the blocks placed.
++__device__ __forceinline__ int place_stock(const float* __restrict__ row, int complete, uint32_t cut, int need, int* out, int top,
++                                           int ratio, int* warp_sums, bool cmp, int* bad_s) {
++    int seen = 0;
++    int placed = 0;
++    for (int t0 = 0; t0 < complete && placed < top; t0 += blockDim.x) {
++        const int b = t0 + threadIdx.x;
++        const bool ok = b < complete;
++        const uint32_t k = ok ? fn_qsa_key(row[b]) : 0u;
++        const bool above = ok && k > cut;
++        const bool equal = ok && k == cut;
++        int eq_total = 0;
++        const int rank = seen + fn_block_scan(equal ? 1 : 0, warp_sums, &eq_total);
++        const bool chosen = above || (equal && rank <= need);
++        int ch_total = 0;
++        const int place = placed + fn_block_scan(chosen ? 1 : 0, warp_sums, &ch_total) - 1;
++        if (chosen) {
++            if (cmp) {
++                if (place >= top || out[place * ratio] != b * ratio) *bad_s = 1;
++            } else
++                for (int j = 0; j < ratio; ++j) out[place * ratio + j] = b * ratio + j;
++        }
++        seen += eq_total;
++        placed += ch_total;
++    }
++    return placed;
++}
++
++
++// ---- the 16-bit form (TF_FLASHNEXT_Q38_QSA_HALF): the coarse scores are stored as IEEE halves (half the bytes written and read) ----
++// A stored half f is the coarse score rounded to nearest: |coarse - f| <= |f| 2^-11 (2^-25 below the normal range), so
++// |exact - f| <= eps + |f| C + 2^-24 with C = 2^-11. With v the top-th largest stored half: at least `top` blocks have f >= v and
++// fewer than `top` have f > v, so the exact cut lies in [v - |v| C - e0, v + |v| C + e0] (x -/+ |x| C is increasing in x), and a
++// block whose own interval lies wholly above (below) that one is certainly listed (not listed). C is taken 1 % larger: that covers
++// the fp32 rounding of these few operations.
++constexpr float HC = 4.8828125e-4f * 1.01f;
++__device__ __forceinline__ uint32_t key16(uint32_t h) { return (h & 0x8000u) ? (~h & 0xFFFFu) : (h | 0x8000u); }
++__device__ __forceinline__ float half_value(uint32_t key) {
++    const unsigned short h = static_cast<unsigned short>((key & 0x8000u) ? (key & 0x7FFFu) : (~key & 0xFFFFu));
++    return __half2float(__ushort_as_half(h));
++}
++__device__ __forceinline__ float half_at(const unsigned short* row, int b) { return __half2float(__ushort_as_half(row[b])); }
++
++// The key of the top-th largest of the halves row[0, complete) and how many keys equal to it are among the top: two 8-bit passes.
++__device__ __forceinline__ void cut16_of(const unsigned short* __restrict__ row, int complete, int top, int* hist, uint32_t* cut_s,
++                                         int* need_s, uint32_t& cut_o, int& need_o) {
++    uint32_t cut = 0;
++    int need = top;
++    for (int p = 0; p < 2; ++p) {
++        const int shift = 8 - 8 * p;
++        for (int i = threadIdx.x; i < 256; i += blockDim.x) hist[i] = 0;
++        __syncthreads();
++        for (int b = threadIdx.x; b < complete; b += blockDim.x) {
++            const uint32_t k = key16(row[b]);
++            if (p == 0 || (k >> 8) == (cut >> 8)) atomicAdd(&hist[(k >> shift) & 0xFF], 1);
++        }
++        __syncthreads();
++        if (threadIdx.x == 0) {
++            int above = 0;
++            int d = 255;
++            for (; d > 0; --d) {
++                if (above + hist[d] >= need) break;
++                above += hist[d];
++            }
++            *need_s = need - above;
++            *cut_s = cut | (static_cast<uint32_t>(d) << shift);
++        }
++        __syncthreads();
++        cut = *cut_s;
++        need = *need_s;
++        __syncthreads();
++    }
++    cut_o = cut;
++    need_o = need;
++}
++
++// This thread's flag's rank among the block's flags in thread order (the flags before it), *total their count. One barrier a
++// call: each warp's count goes to wc[it & 1] (the buffers alternate, so a warp ahead never writes what a warp behind still reads).
++__device__ __forceinline__ int flag_rank(bool flag, int (*wc)[32], int it, int* total) {
++    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
++    const uint32_t mask = __ballot_sync(0xffffffffu, flag);
++    if (lane == 0) wc[it & 1][warp] = __popc(mask);
++    __syncthreads();
++    int pre = 0, tot = 0;
++    if (lane == 0)
++        for (int i = 0; i < 32; ++i) {
++            const int c = wc[it & 1][i];
++            tot += c;
++            if (i < warp) pre += c;
++        }
++    pre = __shfl_sync(0xffffffffu, pre, 0);
++    tot = __shfl_sync(0xffffffffu, tot, 0);
++    *total = tot;
++    return pre + __popc(mask & ((1u << lane) - 1u));
++}
++}  // namespace q38cert
++
++// Program (64-block tile), 256 threads: SC[r, b] = the heads' sum of relu(q_h . k_b) / sqrt(128) on mma tiles for every row of the
++// group (rows past TOP complete blocks, their complete blocks), and KNB[tile] = the tile's largest |k_b| (inf if not finite).
++template <bool HALF>
++__device__ __forceinline__ void q38_qsa_coarse_body(const __nv_bfloat16* __restrict__ IQ, const __nv_bfloat16* __restrict__ POOLED,
++                                                    const int* __restrict__ POS0, float* __restrict__ SC, float* __restrict__ KNB,
++                                                    int NB, int RATIO, int TOP, int rows) {
++    using namespace q38cert;
++    __shared__ uint32_t kb[BT][DI / 2];
++    __shared__ float nrm[BT];
++    const int j = blockIdx.x, b0 = j * BT;
++    const int pos0 = POS0[0];
++    const int cmax = (pos0 + rows) / RATIO;
++    if (cmax <= TOP || b0 >= cmax) return;
++    for (int e = threadIdx.x; e < BT * (DI / 2); e += blockDim.x) {
++        const int bi = e / (DI / 2), w = e % (DI / 2);
++        const int b = min(b0 + bi, cmax - 1);
++        kb[bi][w] = reinterpret_cast<const uint32_t*>(POOLED + static_cast<long long>(b) * DI)[w];
++    }
++    __syncthreads();
++    if (threadIdx.x < BT) {
++        float s = 0.0f;
++        for (int w = 0; w < DI / 2; ++w) {
++            const uint32_t x = kb[threadIdx.x][w];
++            const float lo = bfbits(x), hi = bfbits(x >> 16);
++            s = __fmaf_rn(lo, lo, s);
++            s = __fmaf_rn(hi, hi, s);
++        }
++        nrm[threadIdx.x] = s;
++    }
++    __syncthreads();
++    if (threadIdx.x == 0) {
++        float m = 0.0f;
++        for (int i = 0; i < BT; ++i) {
++            if (!(nrm[i] < CUDART_INF_F)) m = CUDART_INF_F;
++            else m = fmaxf(m, nrm[i]);
++        }
++        KNB[j] = sqrtf(m);
++    }
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, cw = lane & 3;
++    const float scale = __fsqrt_rn(static_cast<float>(DI));
++    for (int rb = 0; rb * 64 < rows; ++rb) {
++        const int r0 = rb * 64 + warp * 8;
++        if (r0 >= rows) continue;
++        const int row = r0 + g;
++        const int r = min(row, rows - 1);
++        const uint32_t* qw = reinterpret_cast<const uint32_t*>(IQ + static_cast<long long>(r) * HI * DI);
++        uint32_t a[2][8][4];
++#pragma unroll
++        for (int t = 0; t < 2; ++t)
++#pragma unroll
++            for (int ks = 0; ks < 8; ++ks) {
++                a[t][ks][0] = qw[(2 * t) * 64 + ks * 8 + cw];
++                a[t][ks][1] = qw[(2 * t + 1) * 64 + ks * 8 + cw];
++                a[t][ks][2] = qw[(2 * t) * 64 + ks * 8 + 4 + cw];
++                a[t][ks][3] = qw[(2 * t + 1) * 64 + ks * 8 + 4 + cw];
++            }
++        const int complete = (pos0 + row + 1) / RATIO;
++        const bool live = row < rows && complete > TOP;
++        float* out = SC + static_cast<long long>(row) * NB;
++        for (int nt = 0; nt < 8; ++nt) {
++            float acc[2][4] = {{0.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.0f}};
++#pragma unroll
++            for (int ks = 0; ks < 8; ++ks) {
++                const uint32_t w0 = kb[nt * 8 + g][ks * 8 + cw], w1 = kb[nt * 8 + g][ks * 8 + 4 + cw];
++                mma(acc[0], a[0][ks], w0, w1);
++                mma(acc[1], a[1][ks], w0, w1);
++            }
++#pragma unroll
++            for (int i = 0; i < 2; ++i) {
++                const int b = b0 + nt * 8 + cw * 2 + i;
++                const float f = fmaxf(acc[0][i], 0.0f) + fmaxf(acc[0][2 + i], 0.0f) + fmaxf(acc[1][i], 0.0f) + fmaxf(acc[1][2 + i], 0.0f);
++                if (live && b < complete) {
++                    if (HALF) reinterpret_cast<unsigned short*>(out)[b] = __half_as_ushort(__float2half_rn(f / scale));
++                    else out[b] = f / scale;
++                }
++            }
++        }
++    }
++}
++
++extern "C" __global__ void __launch_bounds__(256) fn_q38_qsa_coarse(const __nv_bfloat16* __restrict__ IQ,
++                                                                    const __nv_bfloat16* __restrict__ POOLED,
++                                                                    const int* __restrict__ POS0, float* __restrict__ SC,
++                                                                    float* __restrict__ KNB, int NB, int RATIO, int TOP, int rows) {
++    q38_qsa_coarse_body<false>(IQ, POOLED, POS0, SC, KNB, NB, RATIO, TOP, rows);
++}
++
++// The same with each score stored as a half in the first half of its row of SC (TF_FLASHNEXT_Q38_QSA_HALF).
++extern "C" __global__ void __launch_bounds__(256) fn_q38_qsa_coarse16(const __nv_bfloat16* __restrict__ IQ,
++                                                                      const __nv_bfloat16* __restrict__ POOLED,
++                                                                      const int* __restrict__ POS0, float* __restrict__ SC,
++                                                                      float* __restrict__ KNB, int NB, int RATIO, int TOP, int rows) {
++    q38_qsa_coarse_body<true>(IQ, POOLED, POS0, SC, KNB, NB, RATIO, TOP, rows);
++}
++
++// Program (row), 1024 threads: fn_qsa_select's list for the row from the coarse scores in sc (see the top of this file). sc's row is
++// scratch (the kernel overwrites entries). STATS [10] u64: rows, in-between blocks, fallback rows, most in-between blocks of a row,
++// rows that had to be redone (must stay 0), in-between sums whose bits differ from SC2's (MODE 2), blocks with |F - exact| > eps
++// (MODE 2), the largest |F - exact| / eps (float bits, MODE 2), rows whose list differs from the stock one (MODE 2), rows checked.
++extern "C" __global__ void __launch_bounds__(1024) fn_q38_qsa_select_cert(
++        float* __restrict__ sc, const int* __restrict__ pos0, int* __restrict__ ids, int* __restrict__ nkr, int* __restrict__ spr, int nb,
++        int idw, int top, int ratio, const __nv_bfloat16* __restrict__ IQ, const __nv_bfloat16* __restrict__ POOLED,
++        const float* __restrict__ KNB, unsigned long long* __restrict__ stats, float slack, int mode, const float* __restrict__ sc2) {
++    using namespace q38cert;
++    __shared__ int hist[256];
++    __shared__ int warp_sums[32];
++    __shared__ uint32_t cut_s;
++    __shared__ int need_s;
++    __shared__ int cand[CMAX];
++    __shared__ uint32_t ckey[CMAX];
++    __shared__ float cf[CMAX];
++    __shared__ float ce[CMAX];
++    __shared__ float red[32];
++    __shared__ float qn[HI];
++    __shared__ int na_s;
++    __shared__ int nf_s;
++    __shared__ int bad_s;
++    const int r = blockIdx.x;
++    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++    const int end = *pos0 + r + 1;
++    const int complete = end / ratio;
++    if (complete <= top) {
++        if (tid == 0) {
++            nkr[r] = end;
++            spr[r] = 0;
++        }
++        return;
++    }
++    float* row = sc + static_cast<long long>(r) * nb;
++    int* out = ids + static_cast<long long>(r) * idw;
++    const __nv_bfloat16* q = IQ + static_cast<long long>(r) * HI * DI;
++
++    // v = the top-th largest coarse score
++    uint32_t cut = 0;
++    int need = 0;
++    cut_of(row, complete, top, hist, &cut_s, &need_s, cut, need);
++    const float v = key_value(cut);
++
++    // eps: the heads' |q_h| summed, the largest |k| of the row's tiles
++    if (tid < HI) {
++        float s = 0.0f;
++        for (int i = 0; i < DI; ++i) {
++            const float x = __bfloat162float(q[tid * DI + i]);
++            s = __fmaf_rn(x, x, s);
++        }
++        qn[tid] = sqrtf(s);
++    }
++    float km = 0.0f;
++    const int tiles = (complete + BT - 1) / BT;
++    for (int i = tid; i < tiles; i += blockDim.x) {
++        const float x = KNB[i];
++        km = (x < CUDART_INF_F) ? fmaxf(km, x) : CUDART_INF_F;
++    }
++    for (int o = 16; o; o >>= 1) km = fmaxf(km, __shfl_xor_sync(0xffffffffu, km, o));
++    if (lane == 0) red[warp] = km;
++    if (tid == 0) {
++        na_s = 0;
++        nf_s = 0;
++        bad_s = 0;
++    }
++    __syncthreads();
++    km = 0.0f;
++    for (int i = 0; i < 32; ++i) km = fmaxf(km, red[i]);
++    const float qsum = qn[0] + qn[1] + qn[2] + qn[3];
++    const float eps = slack * (qsum * 1.01f) * (km * 1.01f) / __fsqrt_rn(static_cast<float>(DI)) + 1e-30f;
++    const float w = 2.0f * eps * 1.0001f + fabsf(v) * 1e-6f;
++    bool fallback = !finite(w) || !finite(v) || !(w > 0.0f);
++    const float hi = v + w, lo = v - w;
++
++    int nc = 0;
++    if (!fallback) {
++        // certainly listed (F > hi), certainly not (F < lo), in between (anything else); a non-finite score: the bound does not hold
++        int na = 0;
++        for (int t0 = 0; t0 < complete; t0 += blockDim.x) {
++            const int b = t0 + tid;
++            const bool ok = b < complete;
++            const float f = ok ? row[b] : 0.0f;
++            const bool in = ok && f > hi;
++            const bool cnd = ok && !in && !(f < lo);
++            if (in) atomicAdd(&na_s, 1);
++            if (ok && !finite(f)) nf_s = 1;
++            int tot = 0;
++            const int idx = nc + fn_block_scan(cnd ? 1 : 0, warp_sums, &tot) - 1;
++            if (cnd && idx < CMAX) cand[idx] = b;
++            nc += tot;
++        }
++        __syncthreads();
++        na = na_s;
++        const int want = top - na;
++        if (nf_s != 0 || nc > CMAX || want < 0 || want > nc) fallback = true;
++        if (!fallback) {
++            if (tid < nc) {
++                const int b = cand[tid];
++                const float e = exact_one(q, POOLED + static_cast<long long>(b) * DI);
++                cf[tid] = row[b];
++                ce[tid] = e;
++                ckey[tid] = fn_qsa_key(e);
++            }
++            __syncthreads();
++            if (tid < nc) {
++                const uint32_t my = ckey[tid];
++                int rank = 0;
++                for (int u = 0; u < nc; ++u) {
++                    const uint32_t ku = ckey[u];
++                    rank += (ku > my || (ku == my && u < tid)) ? 1 : 0;
++                }
++                row[cand[tid]] = rank < want ? CUDART_INF_F : -CUDART_INF_F;
++            }
++            __syncthreads();
++            int placed = 0;
++            for (int t0 = 0; t0 < complete; t0 += blockDim.x) {
++                const int b = t0 + tid;
++                const bool chosen = b < complete && row[b] > hi;
++                int tot = 0;
++                const int place = placed + fn_block_scan(chosen ? 1 : 0, warp_sums, &tot) - 1;
++                if (chosen && place < top)
++                    for (int jj = 0; jj < ratio; ++jj) out[place * ratio + jj] = b * ratio + jj;
++                placed += tot;
++            }
++            if (placed != top) {
++                fallback = true;
++                if (tid == 0) atomicAdd(&stats[4], 1ull);
++            }
++        }
++    }
++    if (mode == 2 && !fallback) {
++        const float* ref = sc2 + static_cast<long long>(r) * nb;
++        int viol = 0, ediff = 0;
++        float mr = 0.0f;
++        for (int b = tid; b < complete; b += blockDim.x) {
++            const float f = row[b];
++            if (finite(f)) {
++                const float d = fabsf(f - ref[b]);
++                if (!(d <= eps)) ++viol;
++                mr = fmaxf(mr, d / eps);
++            }
++        }
++        if (tid < nc) {
++            const float f = cf[tid], e = ref[cand[tid]];
++            if (finite(f)) {
++                const float d = fabsf(f - e);
++                if (!(d <= eps)) ++viol;
++                mr = fmaxf(mr, d / eps);
++            }
++            if (__float_as_uint(ce[tid]) != __float_as_uint(e)) ++ediff;
++        }
++        if (viol) atomicAdd(&stats[6], static_cast<unsigned long long>(viol));
++        if (ediff) atomicAdd(&stats[5], static_cast<unsigned long long>(ediff));
++        if (mr > 0.0f) atomicMax(&stats[7], static_cast<unsigned long long>(__float_as_uint(mr)));
++    }
++    if (fallback) {
++        __syncthreads();
++        for (int b = tid; b < complete; b += blockDim.x) row[b] = exact_one(q, POOLED + static_cast<long long>(b) * DI);
++        __syncthreads();
++        if (mode == 2) {
++            const float* ref = sc2 + static_cast<long long>(r) * nb;
++            int ediff = 0;
++            for (int b = tid; b < complete; b += blockDim.x)
++                if (__float_as_uint(row[b]) != __float_as_uint(ref[b])) ++ediff;
++            if (ediff) atomicAdd(&stats[5], static_cast<unsigned long long>(ediff));
++        }
++        cut_of(row, complete, top, hist, &cut_s, &need_s, cut, need);
++        place_stock(row, complete, cut, need, out, top, ratio, warp_sums, false, &bad_s);
++    }
++    if (mode == 2) {
++        const float* ref = sc2 + static_cast<long long>(r) * nb;
++        __syncthreads();
++        uint32_t cut2 = 0;
++        int need2 = 0;
++        cut_of(ref, complete, top, hist, &cut_s, &need_s, cut2, need2);
++        const int placed2 = place_stock(ref, complete, cut2, need2, out, top, ratio, warp_sums, true, &bad_s);
++        __syncthreads();
++        if (tid == 0) {
++            if (bad_s != 0 || placed2 != top) atomicAdd(&stats[8], 1ull);
++            atomicAdd(&stats[9], 1ull);
++        }
++    }
++    if (tid < ratio) {
++        const int tail = ratio * complete + tid;
++        if (tail < end) out[top * ratio + tid] = tail;
++    }
++    if (tid == 0) {
++        nkr[r] = top * ratio + end - ratio * complete;
++        spr[r] = 1;
++        atomicAdd(&stats[0], 1ull);
++        atomicAdd(&stats[1], static_cast<unsigned long long>(fallback ? 0 : nc));
++        if (fallback) atomicAdd(&stats[2], 1ull);
++        atomicMax(&stats[3], static_cast<unsigned long long>(nc));
++    }
++}
++
++// fn_q38_qsa_select_cert on fn_q38_qsa_coarse16's halves (see "the 16-bit form" above): two radix passes instead of four over rows
++// of half the bytes, one barrier a block scan. The fallback writes the row's exact fp32 sums over the halves (the row has the room).
++extern "C" __global__ void __launch_bounds__(1024) fn_q38_qsa_select_cert16(
++        float* __restrict__ sc, const int* __restrict__ pos0, int* __restrict__ ids, int* __restrict__ nkr, int* __restrict__ spr, int nb,
++        int idw, int top, int ratio, const __nv_bfloat16* __restrict__ IQ, const __nv_bfloat16* __restrict__ POOLED,
++        const float* __restrict__ KNB, unsigned long long* __restrict__ stats, float slack, int mode, const float* __restrict__ sc2) {
++    using namespace q38cert;
++    __shared__ int hist[256];
++    __shared__ int warp_sums[32];
++    __shared__ int wc[2][32];
++    __shared__ uint32_t cut_s;
++    __shared__ int need_s;
++    __shared__ int cand[CMAX];
++    __shared__ uint32_t ckey[CMAX];
++    __shared__ float cf[CMAX];
++    __shared__ float ce[CMAX];
++    __shared__ float red[32];
++    __shared__ int redi[32];
++    __shared__ float qn[HI];
++    __shared__ int nf_s;
++    __shared__ int bad_s;
++    const int r = blockIdx.x;
++    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++    const int end = *pos0 + r + 1;
++    const int complete = end / ratio;
++    if (complete <= top) {
++        if (tid == 0) {
++            nkr[r] = end;
++            spr[r] = 0;
++        }
++        return;
++    }
++    float* row32 = sc + static_cast<long long>(r) * nb;
++    unsigned short* row = reinterpret_cast<unsigned short*>(row32);
++    int* out = ids + static_cast<long long>(r) * idw;
++    const __nv_bfloat16* q = IQ + static_cast<long long>(r) * HI * DI;
++
++    uint32_t cut = 0;
++    int need = 0;
++    cut16_of(row, complete, top, hist, &cut_s, &need_s, cut, need);
++    const float v = half_value(cut);
++
++    if (tid < HI) {
++        float s = 0.0f;
++        for (int i = 0; i < DI; ++i) {
++            const float x = __bfloat162float(q[tid * DI + i]);
++            s = __fmaf_rn(x, x, s);
++        }
++        qn[tid] = sqrtf(s);
++    }
++    float km = 0.0f;
++    const int tiles = (complete + BT - 1) / BT;
++    for (int i = tid; i < tiles; i += blockDim.x) {
++        const float x = KNB[i];
++        km = (x < CUDART_INF_F) ? fmaxf(km, x) : CUDART_INF_F;
++    }
++    for (int o = 16; o; o >>= 1) km = fmaxf(km, __shfl_xor_sync(0xffffffffu, km, o));
++    if (lane == 0) red[warp] = km;
++    if (tid == 0) {
++        nf_s = 0;
++        bad_s = 0;
++    }
++    __syncthreads();
++    km = 0.0f;
++    for (int i = 0; i < 32; ++i) km = fmaxf(km, red[i]);
++    const float qsum = qn[0] + qn[1] + qn[2] + qn[3];
++    const float eps = slack * (qsum * 1.01f) * (km * 1.01f) / __fsqrt_rn(static_cast<float>(DI)) + 1e-30f;
++    const float e0 = eps * 1.0001f + 6.0e-8f;
++    const float U = v + fabsf(v) * HC + e0, Lo = v - fabsf(v) * HC - e0;
++    bool fallback = !finite(e0) || !finite(v) || !finite(U) || !finite(Lo);
++
++    int nc = 0;
++    int it = 0;
++    if (!fallback) {
++        int in_acc = 0;
++        for (int t0 = 0; t0 < complete; t0 += blockDim.x, ++it) {
++            const int b = t0 + tid;
++            const bool ok = b < complete;
++            const float f = ok ? half_at(row, b) : 0.0f;
++            const bool fin = finite(f);
++            const bool in = ok && fin && f - fabsf(f) * HC - e0 > U;
++            const bool cnd = ok && !in && !(fin && f + fabsf(f) * HC + e0 < Lo);
++            if (ok && !fin) nf_s = 1;
++            const uint32_t im = __ballot_sync(0xffffffffu, in);
++            if (lane == 0) in_acc += __popc(im);
++            int tot = 0;
++            const int idx = nc + flag_rank(cnd, wc, it, &tot);
++            if (cnd && idx < CMAX) cand[idx] = b;
++            nc += tot;
++        }
++        if (lane == 0) redi[warp] = in_acc;
++        __syncthreads();
++        int na = 0;
++        for (int i = 0; i < 32; ++i) na += redi[i];
++        const int want = top - na;
++        if (nf_s != 0 || nc > CMAX || want < 0 || want > nc) fallback = true;
++        if (!fallback) {
++            if (tid < nc) {
++                const int b = cand[tid];
++                const float e = exact_one(q, POOLED + static_cast<long long>(b) * DI);
++                cf[tid] = half_at(row, b);
++                ce[tid] = e;
++                ckey[tid] = fn_qsa_key(e);
++            }
++            __syncthreads();
++            if (tid < nc) {
++                const uint32_t my = ckey[tid];
++                int rank = 0;
++                for (int u = 0; u < nc; ++u) {
++                    const uint32_t ku = ckey[u];
++                    rank += (ku > my || (ku == my && u < tid)) ? 1 : 0;
++                }
++                row[cand[tid]] = rank < want ? static_cast<unsigned short>(0x7C00u) : static_cast<unsigned short>(0xFC00u);
++            }
++            __syncthreads();
++            int placed = 0;
++            for (int t0 = 0; t0 < complete; t0 += blockDim.x, ++it) {
++                const int b = t0 + tid;
++                const bool ok = b < complete;
++                const unsigned short hb = ok ? row[b] : static_cast<unsigned short>(0xFC00u);
++                const float f = __half2float(__ushort_as_half(hb));
++                const bool chosen = ok && (hb == 0x7C00u || (finite(f) && f - fabsf(f) * HC - e0 > U));
++                int tot = 0;
++                const int place = placed + flag_rank(chosen, wc, it, &tot);
++                if (chosen && place < top)
++                    for (int jj = 0; jj < ratio; ++jj) out[place * ratio + jj] = b * ratio + jj;
++                placed += tot;
++            }
++            if (placed != top) {
++                fallback = true;
++                if (tid == 0) atomicAdd(&stats[4], 1ull);
++            }
++        }
++    }
++    if (mode == 2 && !fallback) {
++        const float* ref = sc2 + static_cast<long long>(r) * nb;
++        int viol = 0, ediff = 0;
++        float mr = 0.0f;
++        for (int b = tid; b < complete; b += blockDim.x) {
++            const float f = half_at(row, b);
++            if (finite(f)) {
++                const float d = fabsf(f - ref[b]), bound = fabsf(f) * HC + e0;
++                if (!(d <= bound)) ++viol;
++                mr = fmaxf(mr, d / bound);
++            }
++        }
++        if (tid < nc) {
++            const float f = cf[tid], e = ref[cand[tid]];
++            if (finite(f)) {
++                const float d = fabsf(f - e), bound = fabsf(f) * HC + e0;
++                if (!(d <= bound)) ++viol;
++                mr = fmaxf(mr, d / bound);
++            }
++            if (__float_as_uint(ce[tid]) != __float_as_uint(e)) ++ediff;
++        }
++        if (viol) atomicAdd(&stats[6], static_cast<unsigned long long>(viol));
++        if (ediff) atomicAdd(&stats[5], static_cast<unsigned long long>(ediff));
++        if (mr > 0.0f) atomicMax(&stats[7], static_cast<unsigned long long>(__float_as_uint(mr)));
++    }
++    if (fallback) {
++        uint32_t cut32 = 0;
++        int need32 = 0;
++        __syncthreads();
++        // the row's halves are no longer read: its exact fp32 sums go over them, highest block first within a thread's stride is
++        // not needed (each thread writes only its own blocks, and no thread reads a half after this barrier)
++        for (int b = tid; b < complete; b += blockDim.x) row32[b] = exact_one(q, POOLED + static_cast<long long>(b) * DI);
++        __syncthreads();
++        if (mode == 2) {
++            const float* ref = sc2 + static_cast<long long>(r) * nb;
++            int ediff = 0;
++            for (int b = tid; b < complete; b += blockDim.x)
++                if (__float_as_uint(row32[b]) != __float_as_uint(ref[b])) ++ediff;
++            if (ediff) atomicAdd(&stats[5], static_cast<unsigned long long>(ediff));
++        }
++        cut_of(row32, complete, top, hist, &cut_s, &need_s, cut32, need32);
++        place_stock(row32, complete, cut32, need32, out, top, ratio, warp_sums, false, &bad_s);
++    }
++    if (mode == 2) {
++        const float* ref = sc2 + static_cast<long long>(r) * nb;
++        __syncthreads();
++        uint32_t cut2 = 0;
++        int need2 = 0;
++        cut_of(ref, complete, top, hist, &cut_s, &need_s, cut2, need2);
++        const int placed2 = place_stock(ref, complete, cut2, need2, out, top, ratio, warp_sums, true, &bad_s);
++        __syncthreads();
++        if (tid == 0) {
++            if (bad_s != 0 || placed2 != top) atomicAdd(&stats[8], 1ull);
++            atomicAdd(&stats[9], 1ull);
++        }
++    }
++    if (tid < ratio) {
++        const int tail = ratio * complete + tid;
++        if (tail < end) out[top * ratio + tid] = tail;
++    }
++    if (tid == 0) {
++        nkr[r] = top * ratio + end - ratio * complete;
++        spr[r] = 1;
++        atomicAdd(&stats[0], 1ull);
++        atomicAdd(&stats[1], static_cast<unsigned long long>(fallback ? 0 : nc));
++        if (fallback) atomicAdd(&stats[2], 1ull);
++        atomicMax(&stats[3], static_cast<unsigned long long>(nc));
++    }
++}
+diff --git a/zig/src/core/prompt_cache.zig b/zig/src/core/prompt_cache.zig
+index dd60665..76b0d46 100644
+--- a/zig/src/core/prompt_cache.zig
++++ b/zig/src/core/prompt_cache.zig
+@@ -168,6 +168,24 @@ pub const Store = struct {
+         s.free(e);
+     }
+ 
++    /// q38 (TF_FLASHNEXT_Q38_CACHE_ELASTIC): the budget follows the room the streams leave. Sets it and, when it shrank, evicts in the
++    /// usual order (spare storage, superseded states, then the least recently used) until the kept states fit; false when states
++    /// borrowed by passes under way keep it over.
++    pub fn q38Resize(s: *Store, budget: u64) bool {
++        s.budget = budget;
++        while (s.held + s.spare() > s.budget) {
++            if (s.family.vtable.trim) |f| {
++                const before = s.spare();
++                f(s.family.ptr, s.budget -| s.held);
++                if (s.spare() < before) continue;
++            }
++            const i = s.victimBut(null, &.{}, std.math.maxInt(u32)) orelse return false;
++            s.remove(i);
++            s.counts.evicted += 1;
++        }
++        return true;
++    }
++
+     /// The family's free storage kept for later saves.
+     pub fn spare(s: *const Store) u64 {
+         return if (s.family.vtable.spare) |f| f(s.family.ptr) else 0;
+diff --git a/zig/src/core/prompt_cache_policy.zig b/zig/src/core/prompt_cache_policy.zig
+index 6205d6b..92e16f7 100644
+--- a/zig/src/core/prompt_cache_policy.zig
++++ b/zig/src/core/prompt_cache_policy.zig
+@@ -46,7 +46,14 @@ fn isActiveRewind(s: *const pc.Store, e: *const pc.Entry, prompt: []const u32) b
+ var q38_siblings: i8 = -1;
+ /// TF_FLASHNEXT_Q38_CACHE_SIBLINGS=1 (q38; default off): eviction takes a prompt's earlier marks before any conversation's newest state.
+ pub fn q38Siblings() bool {
+-    if (q38_siblings < 0) q38_siblings = if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_SIBLINGS")) |v| @intFromBool(v[0] == '1') else 0;
++    if (q38_siblings < 0) {
++        q38_siblings = if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_SIBLINGS")) |v| @intFromBool(v[0] == '1') else 0;
++        // round 9: the elastic cache (TF_FLASHNEXT_Q38_CACHE_ELASTIC=1) turns this order on too, unless _SIBLINGS=0 is given: with 16
++        // agents on 5 lanes a request keeps a state at every chunk boundary, and those must go before another conversation's newest
++        if (q38_siblings == 0 and std.c.getenv("TF_FLASHNEXT_Q38_CACHE_SIBLINGS") == null) {
++            if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_ELASTIC")) |v| q38_siblings = @intFromBool(v[0] == '1');
++        }
++    }
+     return q38_siblings == 1;
+ }
+ 
+diff --git a/zig/src/families/flashnext/cuda_batch.zig b/zig/src/families/flashnext/cuda_batch.zig
+index d64c050..bd0bbb0 100644
+--- a/zig/src/families/flashnext/cuda_batch.zig
++++ b/zig/src/families/flashnext/cuda_batch.zig
+@@ -14,6 +14,7 @@ const tk = @import("cuda_tile_kernels.zig");
+ const knobs = @import("cuda_knobs.zig");
+ const glue_mod = @import("cuda_glue.zig");
+ const side_ = @import("cuda_batch_side.zig");
++const qsa_cert = @import("cuda_qsa_cert.zig");
+ 
+ const layers_n = wt.layers_n;
+ const linear_n = wt.linear_n;
+@@ -745,6 +746,9 @@ pub fn Pass(comptime Tri: type) type {
+             // prompt rows: selections for up to fused_rows rows, then one fused launch (chunks merged in the program)
+             const fused = n > att_rows and self.tri.fusedAttentionOwned();
+             const group: usize = if (fused) parts.fused_rows else att_rows;
++            const cert_on = knobs.q38QsaCert();
++            const cert_min = knobs.q38QsaCertMin();
++            const cert_half = knobs.q38QsaHalf();
+             var g0: usize = 0;
+             while (g0 < n) : (g0 += group) {
+                 const gm = @min(group, n - g0);
+@@ -757,18 +761,60 @@ pub fn Pass(comptime Tri: type) type {
+                     const iq = at.iq + r0 * index_heads * index_dim * 2;
+                     const sel = r0 - g0; // this block's rows in the selection buffers
+                     // rows past `top` complete blocks score theirs; _scores leaves the rest, so skip it when none is
+-                    if (ends / ratio > top) try self.tri.qsaScores(iq, pooled, pos, self.seq.scores, nb, m, @min(nb, cdiv(ends, ratio)));
+-                    var a: cuda.Args = .{};
+-                    a.add(self.seq.scores);
+-                    a.add(pos);
+-                    a.add(s.qids + sel * idw * 4);
+-                    a.add(s.qnk + sel * 4);
+-                    a.add(s.qspr + sel * 4);
+-                    a.add(cint(nb));
+-                    a.add(cint(idw));
+-                    a.add(cint(top));
+-                    a.add(cint(ratio));
+-                    try cuda.launch.launch(self.k.select, .{ .grid = .{ .x = @intCast(m) }, .block = .{ .x = 1024 } }, self.stream, &a);
++                    const blocks = @min(nb, cdiv(ends, ratio));
++                    // q38 (TF_FLASHNEXT_Q38_QSA_CERT): coarse scores on tensor cores and the certified selection (the stock lists)
++                    const cert: u8 = if (cert_on != 0 and ends / ratio > top and m >= cert_min and index_heads == 4 and index_dim == 128 and cdiv(blocks, 64) <= qsa_cert.max_tiles) cert_on else 0;
++                    const half16 = cert_half and self.k.qsa_coarse16 != null and self.k.qsa_select_cert16 != null;
++                    const f_coarse = if (half16) self.k.qsa_coarse16 else self.k.qsa_coarse;
++                    const f_select = if (half16) self.k.qsa_select_cert16 else self.k.qsa_select_cert;
++                    const cb: ?qsa_cert.Bufs = if (cert != 0 and f_coarse != null and f_select != null) qsa_cert.bufs(self.stream.d) else null;
++                    const ref: ?u64 = if (cb != null and cert == 2) qsa_cert.refScores(self.stream.d, att_rows * nb * 4) else null;
++                    if (cb != null and (cert != 2 or ref != null)) {
++                        const b = cb.?;
++                        if (ref) |rs| try self.tri.qsaScores(iq, pooled, pos, rs, nb, m, blocks);
++                        var c: cuda.Args = .{};
++                        c.add(iq);
++                        c.add(pooled);
++                        c.add(pos);
++                        c.add(self.seq.scores);
++                        c.add(b.knb);
++                        c.add(cint(nb));
++                        c.add(cint(ratio));
++                        c.add(cint(top));
++                        c.add(cint(m));
++                        try cuda.launch.launch(f_coarse.?, .{ .grid = .{ .x = @intCast(cdiv(blocks, 64)) }, .block = .{ .x = 256 } }, self.stream, &c);
++                        var a: cuda.Args = .{};
++                        a.add(self.seq.scores);
++                        a.add(pos);
++                        a.add(s.qids + sel * idw * 4);
++                        a.add(s.qnk + sel * 4);
++                        a.add(s.qspr + sel * 4);
++                        a.add(cint(nb));
++                        a.add(cint(idw));
++                        a.add(cint(top));
++                        a.add(cint(ratio));
++                        a.add(iq);
++                        a.add(pooled);
++                        a.add(b.knb);
++                        a.add(b.stats);
++                        a.add(knobs.q38QsaSlack());
++                        a.add(cint(cert));
++                        a.add(ref orelse self.seq.scores);
++                        try cuda.launch.launch(f_select.?, .{ .grid = .{ .x = @intCast(m) }, .block = .{ .x = 1024 } }, self.stream, &a);
++                    } else {
++                        if (ends / ratio > top) try self.tri.qsaScores(iq, pooled, pos, self.seq.scores, nb, m, blocks);
++                        var a: cuda.Args = .{};
++                        a.add(self.seq.scores);
++                        a.add(pos);
++                        a.add(s.qids + sel * idw * 4);
++                        a.add(s.qnk + sel * 4);
++                        a.add(s.qspr + sel * 4);
++                        a.add(cint(nb));
++                        a.add(cint(idw));
++                        a.add(cint(top));
++                        a.add(cint(ratio));
++                        try cuda.launch.launch(self.k.select, .{ .grid = .{ .x = @intCast(m) }, .block = .{ .x = 1024 } }, self.stream, &a);
++                    }
+                     if (!fused) {
+                         const chunks = cdiv(@min(ends, wt.dense_keys), 512);
+                         if (fp8) {
+diff --git a/zig/src/families/flashnext/cuda_batch_state.zig b/zig/src/families/flashnext/cuda_batch_state.zig
+index 57daceb..ae975d3 100644
+--- a/zig/src/families/flashnext/cuda_batch_state.zig
++++ b/zig/src/families/flashnext/cuda_batch_state.zig
+@@ -199,6 +199,10 @@ pub const Kernels = struct {
+     /// Each sparse row's top blocks (attention._select / _select_tiles), native.
+     select: cuda.Function,
+     select_lanes: cuda.Function = undefined, // q38: fn_qsa_select over a shared round's rows (TF_FLASHNEXT_Q38_ATTN_LANES)
++    qsa_coarse: ?cuda.Function = null, // q38 certified indexer select (TF_FLASHNEXT_Q38_QSA_CERT, q38_qsa_cert.cuh)
++    qsa_select_cert: ?cuda.Function = null,
++    qsa_coarse16: ?cuda.Function = null, // the 16-bit form (TF_FLASHNEXT_Q38_QSA_HALF)
++    qsa_select_cert16: ?cuda.Function = null,
+ 
+     pub fn load(d: *const cuda.Driver, tile_cfg: cuda.nvfp4_tile.Config) !Kernels {
+         if (!cuda.kernels.available) return error.BuiltWithoutKernels;
+@@ -236,6 +240,10 @@ pub const Kernels = struct {
+         k.shift = try k.batch.function("fn_shift_window");
+         k.select = try k.batch.function("fn_qsa_select");
+         k.select_lanes = try k.batch.function("fn_q38_qsa_select_lanes");
++        k.qsa_coarse = k.batch.function("fn_q38_qsa_coarse") catch null;
++        k.qsa_select_cert = k.batch.function("fn_q38_qsa_select_cert") catch null;
++        k.qsa_coarse16 = k.batch.function("fn_q38_qsa_coarse16") catch null;
++        k.qsa_select_cert16 = k.batch.function("fn_q38_qsa_select_cert16") catch null;
+         k.front = try k.batch.function("fn_gdn_front");
+         k.chain = try k.batch.function("fn_gdn_rows");
+         k.chain_to = try k.batch.function("fn_gdn_rows_to");
+diff --git a/zig/src/families/flashnext/cuda_glue.zig b/zig/src/families/flashnext/cuda_glue.zig
+index cb7b834..68c6152 100644
+--- a/zig/src/families/flashnext/cuda_glue.zig
++++ b/zig/src/families/flashnext/cuda_glue.zig
+@@ -66,6 +66,7 @@ const Fns = struct {
+     pool: cuda.Function,
+     scores: cuda.Function,
+     scores_tile: cuda.Function,
++    q38_scores_loop: ?cuda.Function = null,
+     chunks: cuda.Function,
+     chunks_ahead: cuda.Function,
+     chunks_one: cuda.Function,
+@@ -157,6 +158,7 @@ pub const Glue = struct {
+             .pool = try g.attn.function("fn_qsa_pool"),
+             .scores = try g.attn.function("fn_qsa_scores"),
+             .scores_tile = try g.attn.function("_ZN8qsa_tile6scoresILi8ELi4EEEvPK13__nv_bfloat16S3_PKiPfiiii"),
++            .q38_scores_loop = g.attn.function("fn_q38_qsa_scores_loop") catch null,
+             .chunks = try g.attn.function("fn_attn_chunks"),
+             .chunks_ahead = try g.attn.function("fn_attn_chunks_ahead"),
+             .chunks_one = try g.attn.function("fn_attn_chunks_one"),
+@@ -369,6 +371,11 @@ pub const Glue = struct {
+         ptrs(&a, &.{ iq, pooled, pos, sc });
+         if (wt.index_heads == 4) {
+             // 8 rows and 256 blocks a CTA, every head, fn_qsa_scores' sums in its order (its bits)
++            const loop = @import("cuda_knobs.zig").q38QsaLoop();
++            if (loop > 1) if (g.f.q38_scores_loop) |f| {
++                ints(&a, &.{ nb, wt.index_ratio, wt.index_top, rows, loop });
++                return go(f, s, .{ cdiv(rows, 8 * loop), cdiv(blocks, 256), 1 }, 256, 0, &a);
++            };
+             ints(&a, &.{ nb, wt.index_ratio, wt.index_top, rows });
+             return go(g.f.scores_tile, s, .{ cdiv(rows, 8), cdiv(blocks, 256), 1 }, 256, 0, &a);
+         }
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index 2503939..9131a1a 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -163,19 +163,39 @@ pub fn plog() bool {
+ /// use, so one running engine can be switched between a lever's settings for paired timing. null: no file, or no such name.
+ pub fn q38KnobFile(name: []const u8) ?i64 {
+     const path = std.c.getenv("TF_FLASHNEXT_Q38_KNOBFILE") orelse return null;
+-    const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, @as(std.c.mode_t, 0));
+-    if (fd < 0) return null;
+-    defer _ = std.c.close(fd);
+-    var buf: [256]u8 = undefined;
+-    const n = std.c.pread(fd, &buf, buf.len, 0);
+-    if (n <= 0) return null;
+-    var it = std.mem.tokenizeAny(u8, buf[0..@intCast(n)], "\n \t");
++    // the file's text is kept for 200 ms: a knob read between two launches of a prompt pass must not cost a file read (the per-group
++    // reads of round 9's indexer knobs slowed the stock path by ~2 % of a 109K prompt and skewed a paired comparison)
++    const st = struct {
++        var buf: [256]u8 = undefined;
++        var len: usize = 0;
++        var at_ns: u64 = 0;
++        var have: bool = false;
++    };
++    var ts: [2]i64 = .{ 0, 0 };
++    _ = q38_clock_gettime(1, &ts);
++    const now = @as(u64, @intCast(ts[0])) * 1_000_000_000 + @as(u64, @intCast(ts[1]));
++    if (!st.have or now -% st.at_ns > 200_000_000) {
++        st.len = 0;
++        const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, @as(std.c.mode_t, 0));
++        if (fd >= 0) {
++            const n = std.c.pread(fd, &st.buf, st.buf.len, 0);
++            if (n > 0) st.len = @intCast(n);
++            _ = std.c.close(fd);
++        }
++        st.at_ns = now;
++        st.have = true;
++    }
++    var it = std.mem.tokenizeAny(u8, st.buf[0..st.len], "\n \t");
+     while (it.next()) |w| {
+         if (w.len > name.len + 1 and std.mem.startsWith(u8, w, name) and w[name.len] == '=') return std.fmt.parseInt(i64, w[name.len + 1 ..], 10) catch null;
+     }
+     return null;
+ }
+ 
++extern "c" fn clock_gettime(clk: c_int, ts: *[2]i64) c_int;
++const q38_clock_gettime = clock_gettime;
++
++
+ var keep_inpass_cache: i64 = -1;
+ /// TF_FLASHNEXT_Q38_KEEP_INPASS=N (q38; default 0: off): a prompt-cache mark INSIDE a lone prompt pass of at most N rows no longer
+ /// cuts the pass there. The pass runs through; the mark's kept state is filled on the way: each DeltaNet layer's recurrence is
+@@ -340,3 +360,65 @@ pub fn q38Head2Block() bool {
+     const v = std.c.getenv("TF_FLASHNEXT_Q38_HEAD2_MODE") orelse return true;
+     return !std.mem.eql(u8, std.mem.span(v), "topk");
+ }
++
++fn q38EnvInt(comptime env: [:0]const u8, comptime knob: []const u8, default: i64) i64 {
++    const st = struct {
++        var v: i64 = std.math.minInt(i64);
++    };
++    if (q38KnobFile(knob)) |v| return v;
++    if (st.v == std.math.minInt(i64)) st.v = if (std.c.getenv(env)) |e| (std.fmt.parseInt(i64, std.mem.span(e), 10) catch default) else default;
++    return st.v;
++}
++
++/// TF_FLASHNEXT_Q38_QSA_CERT=1|2 (q38; default 0: off; knob file word qsa_cert): the certified indexer select of prompt rows
++/// (kernels/cuda/q38_qsa_cert.cuh): coarse block scores on tensor cores with a bound, the exact scalar sums only for the blocks the
++/// bound cannot place, the same selected lists as fn_qsa_scores + fn_qsa_select. 2: check mode, the stock kernels run as well and
++/// every row's list is compared on the device (counters printed with TF_FLASHNEXT_Q38_QSA_STATS=1).
++pub fn q38QsaCert() u8 {
++    return @intCast(@min(2, @max(0, q38EnvInt("TF_FLASHNEXT_Q38_QSA_CERT", "qsa_cert", 0))));
++}
++
++/// TF_FLASHNEXT_Q38_QSA_CERT_MIN=N (default 64; knob file word qsa_cert_min): the fewest rows of an attention block of rows that take
++/// the certified select (fewer rows: the stock kernels).
++pub fn q38QsaCertMin() usize {
++    return @intCast(@max(1, q38EnvInt("TF_FLASHNEXT_Q38_QSA_CERT_MIN", "qsa_cert_min", 64)));
++}
++
++/// TF_FLASHNEXT_Q38_QSA_SLACK=N (default 100; knob file word qsa_slack): the certified select's bound on |coarse - exact| in
++/// millionths of (sum of the heads' |q|) * (largest |k|) / sqrt(128). 100 is ~7 times the worst case of 128 fp32 additions with
++/// truncation; check mode reports the largest ratio seen.
++pub fn q38QsaSlack() f32 {
++    return @as(f32, @floatFromInt(@max(1, q38EnvInt("TF_FLASHNEXT_Q38_QSA_SLACK", "qsa_slack", 100)))) * 1e-6;
++}
++
++/// TF_FLASHNEXT_Q38_QSA_HALF=1 (default 0; knob file word qsa_half; with TF_FLASHNEXT_Q38_QSA_CERT): the certified select keeps its
++/// coarse scores as IEEE halves (half the bytes written and read, two radix passes instead of four); the half rounding is added
++/// to the bound, so a few more blocks take the exact sum. The lists are the same.
++pub fn q38QsaHalf() bool {
++    return q38EnvInt("TF_FLASHNEXT_Q38_QSA_HALF", "qsa_half", 0) != 0;
++}
++
++/// TF_FLASHNEXT_Q38_QSA_STATS=1: the certified select's device counters, one line at each request's first token.
++pub fn q38QsaStats() bool {
++    return q38EnvInt("TF_FLASHNEXT_Q38_QSA_STATS", "qsa_stats", 0) != 0;
++}
++
++/// TF_FLASHNEXT_Q38_QSA_LOOP=L (q38; default 0: off; at most 32; knob file word qsa_loop): the exact indexer score kernel takes L
++/// 8-row tiles a CTA over the same 256 blocks (the blocks' keys read from memory once instead of L times; the same sums and bits).
++pub fn q38QsaLoop() usize {
++    return @intCast(@min(32, @max(0, q38EnvInt("TF_FLASHNEXT_Q38_QSA_LOOP", "qsa_loop", 0))));
++}
++
++/// TF_FLASHNEXT_Q38_CACHE_ELASTIC=1 (q38; default 0: off; without TF_FLASHNEXT_Q38_POOL_CTX, one rank): the prompt cache's budget is
++/// not only what the lanes' full windows leave at start-up (3.5 GiB of 27.7 with five 262,144-token lanes) but also the part of the
++/// lanes' room that the live streams are not using: budget = start-up budget + lanes x full window - live streams' bytes - the
++/// idle lane sets of TF_FLASHNEXT_Q38_LANE_REUSE. A stream that opens takes its room back first (the cache evicts in its usual
++/// order before the stream allocates), so five full-window streams still fit and then the cache is the start-up one. Replies do not
++/// depend on it: a kept state is the same bytes whenever it is resumed.
++pub fn q38CacheElastic() bool {
++    const st = struct {
++        var v: i8 = -1;
++    };
++    if (st.v < 0) st.v = if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_ELASTIC")) |e| @intFromBool(e[0] == '1') else 0;
++    return st.v == 1;
++}
+diff --git a/zig/src/families/flashnext/cuda_lanes.zig b/zig/src/families/flashnext/cuda_lanes.zig
+index 4b1f76d..f84c3b5 100644
+--- a/zig/src/families/flashnext/cuda_lanes.zig
++++ b/zig/src/families/flashnext/cuda_lanes.zig
+@@ -174,6 +174,13 @@ pub fn Namespace(comptime Tri: type) type {
+             held_bytes: u64 = 0,
+             reserved_bytes: std.atomic.Value(u64) = .init(0),
+             reserved_at: std.atomic.Value(i64) = .init(0),
++            /// q38 elastic prompt cache (TF_FLASHNEXT_Q38_CACHE_ELASTIC): a lane's full window, the lanes' room the cache may borrow
++            /// (0: off), the cache's start-up budget and its resize hook (native/cuda.zig).
++            elastic_stream: u64 = 0,
++            elastic_room: u64 = 0,
++            elastic_base: u64 = 0,
++            elastic_ctx: ?*anyopaque = null,
++            elastic_resize: ?*const fn (*anyopaque, u64) bool = null,
+             /// q38: the lane table with prefill_many when TF_FLASHNEXT_Q38_PREFILL_MANY is set (backend()).
+             many_table: be.Backend.VTable = undefined,
+ 
+@@ -330,7 +337,17 @@ pub fn Namespace(comptime Tri: type) type {
+                 // a window's rows past the reply's last token (its drafts) still need cache slots
+                 const cap = @min(ids.len + s.max_new + (if (drafting) mtp.max_rows else 0), prompt.max_tokens);
+                 // q38 pool: this stream's bytes leave the admitted-not-opened count and must fit beside the live ones
+-                const pool_need: u64 = if (self.pool_bytes > 0) self.need(ids.len, s.max_new) else 0;
++                const pool_need: u64 = if (self.pool_bytes > 0 or self.elastic_room > 0) self.need(ids.len, s.max_new) else 0;
++                // q38 elastic prompt cache: this stream's room comes out of the cache's budget before its caches are allocated
++                if (self.elastic_room > 0) {
++                    const fits = self.elastic_resize.?(self.elastic_ctx.?, self.elastic_base + (self.elastic_room -| (self.held_bytes + pool_need)));
++                    if (!fits and self.held_bytes > 0) {
++                        std.debug.print("q38 elastic: a {d}-token stream ({d} MiB) waits: borrowed prompt states hold its room\n", .{ cap, pool_need >> 20 });
++                        _ = self.elastic_resize.?(self.elastic_ctx.?, self.elastic_base + (self.elastic_room -| self.held_bytes));
++                        self.lanes.removeByPtr(gop.key_ptr);
++                        return error.LaneMemory;
++                    }
++                }
+                 if (self.pool_bytes > 0) {
+                     self.unreserve(pool_need);
+                     if (self.held_bytes > 0 and self.held_bytes + pool_need > self.pool_bytes) {
+@@ -519,6 +536,22 @@ pub fn Namespace(comptime Tri: type) type {
+             return true;
+         }
+ 
++        /// q38 elastic prompt cache: called once at start-up with the cache's resize hook and budget; on with the flag, without the
++        /// pool and on one rank.
++        pub fn q38Elastic(ptr: *anyopaque, ctx: *anyopaque, resize: *const fn (*anyopaque, u64) bool, base: u64, streams: u32) void {
++            const self = of(ptr);
++            const knobs = @import("cuda_knobs.zig");
++            if (!knobs.q38CacheElastic() or self.pool_stream != 0 or self.ranks != null or self.elastic_stream == 0) return;
++            const idle: u64 = @as(u64, knobs.q38LaneReuse()) * (640 << 20); // idle lane sets stay allocated (LANE_REUSE)
++            self.elastic_room = (self.elastic_stream * streams) -| idle;
++            if (self.elastic_room == 0) return;
++            self.elastic_base = base;
++            self.elastic_ctx = ctx;
++            self.elastic_resize = resize;
++            _ = resize(ctx, base + self.elastic_room);
++            std.debug.print("q38 elastic: the prompt cache takes {d} MiB at start-up and up to {d} MiB more of the {d} lanes' room while streams leave it\n", .{ base >> 20, self.elastic_room >> 20, streams });
++        }
++
+         /// q38: whether a request's caches fit what the pool has left; a yes is counted until the stream opens (or 120 s pass).
+         pub fn q38Fits(ptr: *anyopaque, prompt_len: u32, max_new: u32) bool {
+             const self = of(ptr);
+@@ -536,6 +569,7 @@ pub fn Namespace(comptime Tri: type) type {
+         fn dropLane(self: *Cuda, l: *Lane) void {
+             self.held_bytes -|= l.bytes;
+             l.bytes = 0;
++            if (self.elastic_room > 0) _ = self.elastic_resize.?(self.elastic_ctx.?, self.elastic_base + (self.elastic_room -| self.held_bytes));
+             if (l.draft) |*d| d.deinit();
+             if (self.ranks) |r| r.drop(&l.seq) else {
+                 self.engine.giveFixed(&l.seq);
+@@ -591,6 +625,7 @@ pub fn Namespace(comptime Tri: type) type {
+             const l = try self.lane(s);
+             if (l.filled != null or position != l.seq.fed) return error.PositionMismatch;
+             lhashPrint("first", s, l);
++            if (@import("cuda_knobs.zig").q38QsaStats()) @import("cuda_qsa_cert.zig").report(self.engine.driver, "first");
+             if (@import("cuda_knobs.zig").plog()) {
+                 const t0 = plogUs(self);
+                 const tok = try self.tokenAt(&l.seq, s, position, &.{});
+diff --git a/zig/src/families/flashnext/cuda_lanes_load.zig b/zig/src/families/flashnext/cuda_lanes_load.zig
+index ec89f33..80ff953 100644
+--- a/zig/src/families/flashnext/cuda_lanes_load.zig
++++ b/zig/src/families/flashnext/cuda_lanes_load.zig
+@@ -89,6 +89,7 @@ pub fn open(comptime F: type, gpa: std.mem.Allocator, io: std.Io, ctx: *const cu
+     const charge_window = if (pooled) @min(pool_ctx + mtp.max_rows, prompt.max_tokens) else window;
+     const stream_bytes = streamBytes(own.engine.kv, charge_window, if (own.head) |h| h.ids.len else null, own.engine.chunk, o.drafts and o.tp == 2) + if (o.vision) |v| visionStreamBytes(v, charge_ctx) else 0;
+     if (pooled) own.pool_stream = stream_bytes;
++    if (!pooled and o.tp == 1) own.elastic_stream = stream_bytes; // q38 elastic prompt cache: a lane's full window
+     return .{
+         .vision = own.vision,
+         .backend = own.backend(),
+diff --git a/zig/src/families/flashnext/cuda_qsa_cert.zig b/zig/src/families/flashnext/cuda_qsa_cert.zig
+new file mode 100644
+index 0000000..210a501
+--- /dev/null
++++ b/zig/src/families/flashnext/cuda_qsa_cert.zig
+@@ -0,0 +1,57 @@
++//! q38 certified indexer select (TF_FLASHNEXT_Q38_QSA_CERT; kernels/cuda/q38_qsa_cert.cuh): the device buffers it needs beside the
++//! pass's own (each 64-block tile's largest key norm, the counters, and in check mode the stock scores) and the counters' line.
++const std = @import("std");
++const cuda = @import("cuda");
++
++/// Tiles of 64 blocks the norm buffer holds: caches of up to 16.7 M tokens.
++pub const max_tiles: usize = 1 << 16;
++const stats_n: usize = 10;
++
++var knb: ?cuda.DeviceBuffer = null;
++var stats: ?cuda.DeviceBuffer = null;
++var ref: ?cuda.DeviceBuffer = null;
++var failed = false;
++
++pub const Bufs = struct { knb: u64, stats: u64 };
++
++/// The norm and counter buffers, allocated (and the counters zeroed) at the first use; null if they cannot be had.
++pub fn bufs(d: *const cuda.Driver) ?Bufs {
++    if (failed) return null;
++    if (knb == null) {
++        var a = cuda.DeviceBuffer.alloc(d, max_tiles * 4) catch {
++            failed = true;
++            return null;
++        };
++        var b = cuda.DeviceBuffer.alloc(d, stats_n * 8) catch {
++            a.free();
++            failed = true;
++            return null;
++        };
++        d.check(d.api.cuMemsetD8_v2(b.ptr, 0, stats_n * 8), "cuMemsetD8") catch {
++            a.free();
++            b.free();
++            failed = true;
++            return null;
++        };
++        knb = a;
++        stats = b;
++    }
++    return .{ .knb = knb.?.ptr, .stats = stats.?.ptr };
++}
++
++/// Check mode: a second score buffer of at least `bytes` (an outgrown one is left allocated: queued launches may still read it).
++pub fn refScores(d: *const cuda.Driver, bytes: usize) ?u64 {
++    if (ref) |r| if (r.len >= bytes) return r.ptr;
++    const b = cuda.DeviceBuffer.alloc(d, bytes) catch return null;
++    ref = b;
++    return b.ptr;
++}
++
++/// One line of the counters so far (the caller has the pass's results, so its launches are done).
++pub fn report(d: *const cuda.Driver, what: []const u8) void {
++    const s = stats orelse return;
++    var h: [stats_n]u64 = undefined;
++    d.check(d.api.cuMemcpyDtoH_v2(&h, s.ptr, stats_n * 8), "cuMemcpyDtoH") catch return;
++    const ratio: f32 = @bitCast(@as(u32, @truncate(h[7])));
++    std.debug.print("q38 qsacert {s} rows={d} between={d} fallback={d} max_between={d} redone={d} checked={d} list_diff={d} exact_bit_diff={d} bound_viol={d} max_ratio={d:.5}\n", .{ what, h[0], h[1], h[2], h[3], h[4], h[9], h[8], h[5], h[6], ratio });
++}
+diff --git a/zig/src/native/cuda.zig b/zig/src/native/cuda.zig
+index 698265c..16df7aa 100644
+--- a/zig/src/native/cuda.zig
++++ b/zig/src/native/cuda.zig
+@@ -441,6 +441,13 @@ fn openWith(comptime F: type, a: Allocator, gpa: Allocator, io: std.Io, o: api.O
+     }
+     errdefer if (h.recording) |r| r.free(gpa);
+     // the family cuts its own prompt grid from position 0, as `tensorfold run` does: prefill_step 0
++    // q38 (TF_FLASHNEXT_Q38_CACHE_ELASTIC): the family moves the prompt cache's budget with the room its streams leave
++    if (comptime @hasDecl(F, "q38Elastic")) if (h.store) |st| F.q38Elastic(loaded.ctx, st, struct {
++        fn f(p: *anyopaque, b: u64) bool {
++            const store: *api.prompt_cache.Store = @ptrCast(@alignCast(p));
++            return store.q38Resize(b);
++        }
++    }.f, st.budget, streams);
+     const admit: ?api.Admit = if (comptime @hasDecl(F, "q38Pool")) (if (F.q38Pool(loaded.ctx, streams)) api.Admit{ .ctx = loaded.ctx, .fits = F.q38Fits, .always = true } else null) else if (comptime !@hasDecl(F, "fits")) null else if (paged != null) .{ .ctx = loaded.ctx, .fits = F.fits } else null;
+     try h.serve(io, served.facts, loaded.rows, .{
+         .lanes = streams,

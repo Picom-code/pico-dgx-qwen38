@@ -1,0 +1,40 @@
+diff --git a/zig/src/core/direct_io.zig b/zig/src/core/direct_io.zig
+index b71b87c..c8baa52 100644
+--- a/zig/src/core/direct_io.zig
++++ b/zig/src/core/direct_io.zig
+@@ -85,7 +85,7 @@ fn readAt(f: File, buf: Buffer, offset: u64, len: usize, ctx: *anyopaque, pread:
+ }
+ 
+ /// Clears O_DIRECT on `fd` for this read and every later one; Linux only (macOS's std.c.O has no DIRECT field).
+-fn buffered(fd: std.c.fd_t) !void {
++pub fn buffered(fd: std.c.fd_t) !void {
+     const direct_flag: c_int = @bitCast(@as(u32, @bitCast(std.c.O{ .DIRECT = true })));
+     const flags = std.c.fcntl(fd, std.c.F.GETFL);
+     if (flags < 0 or std.c.fcntl(fd, std.c.F.SETFL, flags & ~direct_flag) < 0) return error.ReadFailed;
+diff --git a/zig/src/families/flashnext/cuda_ple_reader.zig b/zig/src/families/flashnext/cuda_ple_reader.zig
+index 7641767..936dd39 100644
+--- a/zig/src/families/flashnext/cuda_ple_reader.zig
++++ b/zig/src/families/flashnext/cuda_ple_reader.zig
+@@ -80,6 +80,13 @@ pub const Reader = struct {
+         errdefer for (files[0..opened]) |*f| f.close();
+         for (paths, files) |p, *f| {
+             f.* = try direct_io.File.open(p);
++            // TF_FLASHNEXT_Q38_NGRAM_BUFFERED=1 (q38, off unless set): the table's rows through the page cache instead of O_DIRECT, so rows
++            // that are in memory (pre-warmed, or read before) cost a copy instead of a drive read. The bytes are the file's either way.
++            if (f.direct and q38Buffered()) {
++                if (direct_io.buffered(f.fd)) |_| {
++                    f.direct = false;
++                } else |_| {}
++            }
+             opened += 1;
+         }
+         const own_shards = try gpa.dupe(Shard, shards);
+@@ -351,3 +358,8 @@ pub fn warmAhead() bool {
+ pub fn prefillTail() usize {
+     return envOr("TF_FLASHNEXT_PREFILL_TAIL", 0);
+ }
++
++fn q38Buffered() bool {
++    const v = std.c.getenv("TF_FLASHNEXT_Q38_NGRAM_BUFFERED") orelse return false;
++    return v[0] == '1';
++}

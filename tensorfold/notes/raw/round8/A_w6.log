@@ -1,0 +1,18 @@
+09108beff56b8be2
+c1f89b717e2288f1
+READY tfb/default in 215 s; MemAvailable 39 GiB; GPU MiB 77122
+heldpar 1 in flight: 107 prompts, 20185 tokens in 336.1 s = 60.1 tok/s total; errors 0
+drafted requests: n 96 tok/s 63.5  tok/round 3.456  drafts proposed/round 3.852  accepted/round 2.463  accept rate 0.640  ms/round 54.45  rows/round 4.85
+fit over drafted requests: ms/round = 41.45 + 3.38 x drafts verified per round  (x range 1.76..22.27)
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+crash lines: 0
+I2_1ref done 21:39:39
+READY tfb/default in 207 s; MemAvailable 39 GiB; GPU MiB 77273
+heldpar 1 in flight: 107 prompts, 20185 tokens in 329.7 s = 61.2 tok/s total; errors 0
+drafted requests: n 96 tok/s 64.7  tok/round 3.452  drafts proposed/round 3.855  accepted/round 2.459  accept rate 0.638  ms/round 53.31  rows/round 4.85
+fit over drafted requests: ms/round = 40.71 + 3.27 x drafts verified per round  (x range 1.76..22.27)
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+q38 head2: on, rank 512, block form, re-score 933 of 79591 rows
+crash lines: 0
+I2_1h2 done 21:48:38
+w6 done 21:48:38

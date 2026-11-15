@@ -1,0 +1,10 @@
+# night 11-14, E1: recipe default (levers on, bf16, 2 x 262K on the head) with the knob file. Reference = knob-off in the SAME engine, back to back.
+ENGINE on|def|on|||PAR=2
+NEED=9 python3 -I $RT/rt.py knob off; sleep 1; QK_URL=http://127.0.0.1:18301/v1/chat/completions python3 -I $KK/qk.py ident $O/ident_koff.json | tail -1; python3 -I $RT/rt.py knob on; sleep 1; QK_URL=http://127.0.0.1:18301/v1/chat/completions python3 -I $KK/qk.py ident $O/ident_on.json | tail -1; python3 -I $KK/qk.py cmp $O/ident_koff.json $O/ident_on.json
+NEED=3 python3 -I $RT/rt.py probe $O/probe.json > $O/probe.txt 2>&1; cat $O/probe.txt | cut -c1-200
+NEED=6 bash $RT/rj.sh pair1 pair $RT/matrix/cases1.jsonl $O/pair1.jsonl vars=off,on,off2 not=long dl=$DL
+NEED=6 bash $RT/rj.sh sess sess $RT/matrix/sess.jsonl $O/sess.jsonl vars=off,on,on_c dl=$DL
+NEED=6 bash $RT/rj.sh pair3 pair $RT/matrix/cases3.jsonl $O/pair3.jsonl vars=off,on,off2 not=long_out dl=$DL
+NEED=6 bash $RT/rj.sh pairL pair $RT/matrix/cases1.jsonl $O/pairL.jsonl vars=off,on sel=long dl=$DL
+NEED=6 bash $RT/rj.sh pairO pair $RT/matrix/cases3.jsonl $O/pairO.jsonl vars=off,on sel=long_out dl=$DL
+docker logs q38-run-D 2>&1 | grep -E 'q38 (cert|qsacert|hcf check|snapdelta|gdnprod|hcdn|routeband|scratch check)' | awk '{k=$1 $2 $3; l[k]=$0} END{for(k in l) print l[k]}' | cut -c1-300 > $O/checklines.txt; cat $O/checklines.txt; echo "log error lines: $(docker logs q38-run-D 2>&1 | grep -ciE 'panic|segfault|error\(|mismatch|abort')"

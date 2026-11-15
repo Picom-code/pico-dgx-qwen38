@@ -1,0 +1,52 @@
+diff --git a/zig/src/families/flashnext/cuda_cert.zig b/zig/src/families/flashnext/cuda_cert.zig
+index c35ac9d..1310a44 100644
+--- a/zig/src/families/flashnext/cuda_cert.zig
++++ b/zig/src/families/flashnext/cuda_cert.zig
+@@ -45,6 +45,17 @@ pub fn topkMax() u32 {
+     return @intCast(topk_cache);
+ }
+ 
++var topk_rows_cache: i32 = -1;
++/// TF_FLASHNEXT_Q38_CERT_TOPK_ROWS=N (q38; default 8; 0: no limit): a top-k pass of more than N rows takes the whole head at once. Each
++/// sampled row keeps ~80 exact tiles, so a wide pass of many sampled streams would run the coarse pass and then fall back over the tile limit.
++pub fn topkRows() usize {
++    if (topk_rows_cache < 0) {
++        topk_rows_cache = 8;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_CERT_TOPK_ROWS")) |e| topk_rows_cache = @intCast(@min(4096, std.fmt.parseInt(u32, std.mem.span(e), 10) catch 8));
++    }
++    return @intCast(topk_rows_cache);
++}
++
+ var code_cache: i8 = -1;
+ /// TF_FLASHNEXT_Q38_CERT_CODE=sm8 (q38; default mxfp8): the coarse copy holds sign-magnitude 7-bit integer codes with a power-of-two
+ /// scale per 32 inputs (qmmf.cu SM8: the same bytes a row as the MXFP8 copy, about a third of its error), instead of E4M3 codes.
+@@ -142,6 +153,7 @@ pub const Cert = struct {
+     resid: f64 = 0,
+     sm8: bool = false,
+     kcalls: u64 = 0,
++    kskipped: u64 = 0,
+     kfallbacks: u64 = 0,
+     ktiles: u64 = 0,
+     kruns: u64 = 0,
+@@ -252,6 +264,10 @@ pub const Cert = struct {
+         const s = pass.s;
+         const d = st.d;
+         const kk: u32 = @max(1, round_k);
++        if (kk > 1 and topkRows() != 0 and n > topkRows()) {
++            c.kskipped += 1;
++            return false;
++        }
+         const sel = (if (kk > 1) k.cert_selk else k.cert_sel) orelse return false;
+         const head = pass.m.head.native orelse return false;
+         if (head.mode != .bf16 or head.n != vocab or head.k != dims) return false;
+@@ -380,8 +396,9 @@ pub const Cert = struct {
+         }
+         const done = @max(c.calls - c.fallbacks, 1);
+         std.debug.print("q38 cert: calls {d} rows {d} whole-head {d} tiles/call {d:.1} runs/call {d:.1} checked-rows {d} best-mismatch {d} value-mismatch {d} held {d}\n", .{ c.calls, c.rows, c.fallbacks, @as(f64, @floatFromInt(c.tiles)) / @as(f64, @floatFromInt(done)), @as(f64, @floatFromInt(c.runs)) / @as(f64, @floatFromInt(done)), hs[0], hs[1], hs[2], hs[3] });
+-        if (c.kcalls > 0 or c.check) {
++        if (c.kcalls > 0 or c.kskipped > 0 or c.check) {
+             const kdone = @max(c.kcalls - c.kfallbacks, 1);
++            std.debug.print("q38 cert topk: wide passes not tried {d}\n", .{c.kskipped});
+             std.debug.print("q38 cert topk: calls {d} whole-head {d} tiles/call {d:.1} runs/call {d:.1} topk-rows-checked {d} topk-mismatch {d} bound-violations {d} of {d} K entries\n", .{ c.kcalls, c.kfallbacks, @as(f64, @floatFromInt(c.ktiles)) / @as(f64, @floatFromInt(kdone)), @as(f64, @floatFromInt(c.kruns)) / @as(f64, @floatFromInt(kdone)), c.topk_checked, c.topk_mismatch, hs[4], hs[5] });
+         }
+     }

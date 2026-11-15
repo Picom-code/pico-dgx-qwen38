@@ -1,0 +1,51 @@
+Round 9 final, one user. spark-923b, DOCUMENTED PATH: recipe.sh prepare (patches 0101-0118 + the two-stage head's file) then recipe.sh start, vision on.
+ONE window (2026-11-14 04:02-06:50 UTC), both columns the same image. MEASURED; every number is read from the logs by harness/round9/table9.py.
+"levers off" = CERT=0 MANY=0 COPY_ROWS=16 FUSED=0 HALF=0 MTP_LAST=0 GDN_MANY=0 BEST_LANES=0 ATTN_LANES=0 LATE_SKIP=0 KEEP_INPASS=0 LANE_REUSE=0 HEAD2=0 R9=0
+(= MiaAI-Lab's configuration on our build), run 04:13-05:11. "recipe default" = `./recipe.sh start` with nothing set, run 06:01-06:49 (the many-user runs sat
+between them: the two columns are 1.8 h apart in one window, not reference-first-and-last; the same-hour pairs for each lever are in final_r9_levers.txt).
++-------------------------------------------------------+--------------------+-----------------------+---------+
+| bench                                                 | levers off         | recipe default (ours) | change  |
++-------------------------------------------------------+--------------------+-----------------------+---------+
+| first token, short prompt (ms)                        | 182                | 116                   | -36.3 % |
+| 3-prompt chat, 9 runs (median)                        | 46.6               | 50.7                  | +8.8 %  |
+| 3-prompt code, 9 runs (median)                        | 76.3               | 88.2                  | +15.6 % |
+| sparkDash-method prose T0                             | 56.9               | 61.5                  | +8.1 %  |
+| sparkDash-method prose T0.7 thinking (unseeded)       | 52.2               | 51.1                  | -2.1 %  |
+| sparkDash-method code (task 0)                        | 92.3               | 121.7                 | +31.9 % |
+| sparkDash-method code, 8 tasks                        | 87.8               | 105.4                 | +20.0 % |
+| sparkDash-method structured                           | 106.2              | 168.9                 | +59.0 % |
+| sparkDash 1.8.8 itself, prose (median)                | 56.5               | 61.3                  | +8.5 %  |
+| sparkDash 1.8.8 itself, code (median)                 | 91.9               | 121.3                 | +32.0 % |
+| sparkDash 1.8.8 itself, structured (median)           | 105.2              | 166.3                 | +58.1 % |
+| sparkDash 1.8.8 catalogs prose / structural / code    | 43.6 / 66.1 / 81.2 | 48.0 / 76.6 / 97.7    |         |
+| ALL 320 held prompts, all                             | 57.34              | 65.22                 | +13.7 % |
+|   held 320: chat                                      | 49.96              | 55.83                 | +11.7 % |
+|   held 320: code                                      | 74.58              | 87.83                 | +17.8 % |
+|   held 320: math                                      | 72.70              | 86.90                 | +19.5 % |
+| edit set (24 file rewrites), wall tok/s               | 137.3              | 180.8                 | +31.7 % |
+| agent set (16 turns), wall tok/s                      | 54.5               | 62.9                  | +15.4 % |
+| seeded sampled T0.7, 24 held chat prompts             | 46.52              | 49.57                 | +6.6 %  |
+| seeded sampled T0.7 with thinking, 24 prompts         | 47.65              | 50.87                 | +6.8 %  |
+| seeded sparkDash-method prose T0.7 thinking, 6 rounds | 51.59              | 55.27                 | +7.1 %  |
+| prefill 7.4K / 29K / 117K prompt (tok/s)              | 2382 / 2449 / 2288 | 2502 / 2517 / 2403    |         |
+| needle 182K-token prompt: recall, first token s       | 3/3, 83.3          | 3/3, 77.2             | -7.3 %  |
+| 227,621-token prompt: recall, first token s           | 3/3, 108.2         | 3/3, 98.1             | -9.3 %  |
+| image                                                 | PASS ttft 0.51 s   | PASS ttft 0.42 s      |         |
+| qeval (4 in flight)                                   | 33/35              | 33/35                 |         |
+| idle MemAvailable GiB / GPU MiB                       | 37 / 78438         | 35 / 79675            |         |
++-------------------------------------------------------+--------------------+-----------------------+---------+
+IDENTITY default vs off (texts): identity set 51/51, ALL 320 held prompts 320/320, edit set 24/24, agent set 16/16 identical.
+SAMPLED (temperature 0.7, same seeds, server top_k 20 / top_p 0.95): 24/24, 24/24 (thinking on: reasoning + answer) and 6/6 texts identical between the columns;
+  speed +6.6 %, +6.8 %, +7.1 % (per-prompt +6.4 +- 0.9, +6.4 +- 1.2, +7.2 +- 1.0 %). The unseeded sparkDash-method T0.7 row draws different tokens in each column,
+  so it is not a pair (round 8 read 55.1 against 49.5 the same way: noise of the draw, not a slowdown).
+DEVICE CHECK MODES on this image before the two columns (CERT=2 QSA_CERT=2): indexer select 3,559,920 row lists against the stock kernels: 0 differ, 0 bit
+  differences in exact sums, 0 bound violations, 0 fallbacks; certified head 20,135 greedy rows 0 mismatches; sampled top-k 3,510 rows 0 mismatches, 0 bound
+  violations of 4.5 billion entries. 0 panic / segfault lines in every engine log of the window.
+MEMORY: with the elastic prompt cache (ELASTIC=1, default) the engine's GPU use grew from 79.7 to 108.1 GiB during the suite and MemAvailable fell to 10.5 GiB
+  (levers off: 86.6 GiB, 31.9 GiB). That is the engine's own 9 GiB reserve, the level five full 262K streams would reach anyway; the cache gives the room back when
+  a stream opens. On a box that runs other things beside the engine set ELASTIC=0 or raise TENSORFOLD_MEMORY_RESERVE_GIB.
+sparkDash 1.8.8 itself, earlier rounds on this path: round 6 (patches 0101-0107) 59.8 / 97.2 / 110.4 prose / code / structured; round 4: 58.8 / 95.6.
+NOT RUN in the one-user columns this round (window time): 4 and 5 users on the default profile, sparkDash-method waves (round 8: 160.4 / 175.0; waves 135.2 / 225.6).
+Not lossless-comparable, for honesty: custom engine R v0.3.13 on an EXL3 re-quantised checkpoint measured 54.6 / 88.6 chat / code and 65.66 on the 320 held prompts on this
+box (first bake-off, 2026-11-12, another day). Ours on the official checkpoint: 50.7 / 88.2 (3-prompt medians; single runs spread +-4) and 65.22. For one user we
+still trail it on chat (-7 %); code and the held prompts are within 1 % of it, not ahead.

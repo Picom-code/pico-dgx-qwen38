@@ -1,0 +1,4 @@
+#!/bin/bash
+# pull10.sh : final-window logs of 923b -> Mac q38/results/r10 (suite logs, sparkDash logs, seeded sampled jsonl, engine logs' tails, window script logs)
+Q=~/.hermes/cache/scratch/q38; K=~/.ssh/codex_spark_ed25519; mkdir -p $Q/results/r10
+ssh -n -i $K pico@spark-head "ssh -n picom@spark-923b 'cd ~/q38/runs && cat wF10_part1.log wF10.log wF10b.log > /tmp/wF10_all.log 2>/dev/null; tar czf /tmp/r10.tgz --ignore-failed-read /tmp/wF10_all.log F10_*/suite.log F10_*/sdrun.log F10_*/sq*.jsonl F10_*/mem.log L_chk/engine.log A_w10b.log A_w10e.log A_c1.log A_w10s.log A_w10t.log C10_casc.log C10_casc2.log 2>/dev/null; ls -la /tmp/r10.tgz | cut -c20-60' && scp -q picom@spark-923b:/tmp/r10.tgz /tmp/r10.tgz" && scp -q -i $K pico@spark-head:/tmp/r10.tgz $Q/results/r10.tgz && cd $Q/results/r10 && tar xzf ../r10.tgz 2>/dev/null; [ -f tmp/wF10_all.log ] && cp tmp/wF10_all.log wF10.log; ls $Q/results/r10 | tr '\n' ' '

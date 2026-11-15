@@ -1,0 +1,12 @@
+launch symbol candidates ['0x3025250'] runtime 0x3025250
+| sync call site | syncs | share | mean wait us | total ms |
+| cuda_prompt_load.loadLayerAtRank | 50176 | 81.7 % | 0.3 | 13 |
+| cuda_lanes.Namespace(cuda_launch.Tri).draftFn | 6656 | 10.8 % | 1704.1 | 11343 |
+| cuda_batch.Pass(cuda_launch.Tri).chunk | 1615 | 2.6 % | 43800.4 | 70738 |
+| engine.Engine.familyRound | 1587 | 2.6 % | 152.2 | 242 |
+| memory.DeviceBuffer.fromHost | 1208 | 2.0 % | 4.9 | 6 |
+| cuda_lanes.Namespace(cuda_launch.Tri).dropLane | 54 | 0.1 % | 0.7 | 0 |
+| cuda_lanes.Namespace(cuda_launch.Tri).snapSave | 29 | 0.0 % | 76155.4 | 2209 |
+| cuda_lanes.Namespace(cuda_launch.Tri).Cuda.open | 27 | 0.0 % | 662.7 | 18 |
+| handover.sweep | 27 | 0.0 % | 1289.2 | 35 |
+| cuda_prompt.Engine.reserve | 1 | 0.0 % | 5.4 | 0 |

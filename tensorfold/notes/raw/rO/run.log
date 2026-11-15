@@ -1,0 +1,21 @@
+Running timer as unit: q38-guard.timer
+Will run service as unit: q38-guard.service
+start 2026-11-13T06:58:02Z label O guard 150min
+service.sh: stopping (supervisor pid 861982)
+service.sh: stopped (by service.sh stop)
+spark-923b MemAvailable 116 GiB after prod stop (8s)
+/home/pico/q38/w_O.sh: line 45: 938090 Killed                  ( go w2 "$TW TFENV='-e TF_FLASHNEXT_Q38_CERT=0'" tfb p16 O2_alloff "$MU; $HP; $(one \$HOME/q38/kit/sets/edit.jsonl edit4 1200 1 4)"; go w2 "$TW TFENV='$STACK -e TF_FLASHNEXT_Q38_CERT=1'" tfb pc_16_262144 O2_stack "$MU; $HP; $(one \$HOME/q38/kit/sets/edit.jsonl edit4 1200 1 4); $GL; $CL; $C \$HOME/q38/runs/O2_alloff/held16.jsonl \$O/held16.jsonl; $C \$HOME/q38/runs/O2_alloff/edit4.jsonl \$O/edit4.jsonl; python3 -I ~/q38/kit/poolt.py 150000x1+15 100000x3+13 | cut -c1-420"; go w2 "$TW TFENV='-e TF_FLASHNEXT_Q38_CERT=1'" tfb nodraft O2_nd "$(one \$HOME/q38/kit/prompts.jsonl held 256 6)"; go w2 "$TW TFENV='-e TF_FLASHNEXT_Q38_CERT=1 -e TF_FLASHNEXT_Q38_CERT_PLAIN=1'" tfb nodraft O2_ndc "$(one \$HOME/q38/kit/prompts.jsonl held 256 6); $C \$HOME/q38/runs/O2_nd/held.jsonl \$O/held.jsonl" ) > $D/o_3d24.log 2>&1
+window O work done 08:49:30
+restore begin 2026-11-13T08:49:30Z
+spark-923b Mem:             121           4         116           0           1         116 disk_free 1.8T gpu_procs=0
+spark-4e5c Mem:             121          85           1           0          36          36 disk_free 2.2T gpu_procs=1
+spark-3d24 Mem:             121           4         116           0           1         116 disk_free 2.1T gpu_procs=0
+Running as unit: dsgx10-prod.service; invocation ID: b511f73d51634b31a727aea98eecde41
+health=200
+answer=391
+verify 2026-11-13T08:53:41Z health=200
+17*23 = 391
+session store: 12.00 GiB on every rank (at most 12.0; free device / available host memory before it, ranks 0-3: 16.42 / 24.07 28.42 / 28.83 28.32 / 28.59 28.26 / 28.58 GiB, less a margin of 2.0 and the Engram cache's 4.0)
+session store's disk tier: 28.2 GiB in /home/pico/dsgb10/spill/rank0.service.spill (at most 32.0; free space less 32 GiB, ranks 0-3: 32 32 32 32 GiB)
+image: Seven red dots are scattered across a white background.
+prod restored; outage 6939s  start 2026-11-13T06:58:02Z end 2026-11-13T08:53:41Z

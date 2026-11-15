@@ -1,0 +1,980 @@
+diff --git a/zig/kernels/cuda/flashnext_batch.cu b/zig/kernels/cuda/flashnext_batch.cu
+index 82da385..14f898b 100644
+--- a/zig/kernels/cuda/flashnext_batch.cu
++++ b/zig/kernels/cuda/flashnext_batch.cu
+@@ -655,6 +655,140 @@ extern "C" __global__ void __launch_bounds__(1024) fn_cert_select(const float* _
+     }
+ }
+ 
++// q38 certified TOP-K head (TF_FLASHNEXT_Q38_CERT_TOPK): fn_cert_select for a row whose draw reads its `topk` best scores (a keyed
++// sampled draw over top_k candidates). theta = a value with at least `topk` entries whose LOWER bound A - c h is >= theta (found from a
++// 256-bin histogram of the lower bounds within 32 logits of the best one, an eighth of a logit a bin: the lower edge of the bin where
++// the count reaches topk). At least topk exact scores are >= theta, so an entry whose UPPER bound A + c h is under theta less two bf16
++// steps is strictly below the topk-th largest rounded score: it is not among the row's topk best and cannot tie with one. The tiles
++// of every other entry are flagged. No such theta within 32 logits: theta = -inf, every tile is flagged (the caller takes the whole head).
++extern "C" __global__ void __launch_bounds__(1024) fn_cert_select_k(const float* __restrict__ A, const float* __restrict__ c,
++                                                                    const __nv_bfloat16* __restrict__ x, int ldx, int K, int V,
++                                                                    __nv_bfloat16* __restrict__ out, unsigned* __restrict__ flags,
++                                                                    float* __restrict__ info, int topk) {
++    const int r = blockIdx.x, t = threadIdx.x, lane = t & 31, warp = t >> 5, warps = blockDim.x >> 5;
++    __shared__ float sa[32];
++    __shared__ float sb[32];
++    __shared__ float g0, g1, gth;
++    __shared__ unsigned hist[256];
++    const __nv_bfloat16* xr = x + static_cast<long long>(r) * ldx;
++    float s = 0.0f;
++    for (int i = t; i < K; i += blockDim.x) {
++        const float v = __bfloat162float(xr[i]);
++        s = s + v * v;
++    }
++    for (int o = 16; o; o >>= 1) s = s + __shfl_xor_sync(0xffffffffu, s, o);
++    if (lane == 0) sa[warp] = s;
++    if (t < 256) hist[t] = 0u;
++    __syncthreads();
++    if (warp == 0) {
++        s = lane < warps ? sa[lane] : 0.0f;
++        for (int o = 16; o; o >>= 1) s = s + __shfl_xor_sync(0xffffffffu, s, o);
++        if (lane == 0) g0 = sqrtf(s) * 1.0001f;
++    }
++    __syncthreads();
++    const float h = g0;
++    const float* a = A + static_cast<long long>(r) * V;
++    float lo = -CUDART_INF_F, hi = -CUDART_INF_F;
++    bool bad = false;
++    for (int i = t; i < V; i += blockDim.x) {
++        const float v = a[i], b = c[i] * h;
++        if (!(fabsf(v) < CUDART_INF_F)) bad = true;
++        lo = fmaxf(lo, v - b);
++        hi = fmaxf(hi, v + b);
++    }
++    if (bad) lo = CUDART_NAN_F;
++    for (int o = 16; o; o >>= 1) {
++        const float l2 = __shfl_xor_sync(0xffffffffu, lo, o), h2 = __shfl_xor_sync(0xffffffffu, hi, o);
++        lo = (lo != lo || l2 != l2) ? CUDART_NAN_F : fmaxf(lo, l2);
++        hi = fmaxf(hi, h2);
++    }
++    __syncthreads();
++    if (lane == 0) {
++        sa[warp] = lo;
++        sb[warp] = hi;
++    }
++    __syncthreads();
++    if (warp == 0) {
++        lo = lane < warps ? sa[lane] : -CUDART_INF_F;
++        hi = lane < warps ? sb[lane] : -CUDART_INF_F;
++        for (int o = 16; o; o >>= 1) {
++            const float l2 = __shfl_xor_sync(0xffffffffu, lo, o), h2 = __shfl_xor_sync(0xffffffffu, hi, o);
++            lo = (lo != lo || l2 != l2) ? CUDART_NAN_F : fmaxf(lo, l2);
++            hi = fmaxf(hi, h2);
++        }
++        if (lane == 0) {
++            g0 = lo;
++            g1 = hi;
++        }
++    }
++    __syncthreads();
++    lo = g0;
++    hi = g1;
++    if (lo == lo) {
++        for (int i = t; i < V; i += blockDim.x) {
++            const float d = (lo - (a[i] - c[i] * h)) * 8.0f;
++            if (d < 256.0f) atomicAdd(&hist[d > 0.0f ? static_cast<int>(d) : 0], 1u);
++        }
++    }
++    __syncthreads();
++    if (t == 0) {
++        float th = -CUDART_INF_F;
++        unsigned cum = 0u;
++        for (int b = 0; b < 256; ++b) {
++            cum += hist[b];
++            if (cum >= static_cast<unsigned>(topk)) {
++                th = lo - static_cast<float>(b + 1) * 0.125f;
++                break;
++            }
++        }
++        gth = th;
++    }
++    __syncthreads();
++    const float th = gth;
++    const float m = fmaxf(fmaxf(fabsf(lo), fabsf(hi)), fabsf(th));
++    int e = 0;
++    frexpf(m, &e);                                       // m in [2^(e-1), 2^e): a bf16 step there is 2^(e-8)
++    const float step = ldexpf(1.0f, e - 8);
++    const float thr = (th > -CUDART_INF_F) ? th - 2.0f * step - 1e-5f * (1.0f + m) : -CUDART_INF_F;
++    __nv_bfloat16* orow = out + static_cast<long long>(r) * V;
++    const __nv_bfloat16 ninf = __float2bfloat16_rn(-CUDART_INF_F);
++    for (int i = t; i < V; i += blockDim.x) {
++        if (a[i] + c[i] * h >= thr) flags[i >> 6] = 1u;
++        orow[i] = ninf;
++    }
++    if (t == 0) {
++        info[4 * r] = lo;
++        info[4 * r + 1] = hi;
++        info[4 * r + 2] = thr;
++        info[4 * r + 3] = h;
++    }
++}
++
++// Check mode: every coarse score against the whole head's score. A [rows, V] fp32 coarse, c [V], info [rows, 4] (h in slot 3),
++// b [rows, V] bf16 the whole head's rows. stats[4] += entries with |A - b| > c h + half a bf16 step of b (the bound the selection
++// relies on, tested for every entry of every checked row); stats[5] += entries tested (in units of 1024).
++extern "C" __global__ void __launch_bounds__(1024) fn_cert_bound(const float* __restrict__ A, const float* __restrict__ c,
++                                                                 const float* __restrict__ info, const __nv_bfloat16* __restrict__ b,
++                                                                 int V, unsigned* __restrict__ stats) {
++    const int r = blockIdx.x, t = threadIdx.x;
++    const float h = info[4 * r + 3];
++    const float* a = A + static_cast<long long>(r) * V;
++    unsigned bad = 0u, n = 0u;
++    for (int i = t; i < V; i += blockDim.x) {
++        const float y = __bfloat162float(b[static_cast<long long>(r) * V + i]);
++        if (!(fabsf(a[i] - y) <= c[i] * h + fabsf(y) * (1.01f / 256.0f) + 1e-6f)) bad += 1u;
++        n += 1u;
++    }
++    for (int o = 16; o; o >>= 1) {
++        bad += __shfl_xor_sync(0xffffffffu, bad, o);
++        n += __shfl_xor_sync(0xffffffffu, n, o);
++    }
++    if ((t & 31) == 0) {
++        if (bad) atomicAdd(stats + 4, bad);
++        atomicAdd(stats + 5, n >> 10);
++    }
++}
++
+ // Program (row), 1024 threads: the certified head's rows `a` against the whole head's rows `b` ([rows, V] bf16). stats[0] rows,
+ // [1] rows whose best (value, then lowest id) differs, [2] entries `a` holds (not -inf) whose bits differ from `b`, [3] entries held.
+ extern "C" __global__ void __launch_bounds__(1024) fn_cert_check(const __nv_bfloat16* __restrict__ a, const __nv_bfloat16* __restrict__ b,
+diff --git a/zig/kernels/cuda/norms.cu b/zig/kernels/cuda/norms.cu
+index fa21440..37c6e41 100644
+--- a/zig/kernels/cuda/norms.cu
++++ b/zig/kernels/cuda/norms.cu
+@@ -520,3 +520,66 @@ extern "C" __global__ void __launch_bounds__(tf_rms_tail::NT) tf_add_rms_rows_bf
+     const __nv_bfloat16* w, __nv_bfloat16* h, __nv_bfloat16* y, float* xs, int width, float eps) {
+     tf_rms_tail::tail<tf_rms_tail::MLX>(x, r, wb, sc, w, h, y, xs, width, eps);
+ }
++
++// q38 (TF_FLASHNEXT_Q38_RMS_TILES=1; port of upstream TensorFold #1702, rms_tiles.cuh): tf_rms_rows_sums at Flash Next's MTP shape (bf16,
++// width 10,240, groups of 32) over `tiles` blocks of 256 threads a row instead of one block of 1,024. The row's 1 / rms is formed as
++// tf_rms_rows_sums forms it (thread c's fma chain over x[c + k NT], its warp's xor tree, then the 32 warps' tree: each of the 256 threads
++// runs four of the 1,024 chains), the tile's y and its group sums are the same expressions in the same order: the same bytes out.
++namespace tf_rms_tiles {
++constexpr int WIDTH = 10240;
++constexpr int GROUP = 32;
++constexpr int TNT = 256;
++constexpr int CHAINS = tf_norms::NT / TNT;
++constexpr int STEPS = WIDTH / tf_norms::NT;
++__device__ __forceinline__ float inv_rms_t(const __nv_bfloat16* __restrict__ x, float eps) {
++    __shared__ float warps[tf_norms::NT / 32];
++    __shared__ float inv;
++    const int width = WIDTH;
++    float part[CHAINS];
++#pragma unroll
++    for (int j = 0; j < CHAINS; ++j) {
++        float a[STEPS];
++#pragma unroll
++        for (int k = 0; k < STEPS; ++k) a[k] = __bfloat162float(x[threadIdx.x + j * TNT + k * tf_norms::NT]);
++        float p = 0.f;
++#pragma unroll
++        for (int k = 0; k < STEPS; ++k) p = __fmaf_rn(a[k], a[k], p);
++        part[j] = p;
++    }
++#pragma unroll
++    for (int j = 0; j < CHAINS; ++j) {  // chain threadIdx.x + j * TNT is warp (threadIdx.x >> 5) + j * 8's same lane
++        float p = part[j];
++        for (int m = 16; m > 0; m >>= 1) p = __fadd_rn(p, __shfl_xor_sync(0xFFFFFFFFu, p, m));
++        if ((threadIdx.x & 31) == 0) warps[(threadIdx.x >> 5) + j * (TNT / 32)] = p;
++    }
++    __syncthreads();
++    if (threadIdx.x < 32) {
++        float s = warps[threadIdx.x];
++        for (int m = 16; m > 0; m >>= 1) s = __fadd_rn(s, __shfl_xor_sync(0xFFFFFFFFu, s, m));
++        if (threadIdx.x == 0) inv = __fdiv_rn(1.f, __fsqrt_rn(__fadd_rn(__fdiv_rn(s, static_cast<float>(width)), eps)));
++    }
++    __syncthreads();
++    return inv;
++}
++}  // namespace tf_rms_tiles
++
++extern "C" __global__ void __launch_bounds__(tf_rms_tiles::TNT) q38_rms_rows_sums_tiles(
++    const __nv_bfloat16* __restrict__ x, long long x_ld, const float* __restrict__ w, __nv_bfloat16* __restrict__ y,
++    float* __restrict__ xs, int tiles, float eps) {
++    using namespace tf_rms_tiles;
++    __shared__ __nv_bfloat16 tile[WIDTH];
++    const int span = WIDTH / tiles, first = blockIdx.x * span;
++    const int64_t at = static_cast<int64_t>(blockIdx.y) * x_ld, out = static_cast<int64_t>(blockIdx.y) * WIDTH;
++    const float inv = inv_rms_t(x + at, eps);
++    for (int i = threadIdx.x; i < span; i += TNT) {
++        const int c = first + i;
++        tile[i] = __float2bfloat16_rn(__fmul_rn(__fmul_rn(__bfloat162float(x[at + c]), inv), w[c]));
++        y[out + c] = tile[i];
++    }
++    __syncthreads();
++    for (int j = threadIdx.x; j < span / GROUP; j += TNT) {
++        float sum = 0.f;
++        for (int k = 0; k < GROUP; ++k) sum = __fadd_rn(sum, __bfloat162float(tile[j * GROUP + k]));
++        xs[static_cast<int64_t>(blockIdx.y) * (WIDTH / GROUP) + first / GROUP + j] = sum;
++    }
++}
+diff --git a/zig/kernels/cuda/nvfp4_experts.cu b/zig/kernels/cuda/nvfp4_experts.cu
+index 96d5251..98aad8d 100644
+--- a/zig/kernels/cuda/nvfp4_experts.cu
++++ b/zig/kernels/cuda/nvfp4_experts.cu
+@@ -102,7 +102,9 @@ __device__ __forceinline__ void k_loop(float (&acc)[M][1][NTW][4], const uint4*
+   }
+ }
+ 
+-template <int M, int EPI, int WARPS, int D>
++// WV = 1 (q38, upstream #1351's wave form): the units are dealt in equal waves, ceil(units / waves) warps run and the others leave at
++// once, instead of every warp striding by the whole grid and the last wave running short. A unit's program is the same either way.
++template <int M, int EPI, int WARPS, int D, int WV = 0>
+ __device__ __forceinline__ void expert_body(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
+                         const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
+                         const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
+@@ -110,7 +112,15 @@ __device__ __forceinline__ void expert_body(const __nv_bfloat16* __restrict__ X,
+   q38_pdl();
+   const int lane = threadIdx.x & 31, gq = lane >> 2, t = lane & 3;
+   const int units = __ldg(counts) * NB;
+-  for (int unit = blockIdx.x * WARPS + (threadIdx.x >> 5); unit < units; unit += gridDim.x * WARPS) {
++  int stride = gridDim.x * WARPS;
++  const int w0 = blockIdx.x * WARPS + (threadIdx.x >> 5);
++  if (WV) {
++    if (units == 0) return;
++    const int waves = (units + stride - 1) / stride;
++    stride = (units + waves - 1) / waves;
++    if (w0 >= stride) return;
++  }
++  for (int unit = w0; unit < units; unit += stride) {
+     const int it = unit / NB, cb = unit - it * NB;
+     const int e = __ldg(items + 3 * it), first = __ldg(items + 3 * it + 1), cnt = __ldg(items + 3 * it + 2);
+     if (e == skip) continue;
+@@ -380,6 +390,15 @@ __global__ void __launch_bounds__(128) q38_down_f32_d8(const __nv_bfloat16* __re
+                         const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
+                         const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
+                         float limit, int skip) { tf_nvfp4_experts::expert_body<1, 0, 4, 8>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++// q38 (TF_FLASHNEXT_Q38_EXP_WAVES=1; upstream TensorFold #1351's wave form): the stock decode kernels with their units in equal waves.
++__global__ void __launch_bounds__(128) q38_gate_up_w(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<2, 2, 4, 2, 1>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
++__global__ void __launch_bounds__(128) q38_down_f32_w(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
++                        const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
++                        const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
++                        float limit, int skip) { tf_nvfp4_experts::expert_body<1, 0, 4, 2, 1>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N, limit, skip); }
+ __global__ void __launch_bounds__(128) q38_down_f32_d12(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
+                         const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
+                         const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out, int N,
+diff --git a/zig/kernels/cuda/qmmf.cu b/zig/kernels/cuda/qmmf.cu
+index 1a7a206..9ec1313 100644
+--- a/zig/kernels/cuda/qmmf.cu
++++ b/zig/kernels/cuda/qmmf.cu
+@@ -12,7 +12,9 @@ namespace tf_qmmf {
+ 
+ using namespace qmm_frag;
+ 
+-enum Mode : int { FP4 = 0, FP8 = 1, MXFP8 = 2, FP8G = 3, BF16 = 4 };
++// SM8 (q38, the certified head's coarse copy): MXFP8's container (a byte a code, a power-of-two scale per 32) with sign-magnitude 7-bit
++// integer codes instead of E4M3 codes.
++enum Mode : int { FP4 = 0, FP8 = 1, MXFP8 = 2, FP8G = 3, BF16 = 4, SM8 = 5 };
+ 
+ constexpr int GS = 64;
+ 
+@@ -24,6 +26,16 @@ __device__ __forceinline__ uint32_t fp4pair(uint32_t w, int s) {
+     return r;
+ }
+ 
++// q38: two SM8 codes (bit 7 the sign, bits 0-6 the magnitude m) as a bf16 pair of m / 64 each: the magnitude sits in a bf16's seven
++// mantissa bits under a zero exponent field (the subnormal m 2^-133, as E4M3's subnormal codes do in fp8pair), times 2^127. Exact.
++__device__ __forceinline__ uint32_t sm8pair(uint32_t w) {
++    const uint32_t x = (w & 0xFFu) | ((w & 0xFF00u) << 8);
++    const uint32_t t = (x & 0x007F007Fu) | ((x & 0x00800080u) << 8);
++    uint32_t r;
++    asm("fma.rn.bf16x2 %0, %1, %2, %3;\n" : "=r"(r) : "r"(t), "r"(0x7F007F00u), "r"(0x80008000u));
++    return r;
++}
++
+ __device__ __forceinline__ uint32_t fp8pair(uint32_t w) {
+     const uint32_t x = (w & 0xFFu) | ((w & 0xFF00u) << 8);
+     const uint32_t t = ((x & 0x007F007Fu) << 4) | ((x & 0x00800080u) << 8);
+@@ -52,7 +64,7 @@ struct Tile {
+     static constexpr int CHUNKS = ROW / 16;
+     static constexpr int X = BM * ROW;
+     static constexpr int W = MODE == FP4 ? BN * GS / 2 : MODE == BF16 ? BN * GS * 2 : BN * GS;
+-    static constexpr int S = MODE == FP4 || MODE == FP8G ? BN * 4 : MODE == MXFP8 ? BN * 2 : 0;
++    static constexpr int S = MODE == FP4 || MODE == FP8G ? BN * 4 : (MODE == MXFP8 || MODE == SM8) ? BN * 2 : 0;
+     static constexpr int STAGE = (X + W + S + 127) / 128 * 128;
+     static constexpr int PARTIALS = MT * NT * 4 * THREADS * 4;
+     static constexpr int SMEM = STAGES * STAGE > PARTIALS ? STAGES * STAGE : PARTIALS;
+@@ -167,7 +179,7 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+                 const uint2 v = *reinterpret_cast<const uint2*>(ps + col * 4);
+                 sq[j][0] = v.x;
+                 sq[j][1] = v.y;
+-            } else if constexpr (MODE == MXFP8) {
++            } else if constexpr ((MODE == MXFP8 || MODE == SM8)) {
+                 const uint32_t v = *reinterpret_cast<const uint32_t*>(ps + col * 2);
+                 sq[j][0] = v & 0xFFFFu;
+                 sq[j][1] = v >> 16;
+@@ -201,19 +213,24 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
+                     b1 = v.y;
+                 } else {
+                     const uint32_t word = comp(wq[j], kt);
+-                    b0 = fp8pair(word & 0xFFFFu);
+-                    b1 = fp8pair(word >> 16);
++                    if constexpr (MODE == SM8) {
++                        b0 = sm8pair(word & 0xFFFFu);
++                        b1 = sm8pair(word >> 16);
++                    } else {
++                        b0 = fp8pair(word & 0xFFFFu);
++                        b1 = fp8pair(word >> 16);
++                    }
+                 }
+ #pragma unroll
+                 for (int i = 0; i < T::MT; ++i) {
+                     if constexpr (MODE == FP8 || MODE == BF16) mma(acc[i][j], a[i], b0, b1);
+-                    else if (MODE == FP4 || (MODE == MXFP8 && (kt & 1) == 0) || (MODE == FP8G && kt == 0))
++                    else if (MODE == FP4 || ((MODE == MXFP8 || MODE == SM8) && (kt & 1) == 0) || (MODE == FP8G && kt == 0))
+                         mma0(d[i][j], a[i], b0, b1);
+                     else mma(d[i][j], a[i], b0, b1);
+                 }
+             }
+-            if constexpr (MODE == FP4 || MODE == MXFP8 || MODE == FP8G) {
+-                if (MODE == FP4 || (MODE == MXFP8 && (kt & 1)) || (MODE == FP8G && kt == GS / 16 - 1)) {
++            if constexpr (MODE == FP4 || (MODE == MXFP8 || MODE == SM8) || MODE == FP8G) {
++                if (MODE == FP4 || ((MODE == MXFP8 || MODE == SM8) && (kt & 1)) || (MODE == FP8G && kt == GS / 16 - 1)) {
+                     const int blk = MODE == FP4 ? kt : kt / 2;
+ #pragma unroll
+                     for (int j = 0; j < T::NT; ++j) {
+@@ -417,6 +434,10 @@ template __global__ void qmmf_kernel<BF16, 32, 64, 1, 4, 4, false, true, false>(
+ template __global__ void qmmf_kernel<BF16, 64, 64, 1, 4, 4, false, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<BF16, 64, 64, 1, 4, 4, false, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<BF16, 64, 64, 1, 4, 4, false, false, true>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++// q38: the SM8 coarse copy's fp32 instances (16, 32 and 64 rows, one K slice)
++template __global__ void qmmf_kernel<SM8, 16, 64, 1, 4, 4, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<SM8, 32, 64, 1, 4, 4, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
++template __global__ void qmmf_kernel<SM8, 64, 64, 1, 4, 4, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 4, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<MXFP8, 16, 64, 1, 4, 4, true, true, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+ template __global__ void qmmf_kernel<MXFP8, 32, 64, 1, 4, 4, true, false, false>(const __nv_bfloat16* __restrict__, const unsigned char* __restrict__, const uint8_t* __restrict__, float, void* __restrict__, float* __restrict__, int, int, int, int, int, int, int);
+diff --git a/zig/src/cuda/experts.zig b/zig/src/cuda/experts.zig
+index 3be3e18..8428dad 100644
+--- a/zig/src/cuda/experts.zig
++++ b/zig/src/cuda/experts.zig
+@@ -398,6 +398,14 @@ pub const Nvfp4Experts = struct {
+                     e.fns[i] = try mod.function(q[0..qlen :0]);
+                 }
+             }
++            // TF_FLASHNEXT_Q38_EXP_WAVES=1 (q38, off unless set; upstream #1351's wave form): the 4-warp gate-up and fp32 down kernels deal their
++            // units in equal waves (1: both, 2: gate-up only, 3: down only). Each unit's program is the stock one: the same bits.
++            if (warps == 4 and i < 2) {
++                if (std.c.getenv("TF_FLASHNEXT_Q38_EXP_WAVES")) |v| {
++                    const m = v[0];
++                    if (m == '1' or (m == '2' and i == 0) or (m == '3' and i == 1)) e.fns[i] = try mod.function(if (i == 0) "q38_gate_up_w" else "q38_down_f32_w");
++                }
++            }
+             e.resident[i] = @max(1, try e.fns[i].occupancy(@intCast(warps * 32), 0)) * sms;
+         }
+         for (symbols.prompt, &e.prompt_fns, [3]usize{ 1, 2, 1 }, prompt_wn) |name, *f, parts, wn| {
+diff --git a/zig/src/cuda/norms.zig b/zig/src/cuda/norms.zig
+index 4814b42..8fce871 100644
+--- a/zig/src/cuda/norms.zig
++++ b/zig/src/cuda/norms.zig
+@@ -53,6 +53,7 @@ pub const Norms = struct {
+     add_rms_h_f32w_fn: Function,
+     gated_fns: [3]Function, // head dim 64, 128, 256
+     rms_sums_fn: Function,
++    rms_sums_tiles_fn: ?Function = null, // q38 (upstream #1702): the 10,240-wide MTP row in tiles
+     tail_fns: [2]Function, // each norm rounded once, MLX's bf16 steps
+ 
+     pub fn load(d: *const Driver) !Norms {
+@@ -69,6 +70,7 @@ pub const Norms = struct {
+             .add_rms_h_f32w_fn = try mod.function("tf_add_rms_rows_bf16h_f32w"),
+             .gated_fns = .{ try mod.function("tf_gated_rms_rows_64"), try mod.function("tf_gated_rms_rows_128"), try mod.function("tf_gated_rms_rows_256") },
+             .rms_sums_fn = try mod.function("tf_rms_rows_sums"),
++            .rms_sums_tiles_fn = mod.function("q38_rms_rows_sums_tiles") catch null,
+             .tail_fns = .{ try mod.function("tf_add_rms_rows_bf16h_tail"), try mod.function("tf_add_rms_rows_bf16h_tail_round") },
+         };
+     }
+@@ -105,6 +107,22 @@ pub const Norms = struct {
+     pub fn rmsSums(n: *const Norms, s: Stream, x: u64, x_ld: usize, w: u64, y: u64, xs: u64, rows: usize, width: usize, group: usize, eps: f32) !void {
+         if (group == 0 or width % group != 0 or x_ld < width) return error.RowShape;
+         if (rows == 0) return;
++        // q38 (TF_FLASHNEXT_Q38_RMS_TILES=T, off unless set; upstream #1702): Flash Next's MTP row (10,240 values, sums of 32) of up to
++        // 4 rows in T blocks of 256 threads a row (1, 10 or 40; upstream takes 10 on sm_121), the same bytes as the one-block kernel
++        if (width == 10240 and group == 32 and rows <= 4) {
++          if (n.rms_sums_tiles_fn) |tf| {
++            const t = q38RmsTiles();
++            if (t != 0) {
++                var b: launch_.Args = .{};
++                b.add(x);
++                b.add(@as(i64, @intCast(x_ld)));
++                for ([_]u64{ w, y, xs }) |v| b.add(v);
++                b.add(@as(i32, @intCast(t)));
++                b.add(eps);
++                return launch_.launch(tf, .{ .grid = .{ .x = t, .y = @intCast(rows), .z = 1 }, .block = .{ .x = 256 } }, s, &b);
++            }
++          }
++        }
+         var a: launch_.Args = .{};
+         a.add(x);
+         a.add(@as(i64, @intCast(x_ld)));
+@@ -196,3 +214,16 @@ pub const Norms = struct {
+ test "kinds keep the kernels' numbering" {
+     try std.testing.expectEqual(@as(u8, 2), @backingInt(Kind.bf16));
+ }
++
++var q38_rms_tiles_cache: i32 = -1;
++/// TF_FLASHNEXT_Q38_RMS_TILES: 0 or unset off; 1, 10 or 40 tiles a row.
++fn q38RmsTiles() u32 {
++    if (q38_rms_tiles_cache < 0) {
++        q38_rms_tiles_cache = 0;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_RMS_TILES")) |e| {
++            const v = std.fmt.parseInt(i32, std.mem.span(e), 10) catch 0;
++            if (v == 1 or v == 10 or v == 40) q38_rms_tiles_cache = v;
++        }
++    }
++    return @intCast(q38_rms_tiles_cache);
++}
+diff --git a/zig/src/cuda/qmmf.zig b/zig/src/cuda/qmmf.zig
+index 882a258..66c3314 100644
+--- a/zig/src/cuda/qmmf.zig
++++ b/zig/src/cuda/qmmf.zig
+@@ -78,7 +78,8 @@ pub fn bucket(m: usize) u32 {
+ }
+ 
+ /// A packed projection on the device: codes or words, scale tiles, the tensor scale, its shape, its input scale (act).
+-pub const Weight = struct { mode: Mode, codes: u64, scales: u64, scale: f32 = 1.0, n: u32, k: u32, npad: u32, act: f32 = 0 };
++/// `sm8` (q38): an .mxfp8 weight whose codes are sign-magnitude 7-bit integers (qmmf.cu SM8); fp32 output, one K slice only.
++pub const Weight = struct { mode: Mode, codes: u64, scales: u64, scale: f32 = 1.0, n: u32, k: u32, npad: u32, act: f32 = 0, sm8: bool = false };
+ 
+ /// What one call launches, from the shapes alone: tile, slices, cluster or reduce (qmmf_cuda's choice).
+ pub const Plan = struct { bm: u32, sk: u32, fused: bool, cluster: bool, reduce: bool };
+@@ -212,6 +213,7 @@ pub const Lane = struct {
+     half: [2][2][2]Function = undefined, // q38: by halfModeIndex, Out, then plain / cluster
+     rows128: [2][2][2]Function = undefined, // q38: the 128-row tile, same indices
+     clusters: bool, // sm_90 on: slices meet in a cluster's shared memory
++    sm8_fns: [3]?Function = .{ null, null, null }, // q38: qmmf.cu SM8, fp32 out, by row tile
+ 
+     pub fn load(d: *const Driver, capability_major: u32) !Lane {
+         if (!kernels.available) return error.BuiltWithoutKernels;
+@@ -238,6 +240,14 @@ pub const Lane = struct {
+             l.f32_fns[mi] = try loadTiles(mod, mode, true);
+         }
+         for (&l.reduce, reduce_symbols) |*f, name| f.* = try mod.function(name);
++        inline for (row_tiles, 0..) |bm, ti| {
++            const name = std.fmt.comptimePrint("_ZN7tf_qmmf11qmmf_kernelILi5ELi{d}ELi64ELi1ELi4ELi4ELb1ELb0ELb0EEEvPK13__nv_bfloat16PKhS5_fPvPfiiiiiii", .{bm});
++            if (mod.function(name)) |f| {
++                var g = f;
++                try g.allowDynamicShared(sharedBytesQ(.mxfp8, bm, false));
++                l.sm8_fns[ti] = g;
++            } else |_| {}
++        }
+         inline for (.{ Mode.mxfp8, Mode.bf16 }, 0..) |mode, mi| inline for (.{ false, true }, 0..) |wide, oi| inline for (.{ false, true }, 0..) |cl, ci| {
+             const f = try mod.function(halfSymbol(mode, cl, wide));
+             try f.allowDynamicShared(halfShared(mode));
+@@ -332,11 +342,12 @@ pub const Lane = struct {
+         const ti: usize = if (p.bm == 16) 0 else if (p.bm == 32) 1 else 2;
+         const hm = halfModeIndex(w.mode);
+         // q38: more than 64 rows on a wide weight: 128-row tiles (each block reads its weight tile once)
+-        const r128 = hm != null and m > 64 and !p.fused and !p.reduce and rows128MinN() > 0 and w.n >= rows128MinN();
++        const r128 = !w.sm8 and hm != null and m > 64 and !p.fused and !p.reduce and rows128MinN() > 0 and w.n >= rows128MinN();
+         const bm: usize = if (r128) 128 else p.bm;
+         const rows_t = (m + bm - 1) / bm;
+-        const half = hm != null and p.bm == 16 and !p.fused and rows_t * ((w.n + bn - 1) / bn) * p.sk < halfBelow();
+-        const f = if (r128) l.rows128[hm.?][@backingInt(out)][@intFromBool(p.cluster)] else if (half) l.half[hm.?][@backingInt(out)][@intFromBool(p.cluster)] else if (p.fused) set[6] else set[ti * 2 + @intFromBool(p.cluster)];
++        const half = !w.sm8 and hm != null and p.bm == 16 and !p.fused and rows_t * ((w.n + bn - 1) / bn) * p.sk < halfBelow();
++        if (w.sm8 and (out != .f32 or p.sk != 1 or p.fused or w.mode != .mxfp8)) return error.Invalid;
++        const f = if (w.sm8) (l.sm8_fns[ti] orelse return error.Invalid) else if (r128) l.rows128[hm.?][@backingInt(out)][@intFromBool(p.cluster)] else if (half) l.half[hm.?][@backingInt(out)][@intFromBool(p.cluster)] else if (p.fused) set[6] else set[ti * 2 + @intFromBool(p.cluster)];
+         const cols: usize = if (half) 32 else bn;
+         const band = @max(1, @min(rows_t, (12 << 20) / (bm * w.k * 2)));
+         var args: launch_.Args = .{};
+diff --git a/zig/src/families/flashnext/cuda_batch_state.zig b/zig/src/families/flashnext/cuda_batch_state.zig
+index ae975d3..49c0038 100644
+--- a/zig/src/families/flashnext/cuda_batch_state.zig
++++ b/zig/src/families/flashnext/cuda_batch_state.zig
+@@ -173,6 +173,8 @@ pub const Kernels = struct {
+     /// q38 certified head (cuda_cert.zig): the select and check kernels, null on a batch module without them.
+     cert_sel: ?cuda.Function = null,
+     cert_chk: ?cuda.Function = null,
++    cert_selk: ?cuda.Function = null,
++    cert_bound: ?cuda.Function = null,
+     nvfp4: cuda.experts.Nvfp4Experts,
+     /// Prompt chunks' routed NVFP4 experts on shared-memory row tiles, the decode kernel's bits; null: not taken.
+     expert_tile: ?cuda.nvfp4_tile.Tile,
+@@ -235,6 +237,8 @@ pub const Kernels = struct {
+         k.sum = try k.batch.function("fn_sum_slices");
+         k.cert_sel = k.batch.function("fn_cert_select") catch null;
+         k.cert_chk = k.batch.function("fn_cert_check") catch null;
++        k.cert_selk = k.batch.function("fn_cert_select_k") catch null;
++        k.cert_bound = k.batch.function("fn_cert_bound") catch null;
+         k.moe_sum = try k.batch.function("fn_moe_sum");
+         k.copy_cols = try k.batch.function("fn_copy_cols");
+         k.shift = try k.batch.function("fn_shift_window");
+diff --git a/zig/src/families/flashnext/cuda_cert.zig b/zig/src/families/flashnext/cuda_cert.zig
+index 60b0cb7..c35ac9d 100644
+--- a/zig/src/families/flashnext/cuda_cert.zig
++++ b/zig/src/families/flashnext/cuda_cert.zig
+@@ -23,11 +23,40 @@ const max_runs = 600;
+ const max_tiles = 1500;
+ /// Runs of flagged tiles closer than this are joined (fewer launches; the extra tiles get their true scores).
+ const join_gap = 2;
++/// The same for a top-k pass (more, scattered tiles: a launch costs more than a few tiles' bytes).
++const join_gap_k = 6;
+ 
+ /// The engine's certified head, if it made one (one engine a process).
+ pub var active: ?*Cert = null;
+ /// Set by a verify pass whose streams are all greedy with no masks and no log-probabilities, for the pass's head calls.
+ pub var round_ok: bool = false;
++/// q38 (TF_FLASHNEXT_Q38_CERT_TOPK): the most candidates any row of the pass's draws reads (1: all greedy). A sampled stream whose keyed
++/// draw reads its row's top_k best scores (top_k from 1 to CERT_TOPK, no mask, no log-probabilities) may ride the certified head: the
++/// pass then keeps every entry that can be among, or tie with, a row's round_k best.
++pub var round_k: u32 = 1;
++
++var topk_cache: i32 = -1;
++/// TF_FLASHNEXT_Q38_CERT_TOPK=K (q38; default 0: greedy passes only; at most 64): sampled streams with top_k <= K take the certified head.
++pub fn topkMax() u32 {
++    if (topk_cache < 0) {
++        topk_cache = 0;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_CERT_TOPK")) |e| topk_cache = @intCast(@min(64, std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0));
++    }
++    return @intCast(topk_cache);
++}
++
++var code_cache: i8 = -1;
++/// TF_FLASHNEXT_Q38_CERT_CODE=sm8 (q38; default mxfp8): the coarse copy holds sign-magnitude 7-bit integer codes with a power-of-two
++/// scale per 32 inputs (qmmf.cu SM8: the same bytes a row as the MXFP8 copy, about a third of its error), instead of E4M3 codes.
++pub fn codeSm8() bool {
++    if (code_cache < 0) {
++        code_cache = 0;
++        if (std.c.getenv("TF_FLASHNEXT_Q38_CERT_CODE")) |e| {
++            if (std.mem.eql(u8, std.mem.span(e), "sm8")) code_cache = 1;
++        }
++    }
++    return code_cache == 1;
++}
+ 
+ var mode_cache: i8 = -1;
+ /// TF_FLASHNEXT_Q38_CERT: 0 or unset off, 1 on, 2 on and checked against the whole head.
+@@ -66,6 +95,18 @@ fn encode(y: f32) u8 {
+     return sign | @as(u8, @intCast((e + 7) << 3)) | @as(u8, @intCast(m));
+ }
+ 
++/// q38 SM8: the nearest sign-magnitude code of y (|y| at most 127 / 64): bit 7 the sign, bits 0-6 round(|y| 64).
++fn encodeSm8(y: f32) u8 {
++    const m: u32 = @intFromFloat(@min(127.0, @round(@abs(y) * 64.0)));
++    return (if (y < 0) @as(u8, 0x80) else 0) | @as(u8, @intCast(m));
++}
++
++/// An SM8 code's value.
++fn decodeSm8(c: u8) f64 {
++    const v: f64 = @as(f64, @floatFromInt(c & 0x7f)) / 64.0;
++    return if (c & 0x80 != 0) -v else v;
++}
++
+ /// An E4M3 code's value.
+ fn decode(c: u8) f64 {
+     const e: i32 = (c >> 3) & 15;
+@@ -99,6 +140,14 @@ pub const Cert = struct {
+     tiles: u64 = 0,
+     runs: u64 = 0,
+     resid: f64 = 0,
++    sm8: bool = false,
++    kcalls: u64 = 0,
++    kfallbacks: u64 = 0,
++    ktiles: u64 = 0,
++    kruns: u64 = 0,
++    topk_checked: u64 = 0,
++    topk_mismatch: u64 = 0,
++    chk_host: []u16 = &.{},
+ 
+     /// The MXFP8 copy and each vocabulary row's bound from the checkpoint's BF16 head (row-major bytes).
+     pub fn init(gpa: std.mem.Allocator, d: *const cuda.Driver, head: core.safetensors.Tensor) !*Cert {
+@@ -112,6 +161,7 @@ pub const Cert = struct {
+         const cb = try gpa.alloc(f32, n);
+         defer gpa.free(cb);
+         var rel: f64 = 0;
++        const sm8 = codeSm8();
+         for (0..n) |r| {
+             var res: f64 = 0;
+             var w2: f64 = 0;
+@@ -127,16 +177,17 @@ pub const Cert = struct {
+                 var e: i32 = 0;
+                 if (mx > 0 and mx < std.math.inf(f32)) {
+                     const fr = std.math.frexp(mx);
+-                    e = if (fr.significand <= 0.875) fr.exponent - 9 else fr.exponent - 8;
++                    // SM8: codes reach 127 / 64, so the block's largest value scaled by 2^-e must not pass that
++                    e = if (sm8) (if (fr.significand <= 0.9921875) fr.exponent - 1 else fr.exponent) else if (fr.significand <= 0.875) fr.exponent - 9 else fr.exponent - 8;
+                     e = @max(-126, @min(126, e));
+                 }
+                 scales[r * (k / 32) + g] = @intCast(e + 127);
+                 const inv = std.math.ldexp(@as(f32, 1.0), -e);
+                 const sc = std.math.ldexp(@as(f64, 1.0), e);
+                 for (blk, 0..) |v, i| {
+-                    const code = encode(v * inv);
++                    const code = if (sm8) encodeSm8(v * inv) else encode(v * inv);
+                     codes[r * k + g * 32 + i] = code;
+-                    const dv = @as(f64, v) - decode(code) * sc;
++                    const dv = @as(f64, v) - (if (sm8) decodeSm8(code) else decode(code)) * sc;
+                     res += dv * dv;
+                     w2 += @as(f64, v) * @as(f64, v);
+                 }
+@@ -170,10 +221,13 @@ pub const Cert = struct {
+             .check = check,
+             .rows_cap = rows_cap,
+             .resid = rel / @as(f64, @floatFromInt(n)),
++            .sm8 = sm8,
+         };
+         self.weight = cuda.mxfp8.weight(self.codes.ptr, self.scales.ptr, n, k);
++        self.weight.sm8 = sm8;
++        if (check and topkMax() > 1) self.chk_host = try gpa.alloc(u16, 2 * vocab);
+         try d.check(d.api.cuMemsetD32_v2(self.stats.ptr, 0, 64), "cuMemsetD32");
+-        std.debug.print("q38 cert: MXFP8 copy of the head made ({d} MiB), mean residual {d:.4} of a row's norm, check {d}\n", .{ (codes_p.len + scales_p.len) >> 20, self.resid, @intFromBool(check) });
++        std.debug.print("q38 cert: {s} copy of the head made ({d} MiB), mean residual {d:.4} of a row's norm, check {d}, top-k up to {d}\n", .{ if (sm8) "SM8" else "MXFP8", (codes_p.len + scales_p.len) >> 20, self.resid, @intFromBool(check), topkMax() });
+         return self;
+     }
+ 
+@@ -186,6 +240,7 @@ pub const Cert = struct {
+         self.info.free();
+         self.chk.free();
+         self.stats.free();
++        if (self.chk_host.len > 0) self.gpa.free(self.chk_host);
+         self.gpa.destroy(self);
+     }
+ 
+@@ -196,7 +251,8 @@ pub const Cert = struct {
+         const st = pass.stream;
+         const s = pass.s;
+         const d = st.d;
+-        const sel = k.cert_sel orelse return false;
++        const kk: u32 = @max(1, round_k);
++        const sel = (if (kk > 1) k.cert_selk else k.cert_sel) orelse return false;
+         const head = pass.m.head.native orelse return false;
+         if (head.mode != .bf16 or head.n != vocab or head.k != dims) return false;
+         try k.native_lane.matmulF32(st, s.mixed, dims, n, c.weight, c.approx.ptr, s.native_part);
+@@ -211,12 +267,15 @@ pub const Cert = struct {
+         a.add(out);
+         a.add(c.flags.ptr);
+         a.add(c.info.ptr);
++        if (kk > 1) a.add(cint(kk));
+         try cuda.launch.launch(sel, .{ .grid = .{ .x = @intCast(n) }, .block = .{ .x = 1024 } }, st, &a);
+         try st.synchronize();
+         try d.check(d.api.cuMemcpyDtoH_v2(&c.host_flags, c.flags.ptr, tiles_n * 4), "cuMemcpyDtoH");
+         try d.check(d.api.cuMemcpyDtoH_v2(&c.host_info, c.info.ptr, n * 16), "cuMemcpyDtoH");
+         c.calls += 1;
+         c.rows += n;
++        if (kk > 1) c.kcalls += 1;
++        const gap: usize = if (kk > 1) join_gap_k else join_gap;
+         var fine = true;
+         for (0..n) |r| {
+             if (!std.math.isFinite(c.host_info[4 * r]) or !std.math.isFinite(c.host_info[4 * r + 1])) fine = false;
+@@ -234,7 +293,7 @@ pub const Cert = struct {
+             }
+             var end = t + 1;
+             var scan = end;
+-            while (scan < tiles_n and scan < end + join_gap) {
++            while (scan < tiles_n and scan < end + gap) {
+                 if (c.host_flags[scan] != 0) {
+                     end = scan + 1;
+                     scan = end;
+@@ -252,6 +311,7 @@ pub const Cert = struct {
+         }
+         if (!fine or runs == 0 or total > max_tiles) {
+             c.fallbacks += 1;
++            if (kk > 1) c.kfallbacks += 1;
+             c.report(st);
+             return false;
+         }
+@@ -263,6 +323,10 @@ pub const Cert = struct {
+         }
+         c.tiles += total;
+         c.runs += runs;
++        if (kk > 1) {
++            c.ktiles += total;
++            c.kruns += runs;
++        }
+         if (c.check) {
+             const chk = k.cert_chk orelse return error.UnexpectedTensor;
+             try k.native_lane.matmul(st, s.mixed, dims, n, head, c.chk.ptr, s.native_part);
+@@ -272,6 +336,35 @@ pub const Cert = struct {
+             b.add(cint(vocab));
+             b.add(c.stats.ptr);
+             try cuda.launch.launch(chk, .{ .grid = .{ .x = @intCast(n) }, .block = .{ .x = 1024 } }, st, &b);
++            // every coarse score against the whole head's, within the bound the selection relied on
++            if (k.cert_bound) |bf| {
++                var b2: cuda.Args = .{};
++                b2.add(c.approx.ptr);
++                b2.add(c.c.ptr);
++                b2.add(c.info.ptr);
++                b2.add(c.chk.ptr);
++                b2.add(cint(vocab));
++                b2.add(c.stats.ptr);
++                try cuda.launch.launch(bf, .{ .grid = .{ .x = @intCast(n) }, .block = .{ .x = 1024 } }, st, &b2);
++            }
++            // a top-k pass: each row's kk best (values and columns, as fn_row_cand selects them) from the certified row and from the whole
++            // head's row, on the host
++            if (kk > 1 and c.chk_host.len == 2 * vocab) {
++                const mtp = @import("cuda_mtp.zig");
++                try st.synchronize();
++                var va: [mtp.cand_max]f32 = undefined;
++                var vb: [mtp.cand_max]f32 = undefined;
++                var ca: [mtp.cand_max]i32 = undefined;
++                var cb: [mtp.cand_max]i32 = undefined;
++                for (0..n) |r| {
++                    try d.check(d.api.cuMemcpyDtoH_v2(c.chk_host.ptr, out + r * vocab * 2, vocab * 2), "cuMemcpyDtoH");
++                    try d.check(d.api.cuMemcpyDtoH_v2(c.chk_host.ptr + vocab, c.chk.ptr + r * vocab * 2, vocab * 2), "cuMemcpyDtoH");
++                    const oa = mtp.topCandidates(c.chk_host[0..vocab], kk, &va, &ca);
++                    const ob = mtp.topCandidates(c.chk_host[vocab..], kk, &vb, &cb);
++                    c.topk_checked += 1;
++                    if (oa != ob or !std.mem.eql(u8, std.mem.sliceAsBytes(va[0..kk]), std.mem.sliceAsBytes(vb[0..kk])) or !std.mem.eql(i32, ca[0..kk], cb[0..kk])) c.topk_mismatch += 1;
++                }
++            }
+         }
+         c.report(st);
+         return true;
+@@ -280,13 +373,17 @@ pub const Cert = struct {
+     fn report(c: *Cert, st: cuda.Stream) void {
+         const every: u64 = if (c.check) 1000 else 20000;
+         if (c.calls % every != 0) return;
+-        var hs: [4]u32 = .{ 0, 0, 0, 0 };
++        var hs: [6]u32 = .{ 0, 0, 0, 0, 0, 0 };
+         if (c.check) {
+             st.synchronize() catch {};
+-            _ = st.d.api.cuMemcpyDtoH_v2(&hs, c.stats.ptr, 16);
++            _ = st.d.api.cuMemcpyDtoH_v2(&hs, c.stats.ptr, 24);
+         }
+         const done = @max(c.calls - c.fallbacks, 1);
+         std.debug.print("q38 cert: calls {d} rows {d} whole-head {d} tiles/call {d:.1} runs/call {d:.1} checked-rows {d} best-mismatch {d} value-mismatch {d} held {d}\n", .{ c.calls, c.rows, c.fallbacks, @as(f64, @floatFromInt(c.tiles)) / @as(f64, @floatFromInt(done)), @as(f64, @floatFromInt(c.runs)) / @as(f64, @floatFromInt(done)), hs[0], hs[1], hs[2], hs[3] });
++        if (c.kcalls > 0 or c.check) {
++            const kdone = @max(c.kcalls - c.kfallbacks, 1);
++            std.debug.print("q38 cert topk: calls {d} whole-head {d} tiles/call {d:.1} runs/call {d:.1} topk-rows-checked {d} topk-mismatch {d} bound-violations {d} of {d} K entries\n", .{ c.kcalls, c.kfallbacks, @as(f64, @floatFromInt(c.ktiles)) / @as(f64, @floatFromInt(kdone)), @as(f64, @floatFromInt(c.kruns)) / @as(f64, @floatFromInt(kdone)), c.topk_checked, c.topk_mismatch, hs[4], hs[5] });
++        }
+     }
+ };
+ 
+diff --git a/zig/src/families/flashnext/cuda_knobs.zig b/zig/src/families/flashnext/cuda_knobs.zig
+index 9131a1a..fa5f448 100644
+--- a/zig/src/families/flashnext/cuda_knobs.zig
++++ b/zig/src/families/flashnext/cuda_knobs.zig
+@@ -422,3 +422,36 @@ pub fn q38CacheElastic() bool {
+     if (st.v < 0) st.v = if (std.c.getenv("TF_FLASHNEXT_Q38_CACHE_ELASTIC")) |e| @intFromBool(e[0] == '1') else 0;
+     return st.v == 1;
+ }
++
++/// TF_FLASHNEXT_Q38_SGATE=M[,A,B[,C]] (q38; default 0: stock): what the draft chain's stop rule is fed for a SAMPLED stream (temperature > 0)
++/// whose draw came from its row's top_k candidates. Stock (0) feeds the drawn token's temperature-1 probability under the draft head, as
++/// for a greedy stream. But a sampled draft is kept when the target's keyed draw (the same Gumbel noise) lands on the same token, which
++/// depends on how far the draft's winner is ahead in the keyed race, not on how likely the token was. M = 1: the head's best token's
++/// temperature-1 probability; 2: the drawn token's probability inside the tempered top_k / top_p set; 3: 1 / (1 + exp(-(A margin + B))),
++/// margin = the winner's lead over the runner-up in the keyed race (scaled logit + Gumbel noise; a set of one token counts as a wide lead).
++/// C (0: the stream's own TF_FLASHNEXT_CONFIDENCE): the running-product line for sampled streams (0.4 stock).
++/// Drafts only: every kept token is still the target's draw. With TF_FLASHNEXT_Q38_KNOBFILE the words sgate, sgate_a, sgate_b, sgate_c
++/// (a, b, c in thousandths) override at every use.
++pub const SGate = struct { mode: u8 = 0, a: f64 = 1.0, b: f64 = 0.0, c: f64 = 0.0 };
++var sgate_cache: ?SGate = null;
++pub fn q38SGate() SGate {
++    if (sgate_cache == null) {
++        var g: SGate = .{};
++        if (std.c.getenv("TF_FLASHNEXT_Q38_SGATE")) |e| {
++            var it = std.mem.splitScalar(u8, std.mem.span(e), ',');
++            if (it.next()) |x| g.mode = std.fmt.parseInt(u8, x, 10) catch 0;
++            if (it.next()) |x| g.a = std.fmt.parseFloat(f64, x) catch 1.0;
++            if (it.next()) |x| g.b = std.fmt.parseFloat(f64, x) catch 0.0;
++            if (it.next()) |x| g.c = std.fmt.parseFloat(f64, x) catch 0.0;
++        }
++        sgate_cache = g;
++    }
++    var g = sgate_cache.?;
++    if (std.c.getenv("TF_FLASHNEXT_Q38_KNOBFILE") != null) {
++        if (q38KnobFile("sgate")) |v| g.mode = @intCast(std.math.clamp(v, 0, 9));
++        if (q38KnobFile("sgate_a")) |v| g.a = @as(f64, @floatFromInt(v)) / 1000.0;
++        if (q38KnobFile("sgate_b")) |v| g.b = @as(f64, @floatFromInt(v)) / 1000.0;
++        if (q38KnobFile("sgate_c")) |v| g.c = @as(f64, @floatFromInt(v)) / 1000.0;
++    }
++    return g;
++}
+diff --git a/zig/src/families/flashnext/cuda_lanes_verify.zig b/zig/src/families/flashnext/cuda_lanes_verify.zig
+index 6a4a7c8..d0689b0 100644
+--- a/zig/src/families/flashnext/cuda_lanes_verify.zig
++++ b/zig/src/families/flashnext/cuda_lanes_verify.zig
+@@ -29,13 +29,24 @@ pub fn windows(self: anytype, wins: []const be.Window, out: []be.Verified, draft
+         }
+         // q38: the certified head serves a pass only when each of its streams is greedy, unmasked and wants no log-probabilities
+         var all_greedy = cert.active != null;
++        // q38 (TF_FLASHNEXT_Q38_CERT_TOPK): a sampled stream whose keyed draw reads only its rows' top_k best scores (top_k up to the knob)
++        // rides too; the pass then certifies every row's `round_k` best instead of its best
++        var round_k: u32 = 1;
+         for (drafted[at..][0..n]) |wi| {
+             const w = wins[wi];
+             const greedy = if (w.stream.sampling) |sm| sm.temperature <= 0 else true;
+-            if (!greedy or w.masks.len != 0 or w.stream.logprobs != null or (w.parents != null and !lanes.accept.isChain(w.parents.?))) all_greedy = false;
++            if (w.masks.len != 0 or w.stream.logprobs != null or (w.parents != null and !lanes.accept.isChain(w.parents.?))) all_greedy = false;
++            if (!greedy) {
++                const kmax = cert.topkMax();
++                if (kmax == 0) all_greedy = false else if (mtp.candidateCount(w.stream.sampling, @import("cuda_prompt_wt.zig").vocab)) |count| {
++                    if (count > kmax) all_greedy = false else round_k = @max(round_k, @as(u32, @intCast(count)));
++                } else all_greedy = false;
++            }
+         }
+         cert.round_ok = all_greedy;
++        cert.round_k = round_k;
+         defer cert.round_ok = false;
++        defer cert.round_k = 1;
+         if (n == 1 or self.ranks != null or cap <= 1) {
+             for (seqs[0..n], ds[0..n], idss[0..n]) |q, d, ids| try self.ops().verify(q, d, ids);
+         } else try self.ops().verifyMany(seqs[0..n], ds[0..n], idss[0..n], self.logits.ptr);
+diff --git a/zig/src/families/flashnext/cuda_mtp.zig b/zig/src/families/flashnext/cuda_mtp.zig
+index e404a5c..dd19cc6 100644
+--- a/zig/src/families/flashnext/cuda_mtp.zig
++++ b/zig/src/families/flashnext/cuda_mtp.zig
+@@ -359,6 +359,94 @@ pub fn drawPickCandidates(gpa: std.mem.Allocator, vals: []const f32, cols: []con
+     return .{ .token = tok, .prob = 0 };
+ }
+ 
++/// q38 (TF_FLASHNEXT_Q38_SGATE): a keyed candidate draw re-played for the stop rule. `top`: the best candidate's temperature-1 probability;
++/// `drawn`: the drawn token's temperature-1 probability (what stock feeds the rule); `drawn_t`: its probability inside the tempered
++/// top_k / top_p / min_p set; `margin`: the winner's lead over the runner-up in the keyed race (1e9 when the set holds one token);
++/// `keep`: the set's size. Reads only; the draw itself is drawCandidates'.
++pub const DrawStats = struct { token: u32 = 0, top: f64 = 0, drawn: f64 = 0, drawn_t: f64 = 0, margin: f64 = 0, keep: u32 = 0 };
++
++pub fn drawStats(vals: []const f32, cols: []const i32, ids: []const u32, lse: f32, position: u64, s: Sampling) DrawStats {
++    const n = vals.len;
++    if (n == 0 or n > cand_max or n != cols.len) return .{};
++    var v: [cand_max]f64 = undefined;
++    var key: [cand_max]u64 = undefined;
++    // the draw's order: by value, then the lower id (insertion sort of at most 64)
++    for (0..n) |i| {
++        const x: f64 = vals[i];
++        const id: u64 = ids[@intCast(cols[i])];
++        var at = i;
++        while (at > 0 and (x > v[at - 1] or (x == v[at - 1] and id < key[at - 1]))) : (at -= 1) {
++            v[at] = v[at - 1];
++            key[at] = key[at - 1];
++        }
++        v[at] = x;
++        key[at] = id;
++    }
++    const k = @max(1, @min(if (s.top_k != 0) @as(usize, s.top_k) else n, n));
++    const t = @max(s.temperature, 1e-6);
++    var probs: [cand_max]f64 = undefined;
++    var total: f64 = 0;
++    for (0..k) |j| {
++        probs[j] = @exp((v[j] - v[0]) / t);
++        total += probs[j];
++    }
++    var keep = k;
++    if (s.top_p > 0.0 and s.top_p < 1.0) {
++        var cum: f64 = 0;
++        var below: usize = 0;
++        for (0..k) |j| {
++            cum += probs[j] / total;
++            if (cum < s.top_p) below += 1;
++        }
++        keep = @min(keep, below + 1);
++    }
++    if (s.min_p > 0.0) {
++        var m: usize = 0;
++        for (0..keep) |j| {
++            if ((v[j] - v[0]) / t >= @log(s.min_p)) m += 1;
++        }
++        keep = @max(1, m);
++    }
++    var best: usize = 0;
++    var best_score = -std.math.inf(f64);
++    var second = -std.math.inf(f64);
++    var kept: f64 = 0;
++    for (0..keep) |j| {
++        kept += probs[j];
++        const score = v[j] / t - @log(-@log(lanes.sampling.uniform(s.seed, position, key[j])));
++        if (j == 0 or score > best_score) {
++            if (j > 0) second = best_score;
++            best = j;
++            best_score = score;
++        } else if (score > second) second = score;
++    }
++    return .{
++        .token = @intCast(key[best]),
++        .top = @exp(v[0] - @as(f64, lse)),
++        .drawn = @exp(v[best] - @as(f64, lse)),
++        .drawn_t = probs[best] / kept,
++        .margin = if (keep <= 1) 1e9 else best_score - second,
++        .keep = @intCast(keep),
++    };
++}
++
++/// The stop rule's input for a sampled candidate draw under TF_FLASHNEXT_Q38_SGATE (mode 0, or a re-play that disagrees with the draw: `stock`).
++pub fn sampledGate(stock: f64, token: u32, vals: []const f32, cols: []const i32, ids: []const u32, lse: f32, position: u64, sm: ?Sampling) f64 {
++    const g = @import("cuda_knobs.zig").q38SGate();
++    const log_on = @import("cuda_mtp_ops.zig").stepLogOn();
++    if (g.mode == 0 and !log_on) return stock;
++    const s = sm orelse return stock;
++    const st = drawStats(vals, cols, ids, lse, position, s);
++    if (log_on) std.debug.print("QSAMP {d} {d:.5} {d:.5} {d:.5} {d:.4} {d} {d}\n", .{ token, st.drawn, st.top, st.drawn_t, @min(st.margin, 99.0), st.keep, @intFromBool(st.token == token) });
++    if (st.keep == 0 or st.token != token) return stock;
++    return switch (g.mode) {
++        1 => st.top,
++        2 => st.drawn_t,
++        3 => 1.0 / (1.0 + @exp(-(g.a * @min(st.margin, 60.0) + g.b))),
++        else => stock,
++    };
++}
++
+ // ---- the head's weights --------------------------------------------------------------------------------------------
+ 
+ pub const Head = struct {
+diff --git a/zig/src/families/flashnext/cuda_mtp_ops.zig b/zig/src/families/flashnext/cuda_mtp_ops.zig
+index c35c598..37306d7 100644
+--- a/zig/src/families/flashnext/cuda_mtp_ops.zig
++++ b/zig/src/families/flashnext/cuda_mtp_ops.zig
+@@ -300,7 +300,12 @@ pub fn Ops(comptime Tri: type) type {
+                 var c: mtp.Cands = undefined;
+                 try h.cand(o.stream(), d.dlogits.ptr, n, n, 1, count, 0);
+                 try o.candidates(1, &c);
+-                if (c.flags[0] == 0) return mtp.drawPickCandidates(o.e.gpa, c.vals[0..count], c.cols[0..count], h.ids, lse, position, sm);
++                if (c.flags[0] == 0) {
++                    var got = try mtp.drawPickCandidates(o.e.gpa, c.vals[0..count], c.cols[0..count], h.ids, lse, position, sm);
++                    // q38 (TF_FLASHNEXT_Q38_SGATE): the stop rule's input for a sampled draw
++                    got.prob = mtp.sampledGate(got.prob, got.token, c.vals[0..count], c.cols[0..count], h.ids, lse, position, sm);
++                    return got;
++                }
+             };
+             const row = d.host[0..n];
+             if (hd.threads() > 0) {
+@@ -346,6 +351,11 @@ pub fn Ops(comptime Tri: type) type {
+             if (ahead) |a| a.flush();
+             var j: usize = 0;
+             var stop: mtp.Stop = .{ .c = confidence };
++            // q38 (TF_FLASHNEXT_Q38_SGATE's C): a sampled stream's own running-product line
++            if (mtp.isSampled(sm)) {
++                const sg = @import("cuda_knobs.zig").q38SGate();
++                if (sg.c > 0 and confidence < 0) stop.c = -sg.c;
++            }
+             const hp = cuda.launch.HostProf;
+             var hp_t: u64 = if (hp.on()) hp.now() else 0;
+             while (j < @min(count, max_chain)) : (j += 1) {
+@@ -519,6 +529,12 @@ pub fn Ops(comptime Tri: type) type {
+             };
+             var j: usize = 0;
+             var stops: [max_lanes]mtp.Stop = @splat(.{ .c = confidence });
++            {
++                const sg = @import("cuda_knobs.zig").q38SGate();
++                if (sg.c > 0 and confidence < 0) for (sms, 0..) |sm_i, i_| {
++                    if (i_ < max_lanes and mtp.isSampled(sm_i)) stops[i_].c = -sg.c;
++                };
++            }
+             var best_host: [max_lanes * 4]f32 = undefined;
+             var step_ds: [max_lanes]*Draft = undefined;
+             var step_next: [max_lanes][1]u32 = undefined;
+@@ -572,6 +588,7 @@ pub fn Ops(comptime Tri: type) type {
+                         if (cand_k[r] > 0 and cands.flags[r] == 0) {
+                             const at = r * mtp.cand_max;
+                             got = try mtp.drawPickCandidates(o.e.gpa, cands.vals[at..][0..cand_k[r]], cands.cols[at..][0..cand_k[r]], h.ids, lse, positions[i] + j, sms[i]);
++                            got.prob = mtp.sampledGate(got.prob, got.token, cands.vals[at..][0..cand_k[r]], cands.cols[at..][0..cand_k[r]], h.ids, lse, positions[i] + j, sms[i]);
+                         } else {
+                             // the lane's whole row (the stream is idle after the download above): the keyed draw as pick makes it
+                             const row = ds[i].host[0..h.ids.len];
+@@ -903,7 +920,7 @@ fn stepLogLevel() i8 {
+     return st.on;
+ }
+ 
+-fn stepLogOn() bool {
++pub fn stepLogOn() bool {
+     return stepLogLevel() >= 1;
+ }
+ 

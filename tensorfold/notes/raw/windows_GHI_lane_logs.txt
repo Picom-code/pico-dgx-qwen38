@@ -1,0 +1,509 @@
+READY tfb/nodraft in 203 s; MemAvailable 41 GiB; GPU MiB 74788
+held ALL: 22.00 tok/s  n 6
+G2_base done 15:17:40
+READY tfb/nodraft in 142 s; MemAvailable 41 GiB; GPU MiB 74788
+held ALL: 21.77 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+G2_st8 done 15:21:16
+READY tfb/nodraft in 152 s; MemAvailable 41 GiB; GPU MiB 74788
+held ALL: 21.93 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+G2_st6 done 15:25:01
+tensorfold: the native CUDA engine cannot load /model with its own glue kernels (CudaFailed)
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/urllib/request.py", line 1344, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+  File "/usr/lib/python3.12/http/client.py", line 1365, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1411, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1360, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1120, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.12/http/client.py", line 1064, in send
+    self.connect()
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/pico/q38/kit/qk.py", line 289, in <module>
+    main()
+  File "/home/pico/q38/kit/qk.py", line 196, in main
+    req("hi", 8)
+  File "/home/pico/q38/kit/qk.py", line 131, in req
+    with urllib.request.urlopen(r, timeout=timeout) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1347, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 111] Connection refused>
+Traceback (most recent call last):
+  File "/home/pico/q38/kit/qk.py", line 289, in <module>
+    main()
+  File "/home/pico/q38/kit/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/pico/q38/kit/qk.py", line 186, in load
+    if p.endswith(".jsonl"): return {str(d["id"]): d for d in map(json.loads, open(p)) if "text" in d}
+                                                                              ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/pico/q38/runs/G2_st12/held6.jsonl'
+G2_st12 done 15:28:15
+tensorfold: the native CUDA engine cannot load /model with its own glue kernels (CudaFailed)
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/urllib/request.py", line 1344, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+  File "/usr/lib/python3.12/http/client.py", line 1365, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1411, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1360, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1120, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.12/http/client.py", line 1064, in send
+    self.connect()
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/pico/q38/kit/qk.py", line 289, in <module>
+    main()
+  File "/home/pico/q38/kit/qk.py", line 196, in main
+    req("hi", 8)
+  File "/home/pico/q38/kit/qk.py", line 131, in req
+    with urllib.request.urlopen(r, timeout=timeout) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1347, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 111] Connection refused>
+Traceback (most recent call last):
+  File "/home/pico/q38/kit/qk.py", line 289, in <module>
+    main()
+  File "/home/pico/q38/kit/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/pico/q38/kit/qk.py", line 186, in load
+    if p.endswith(".jsonl"): return {str(d["id"]): d for d in map(json.loads, open(p)) if "text" in d}
+                                                                              ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/pico/q38/runs/G2_cl12/held6.jsonl'
+G2_cl12 done 15:30:38
+READY tfb/nodraft in 158 s; MemAvailable 41 GiB; GPU MiB 74788
+held ALL: 21.93 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+G2_st3 done 15:34:30
+READY tfb/nodraft in 192 s; MemAvailable 40 GiB; GPU MiB 74788
+held ALL: 22.35 tok/s  n 6
+G3_base done 15:17:37
+READY tfb/nodraft in 130 s; MemAvailable 40 GiB; GPU MiB 74788
+held ALL: 21.85 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+G3_d4 done 15:21:00
+READY tfb/nodraft in 157 s; MemAvailable 41 GiB; GPU MiB 74788
+held ALL: 21.84 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+G3_d6 done 15:24:52
+READY tfb/nodraft in 140 s; MemAvailable 41 GiB; GPU MiB 74788
+held ALL: 22.04 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+G3_d3 done 15:28:25
+READY tfb/nodraft in 148 s; MemAvailable 41 GiB; GPU MiB 74788
+held ALL: 22.40 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+G3_w1 done 15:32:05
+READY tfb/nodraft in 148 s; MemAvailable 41 GiB; GPU MiB 74788
+held ALL: 21.77 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+G3_d8 done 15:35:47
+READY tf/default in 211 s; MemAvailable 37 GiB; GPU MiB 78215
+held chat: 50.28 tok/s (tokens/decode-time)  mean-of-prompts 53.37  n 66
+held code: 78.44 tok/s (tokens/decode-time)  mean-of-prompts 85.12  n 25
+held math: 74.63 tok/s (tokens/decode-time)  mean-of-prompts 75.04  n 13
+held ALL: 58.41 tok/s  n 104
+G_tf_a done 15:24:20
+READY tfb/default in 203 s; MemAvailable 40 GiB; GPU MiB 76436
+held chat: 47.78 tok/s (tokens/decode-time)  mean-of-prompts 50.81  n 66
+held code: 76.10 tok/s (tokens/decode-time)  mean-of-prompts 82.74  n 25
+held math: 71.40 tok/s (tokens/decode-time)  mean-of-prompts 71.77  n 13
+held ALL: 55.75 tok/s  n 104
+ident saved /home/picom/q38/runs/G_tfb/ident_on.json n 51 median tps 57.1
+G_tfb done 15:40:36
+READY tf/default in 220 s; MemAvailable 39 GiB; GPU MiB 78215
+held chat: 49.84 tok/s (tokens/decode-time)  mean-of-prompts 52.82  n 66
+held code: 78.97 tok/s (tokens/decode-time)  mean-of-prompts 85.70  n 25
+held math: 74.01 tok/s (tokens/decode-time)  mean-of-prompts 74.39  n 13
+held ALL: 58.06 tok/s  n 104
+G_tf_b done 15:52:04
+READY tfb/default in 214 s; MemAvailable 40 GiB; GPU MiB 76436
+held chat: 47.90 tok/s (tokens/decode-time)  mean-of-prompts 51.41  n 66
+held code: 78.14 tok/s (tokens/decode-time)  mean-of-prompts 84.15  n 25
+held math: 72.75 tok/s (tokens/decode-time)  mean-of-prompts 73.05  n 13
+held ALL: 56.24 tok/s  n 104
+ident saved /home/picom/q38/runs/G_g50_8/ident_on.json n 51 median tps 57.7
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+G_g50_8 done 16:08:25
+Error response from daemon: No such container: q38-run-tf
+READY tfb/nodraft in 210 s; MemAvailable 41 GiB; GPU MiB 74786
+held ALL: 23.03 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+H2_ent done 16:19:10
+READY tfb/nodraft in 150 s; MemAvailable 40 GiB; GPU MiB 74786
+warm: n-gram shards read in 15 s; MemAvailable 41 GiB; Cached 37 GiB
+held ALL: 23.05 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+H2_buf done 16:23:05
+READY tfb/nodraft in 150 s; MemAvailable 40 GiB; GPU MiB 74786
+warm: n-gram shards read in 12 s; MemAvailable 41 GiB; Cached 37 GiB
+held ALL: 23.25 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+H2_mmap done 16:26:57
+READY tfb/nodraft in 199 s; MemAvailable 41 GiB; GPU MiB 74786
+held ALL: 23.04 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+H2_buf_cold done 16:31:25
+READY tfb/nodraft in 156 s; MemAvailable 41 GiB; GPU MiB 74786
+held ALL: 23.03 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+H2_k4 done 16:35:12
+READY tfb/nodraft in 148 s; MemAvailable 40 GiB; GPU MiB 74786
+held ALL: 23.18 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+H2_k4_pdl done 16:38:49
+READY tfb/nodraft in 157 s; MemAvailable 41 GiB; GPU MiB 74786
+warm: n-gram shards read in 12 s; MemAvailable 41 GiB; Cached 37 GiB
+held ALL: 23.55 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+H2_k4_pdl_buf done 16:42:46
+READY tfb/default in 202 s; MemAvailable 39 GiB; GPU MiB 76436
+held chat: 49.86 tok/s (tokens/decode-time)  mean-of-prompts 52.96  n 66
+held code: 79.02 tok/s (tokens/decode-time)  mean-of-prompts 85.78  n 25
+held math: 74.06 tok/s (tokens/decode-time)  mean-of-prompts 74.43  n 13
+held ALL: 58.09 tok/s  n 104
+ident saved /home/pico/q38/runs/H3_ent/ident_on.json n 51 median tps 59.8
+drafted requests: n 144 tok/s 58.1  tok/round 3.394  drafts proposed/round 3.839  accepted/round 2.398  accept rate 0.625  ms/round 58.43  rows/round 4.84
+fit over drafted requests: ms/round = 42.21 + 4.22 x drafts verified per round  (x range 1.48..13.67)
+H3_ent done 16:30:16
+READY tfb/default in 199 s; MemAvailable 39 GiB; GPU MiB 76436
+warm: n-gram shards read in 12 s; MemAvailable 39 GiB; Cached 38 GiB
+held chat: 49.69 tok/s (tokens/decode-time)  mean-of-prompts 52.78  n 66
+held code: 78.69 tok/s (tokens/decode-time)  mean-of-prompts 85.59  n 25
+held math: 73.79 tok/s (tokens/decode-time)  mean-of-prompts 74.18  n 13
+held ALL: 57.88 tok/s  n 104
+ident saved /home/pico/q38/runs/H3_buf/ident_on.json n 51 median tps 59.3
+drafted requests: n 144 tok/s 57.9  tok/round 3.394  drafts proposed/round 3.839  accepted/round 2.398  accept rate 0.625  ms/round 58.65  rows/round 4.84
+fit over drafted requests: ms/round = 42.35 + 4.25 x drafts verified per round  (x range 1.48..13.67)
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+H3_buf done 16:46:13
+READY tfb/default in 199 s; MemAvailable 39 GiB; GPU MiB 76436
+held chat: 49.83 tok/s (tokens/decode-time)  mean-of-prompts 52.94  n 66
+held code: 78.96 tok/s (tokens/decode-time)  mean-of-prompts 85.58  n 25
+held math: 73.98 tok/s (tokens/decode-time)  mean-of-prompts 74.38  n 13
+held ALL: 58.05 tok/s  n 104
+ident saved /home/pico/q38/runs/H3_k4_pdl/ident_on.json n 51 median tps 59.6
+drafted requests: n 144 tok/s 58.0  tok/round 3.394  drafts proposed/round 3.839  accepted/round 2.398  accept rate 0.625  ms/round 58.47  rows/round 4.84
+fit over drafted requests: ms/round = 42.22 + 4.23 x drafts verified per round  (x range 1.48..13.67)
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+H3_k4_pdl done 17:01:56
+Error response from daemon: No such container: q38-run-tf
+READY tfb/default in 216 s; MemAvailable 39 GiB; GPU MiB 76436
+held chat: 49.92 tok/s (tokens/decode-time)  mean-of-prompts 52.90  n 66
+held code: 79.31 tok/s (tokens/decode-time)  mean-of-prompts 85.99  n 25
+held math: 74.41 tok/s (tokens/decode-time)  mean-of-prompts 74.84  n 13
+held ALL: 58.21 tok/s  n 104
+ident saved /home/picom/q38/runs/H_ent/ident_on.json n 51 median tps 59.9
+drafted requests: n 144 tok/s 58.2  tok/round 3.394  drafts proposed/round 3.839  accepted/round 2.398  accept rate 0.625  ms/round 58.28  rows/round 4.84
+fit over drafted requests: ms/round = 42.13 + 4.21 x drafts verified per round  (x range 1.48..13.67)
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+H_ent done 16:30:29
+READY tfb/default in 205 s; MemAvailable 40 GiB; GPU MiB 76436
+warm: n-gram shards read in 14 s; MemAvailable 41 GiB; Cached 38 GiB
+held chat: 49.99 tok/s (tokens/decode-time)  mean-of-prompts 53.10  n 66
+held code: 79.03 tok/s (tokens/decode-time)  mean-of-prompts 85.71  n 25
+held math: 74.02 tok/s (tokens/decode-time)  mean-of-prompts 74.43  n 13
+held ALL: 58.19 tok/s  n 104
+ident saved /home/picom/q38/runs/H_buf/ident_on.json n 51 median tps 59.6
+drafted requests: n 144 tok/s 58.1  tok/round 3.394  drafts proposed/round 3.839  accepted/round 2.398  accept rate 0.625  ms/round 58.37  rows/round 4.84
+fit over drafted requests: ms/round = 42.04 + 4.25 x drafts verified per round  (x range 1.48..13.67)
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+H_buf done 16:46:32
+READY tfb/default in 219 s; MemAvailable 41 GiB; GPU MiB 76436
+warm: n-gram shards read in 18 s; MemAvailable 41 GiB; Cached 40 GiB
+held chat: 46.66 tok/s (tokens/decode-time)  mean-of-prompts 49.67  n 66
+held code: 75.37 tok/s (tokens/decode-time)  mean-of-prompts 82.45  n 25
+held math: 70.64 tok/s (tokens/decode-time)  mean-of-prompts 71.03  n 13
+held ALL: 54.68 tok/s  n 104
+ident saved /home/picom/q38/runs/H_mmap/ident_on.json n 51 median tps 56.2
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 50/51  mean shared-prefix fraction 0.989  differ: ['long:qa']
+Error response from daemon: removal of container q38-run-tf is already in progress
+READY tfb/nodraft in 207 s; MemAvailable 40 GiB; GPU MiB 74786
+held ALL: 23.22 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+I2_nd_base done 17:12:57
+READY tfb/nodraft in 146 s; MemAvailable 41 GiB; GPU MiB 74786
+warm: n-gram shards read in 16 s; MemAvailable 41 GiB; Cached 37 GiB
+held ALL: 23.17 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+I2_nd_buf done 17:16:50
+READY tfb/nodraft in 148 s; MemAvailable 41 GiB; GPU MiB 74786
+warm: n-gram shards read in 15 s; MemAvailable 41 GiB; Cached 36 GiB
+held ALL: 23.14 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+I2_nd_buf_pdl done 17:20:42
+READY tfb/nodraft in 200 s; MemAvailable 40 GiB; GPU MiB 74786
+warm: n-gram shards read in 13 s; MemAvailable 41 GiB; Cached 37 GiB
+held ALL: 23.99 tok/s  n 6
+identical 6/6  mean shared-prefix fraction 1.000  differ: []
+I2_nd_mmap_pdl done 17:25:24
+READY tfb/default in 213 s; MemAvailable 38 GiB; GPU MiB 76436
+held chat: 49.29 tok/s (tokens/decode-time)  mean-of-prompts 52.28  n 66
+held code: 77.96 tok/s (tokens/decode-time)  mean-of-prompts 84.67  n 25
+held math: 73.04 tok/s (tokens/decode-time)  mean-of-prompts 73.43  n 13
+held ALL: 57.39 tok/s  n 104
+ident saved /home/pico/q38/runs/I2_dr_base/ident_on.json n 51 median tps 58.8
+drafted requests: n 144 tok/s 57.4  tok/round 3.394  drafts proposed/round 3.839  accepted/round 2.398  accept rate 0.625  ms/round 59.17  rows/round 4.84
+fit over drafted requests: ms/round = 42.55 + 4.33 x drafts verified per round  (x range 1.48..13.67)
+I2_dr_base done 17:41:30
+READY tfb/default in 215 s; MemAvailable 39 GiB; GPU MiB 76436
+warm: n-gram shards read in 13 s; MemAvailable 39 GiB; Cached 36 GiB
+held chat: 49.40 tok/s (tokens/decode-time)  mean-of-prompts 52.41  n 66
+held code: 78.20 tok/s (tokens/decode-time)  mean-of-prompts 85.02  n 25
+held math: 73.20 tok/s (tokens/decode-time)  mean-of-prompts 73.61  n 13
+held ALL: 57.52 tok/s  n 104
+ident saved /home/pico/q38/runs/I2_dr_buf/ident_on.json n 51 median tps 59.1
+drafted requests: n 144 tok/s 57.5  tok/round 3.394  drafts proposed/round 3.839  accepted/round 2.398  accept rate 0.625  ms/round 59.03  rows/round 4.84
+fit over drafted requests: ms/round = 42.55 + 4.29 x drafts verified per round  (x range 1.48..13.67)
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+I2_dr_buf done 17:57:50
+READY tfb/default in 213 s; MemAvailable 39 GiB; GPU MiB 76436
+held chat: 49.23 tok/s (tokens/decode-time)  mean-of-prompts 51.69  n 65
+held ALL: 49.23 tok/s  n 65
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/urllib/request.py", line 1344, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+  File "/usr/lib/python3.12/http/client.py", line 1365, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1411, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1360, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1120, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.12/http/client.py", line 1064, in send
+    self.connect()
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/pico/q38/kit/qk.py", line 289, in <module>
+    main()
+  File "/home/pico/q38/kit/qk.py", line 196, in main
+    req("hi", 8)
+  File "/home/pico/q38/kit/qk.py", line 131, in req
+    with urllib.request.urlopen(r, timeout=timeout) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1347, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 111] Connection refused>
+identical 65/66  mean shared-prefix fraction 1.000  differ: ['195']
+Traceback (most recent call last):
+  File "/home/pico/q38/kit/qk.py", line 289, in <module>
+    main()
+  File "/home/pico/q38/kit/qk.py", line 188, in main
+    a, b = load(sys.argv[2]), load(sys.argv[3]); ks = [k for k in a if k in b]
+                              ^^^^^^^^^^^^^^^^^
+  File "/home/pico/q38/kit/qk.py", line 187, in load
+    return json.load(open(p))["out"]
+                     ^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/pico/q38/runs/I2_dr_pdl/ident_on.json'
+Error response from daemon: removal of container q38-run-tf is already in progress
+READY tfb/nodraft in 190 s; MemAvailable 41 GiB; GPU MiB 74786
+held ALL: 23.58 tok/s  n 3
+hostprof no drafts: launches 548000 in-driver ms 1154.15 wall ms 16892.1 us per launch 2.10611
+I3_hp_nd done 17:12:17
+READY tfb/default in 136 s; MemAvailable 39 GiB; GPU MiB 76436
+held ALL: 58.96 tok/s  n 27
+hostprof drafts: launches 2575600 in-driver ms 12373.9 wall ms 99129.7 us per launch 4.80427
+I3_hp_dr done 17:16:15
+READY tfb/p16 in 154 s; MemAvailable 39 GiB; GPU MiB 76388
+distinct 1 users: 73.6 tok/s total  (512 tokens in 7.0 s; max ttft 0.20 s; errors 0 [])
+distinct 4 users: 143.8 tok/s total  (2048 tokens in 14.2 s; max ttft 1.26 s; errors 0 [])
+distinct 8 users: 197.5 tok/s total  (4096 tokens in 20.7 s; max ttft 2.85 s; errors 0 [])
+distinct 16 users: 218.4 tok/s total  (7879 tokens in 36.1 s; max ttft 6.81 s; errors 0 [])
+copies 16 users: 241.4 tok/s total  (8192 tokens in 33.9 s; max ttft 6.47 s; errors 0 [])
+distinct 16 users: 215.1 tok/s total  (7872 tokens in 36.6 s; max ttft 6.68 s; errors 0 [])
+I3_p16_best done 17:21:21
+READY tfb/p16 in 209 s; MemAvailable 39 GiB; GPU MiB 76388
+distinct 1 users: 76.1 tok/s total  (512 tokens in 6.7 s; max ttft 0.20 s; errors 0 [])
+distinct 4 users: 141.8 tok/s total  (2048 tokens in 14.4 s; max ttft 1.20 s; errors 0 [])
+distinct 8 users: 195.6 tok/s total  (4096 tokens in 20.9 s; max ttft 2.89 s; errors 0 [])
+distinct 16 users: 214.8 tok/s total  (7872 tokens in 36.7 s; max ttft 6.74 s; errors 0 [])
+copies 16 users: 251.1 tok/s total  (8192 tokens in 32.6 s; max ttft 6.40 s; errors 0 [])
+distinct 16 users: 221.0 tok/s total  (7866 tokens in 35.6 s; max ttft 6.62 s; errors 0 [])
+I3_p16_base done 17:27:21
+READY tfb/default in 217 s; MemAvailable 41 GiB; GPU MiB 76436
+I_base done 17:28:45
+READY tfb/default in 217 s; MemAvailable 41 GiB; GPU MiB 76436
+I_best done 18:04:55
+identical 51/51  mean shared-prefix fraction 1.000  differ: []
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+identical 107/107  mean shared-prefix fraction 1.000  differ: []
+device NVIDIA GB10 SMs 48 smem/SM 100 KB smem/block-optin 99 KB L2 24 MB
+ceiling read: 1 blocks/SM x 128 threads: 124.1 GB/s
+ceiling read: 1 blocks/SM x 256 threads: 118.8 GB/s
+ceiling read: 1 blocks/SM x 512 threads: 114.7 GB/s
+ceiling read: 2 blocks/SM x 128 threads: 120.4 GB/s
+ceiling read: 2 blocks/SM x 256 threads: 116.0 GB/s
+ceiling read: 2 blocks/SM x 512 threads: 115.8 GB/s
+ceiling read: 4 blocks/SM x 128 threads: 116.1 GB/s
+ceiling read: 4 blocks/SM x 256 threads: 116.5 GB/s
+ceiling read: 4 blocks/SM x 512 threads: 116.6 GB/s
+ceiling read: 8 blocks/SM x 128 threads: 115.3 GB/s
+ceiling read: 8 blocks/SM x 256 threads: 116.7 GB/s
+ceiling read: 8 blocks/SM x 512 threads: 117.2 GB/s
+head BF16 248320x2560        M=1 sk=1 plain   stock st4    5291.5 us   240.3 GB/s  smem 40960  ref
+head BF16 248320x2560        M=1 sk=1 plain   st3          5319.6 us   239.0 GB/s  smem 30720  BITS SAME
+head BF16 248320x2560        M=1 sk=1 plain   st6          5264.4 us   241.5 GB/s  smem 61440  BITS SAME
+head BF16 248320x2560        M=1 sk=1 plain   st8          5274.2 us   241.1 GB/s  smem 81920  BITS SAME
+head BF16 248320x2560        M=1 st12       skipped (smem 122880)
+head BF16 248320x2560        M=5 sk=1 plain   stock st4    5326.8 us   238.7 GB/s  smem 40960  ref
+head BF16 248320x2560        M=5 sk=1 plain   st3          5334.3 us   238.3 GB/s  smem 30720  BITS SAME
+head BF16 248320x2560        M=5 sk=1 plain   st6          5293.9 us   240.2 GB/s  smem 61440  BITS SAME
+head BF16 248320x2560        M=5 sk=1 plain   st8          5307.4 us   239.6 GB/s  smem 81920  BITS SAME
+head BF16 248320x2560        M=5 st12       skipped (smem 122880)
+hc mix_up BF16 10240x320     M=1 sk=1 plain   stock st4      30.4 us   215.4 GB/s  smem 40960  ref
+hc mix_up BF16 10240x320     M=1 sk=1 plain   st3            30.6 us   214.3 GB/s  smem 30720  BITS SAME
+hc mix_up BF16 10240x320     M=1 sk=1 plain   st6            30.4 us   215.6 GB/s  smem 61440  BITS SAME
+hc mix_up BF16 10240x320     M=1 sk=1 plain   st8            30.4 us   215.7 GB/s  smem 81920  BITS SAME
+hc mix_up BF16 10240x320     M=1 st12       skipped (smem 122880)
+hc mix_up BF16 10240x320     M=5 sk=1 plain   stock st4      30.5 us   215.1 GB/s  smem 40960  ref
+hc mix_up BF16 10240x320     M=5 sk=1 plain   st3            30.6 us   214.5 GB/s  smem 30720  BITS SAME
+hc mix_up BF16 10240x320     M=5 sk=1 plain   st6            30.5 us   215.2 GB/s  smem 61440  BITS SAME
+hc mix_up BF16 10240x320     M=5 sk=1 plain   st8            30.5 us   215.1 GB/s  smem 81920  BITS SAME
+hc mix_up BF16 10240x320     M=5 st12       skipped (smem 122880)
+hc mix_down BF16 320x10240   M=1 sk=8 cluster stock st4      36.2 us   217.5 GB/s  smem 40960  ref
+hc mix_down BF16 320x10240   M=1 sk=8 cluster st3            35.4 us   222.3 GB/s  smem 30720  BITS SAME
+hc mix_down BF16 320x10240   M=1 sk=8 cluster st6            38.0 us   207.0 GB/s  smem 61440  BITS SAME
+hc mix_down BF16 320x10240   M=1 sk=8 cluster st8            37.7 us   208.5 GB/s  smem 81920  BITS SAME
+hc mix_down BF16 320x10240   M=1 st12       skipped (smem 122880)
+hc mix_down BF16 320x10240   M=5 sk=8 cluster stock st4      35.9 us   219.2 GB/s  smem 40960  ref
+hc mix_down BF16 320x10240   M=5 sk=8 cluster st3            35.5 us   221.6 GB/s  smem 30720  BITS SAME
+hc mix_down BF16 320x10240   M=5 sk=8 cluster st6            37.8 us   208.1 GB/s  smem 61440  BITS SAME
+hc mix_down BF16 320x10240   M=5 sk=8 cluster st8            37.9 us   207.6 GB/s  smem 81920  BITS SAME
+hc mix_down BF16 320x10240   M=5 st12       skipped (smem 122880)
+q_proj MXFP8 12288x2560      M=1 sk=1 plain   stock st4     139.7 us   232.2 GB/s  smem 25088  ref
+q_proj MXFP8 12288x2560      M=1 sk=1 plain   st3           142.1 us   228.2 GB/s  smem 18816  BITS SAME
+q_proj MXFP8 12288x2560      M=1 sk=1 plain   st6           140.5 us   230.9 GB/s  smem 37632  BITS SAME
+q_proj MXFP8 12288x2560      M=1 sk=1 plain   st8           141.3 us   229.6 GB/s  smem 50176  BITS SAME
+q_proj MXFP8 12288x2560      M=1 sk=1 plain   st12          142.2 us   228.1 GB/s  smem 75264  BITS SAME
+q_proj MXFP8 12288x2560      M=5 sk=1 plain   stock st4     140.4 us   231.0 GB/s  smem 25088  ref
+q_proj MXFP8 12288x2560      M=5 sk=1 plain   st3           141.8 us   228.7 GB/s  smem 18816  BITS SAME
+q_proj MXFP8 12288x2560      M=5 sk=1 plain   st6           141.4 us   229.4 GB/s  smem 37632  BITS SAME
+q_proj MXFP8 12288x2560      M=5 sk=1 plain   st8           142.5 us   227.6 GB/s  smem 50176  BITS SAME
+q_proj MXFP8 12288x2560      M=5 sk=1 plain   st12          142.3 us   227.9 GB/s  smem 75264  BITS SAME
+o_proj MXFP8 2560x6144       M=1 sk=8 cluster stock st4      79.3 us   204.7 GB/s  smem 25088  ref
+o_proj MXFP8 2560x6144       M=1 sk=8 cluster st3            81.5 us   199.1 GB/s  smem 18816  BITS SAME
+o_proj MXFP8 2560x6144       M=1 sk=8 cluster st6            79.0 us   205.3 GB/s  smem 37632  BITS SAME
+o_proj MXFP8 2560x6144       M=1 sk=8 cluster st8            80.3 us   202.0 GB/s  smem 50176  BITS SAME
+o_proj MXFP8 2560x6144       M=1 sk=8 cluster st12           95.6 us   169.6 GB/s  smem 75264  BITS SAME
+o_proj MXFP8 2560x6144       M=5 sk=8 cluster stock st4      79.2 us   204.7 GB/s  smem 25088  ref
+o_proj MXFP8 2560x6144       M=5 sk=8 cluster st3            82.6 us   196.3 GB/s  smem 18816  BITS SAME
+o_proj MXFP8 2560x6144       M=5 sk=8 cluster st6            79.0 us   205.3 GB/s  smem 37632  BITS SAME
+o_proj MXFP8 2560x6144       M=5 sk=8 cluster st8            81.2 us   199.9 GB/s  smem 50176  BITS SAME
+o_proj MXFP8 2560x6144       M=5 sk=8 cluster st12           96.4 us   168.3 GB/s  smem 75264  BITS SAME
+shared MXFP8 640x2560        M=1 sk=4 cluster stock st4      12.0 us   140.7 GB/s  smem 25088  ref
+shared MXFP8 640x2560        M=1 sk=4 cluster st3            12.1 us   139.5 GB/s  smem 18816  BITS SAME
+shared MXFP8 640x2560        M=1 sk=4 cluster st6            12.0 us   141.0 GB/s  smem 37632  BITS SAME
+shared MXFP8 640x2560        M=1 sk=4 cluster st8            12.2 us   138.3 GB/s  smem 50176  BITS SAME
+shared MXFP8 640x2560        M=1 sk=4 cluster st12           12.4 us   136.1 GB/s  smem 75264  BITS SAME
+shared MXFP8 640x2560        M=5 sk=4 cluster stock st4      12.0 us   140.6 GB/s  smem 25088  ref
+shared MXFP8 640x2560        M=5 sk=4 cluster st3            12.2 us   139.0 GB/s  smem 18816  BITS SAME
+shared MXFP8 640x2560        M=5 sk=4 cluster st6            12.0 us   140.7 GB/s  smem 37632  BITS SAME
+shared MXFP8 640x2560        M=5 sk=4 cluster st8            12.2 us   138.9 GB/s  smem 50176  BITS SAME
+shared MXFP8 640x2560        M=5 sk=4 cluster st12           12.4 us   136.3 GB/s  smem 75264  BITS SAME
+hc chain (tiny,down,tiny,up,tiny) M=1 plain           72.5 us per chain  ref
+hc chain (tiny,down,tiny,up,tiny) M=1 PDL on qmmf     69.2 us per chain  BITS SAME
+hc chain (tiny,down,tiny,up,tiny) M=1 PDL on all      61.0 us per chain  BITS SAME
+10 tiny kernels M=1 plain           20.5 us per 10 launches  ref
+10 tiny kernels M=1 PDL on qmmf     20.5 us per 10 launches  BITS SAME
+10 tiny kernels M=1 PDL on all      16.0 us per 10 launches  BITS SAME
+hc chain (tiny,down,tiny,up,tiny) M=5 plain           72.5 us per chain  ref
+hc chain (tiny,down,tiny,up,tiny) M=5 PDL on qmmf     69.5 us per chain  BITS SAME
+hc chain (tiny,down,tiny,up,tiny) M=5 PDL on all      61.2 us per chain  BITS SAME
+10 tiny kernels M=5 plain           20.5 us per 10 launches  ref
+10 tiny kernels M=5 PDL on qmmf     20.5 us per 10 launches  BITS SAME
+10 tiny kernels M=5 PDL on all      16.7 us per 10 launches  BITS SAME

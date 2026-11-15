@@ -1,0 +1,41 @@
+suite F10_fly mode full start 2026-11-14T15:13:16Z model Qwen3.8-Flash-Next
+idle after load: MemAvailable 29 GiB, GPU MiB 85114
+== ttft 15:13:16
+ttft short prompt: median 119 ms  [115, 111, 121, 121, 113, 119, 120]
+== c1 15:13:18
+chat 1 user: median 55.3 tok/s  mean 53.7  [56.43, 50.58, 57.04, 55.28, 51.48, 57.25, 51.66, 48.01, 55.28]
+code 1 user: median 90.4 tok/s  mean 89.1  [90.5, 97.35, 80.07, 89.24, 95.31, 74.74, 90.39, 101.02, 83.07]
+== sd 15:15:27
+sd-method prose T0 think-off: median 66.8  mean 66.9  [66.07, 67.22, 67.53, 66.81, 66.82]
+sd-method prose T0.7 think-on: median 50.8  mean 50.4  [49.59, 50.05, 50.75, 50.78, 50.8]
+sd-method code T0 think-off (task 0): median 110.2  mean 109.8  [107.94, 110.16, 110.19, 110.48, 109.99]
+sd-method code8 T0 think-off (tasks 0-7): median 108.4  mean 106.1  [111.21, 113.27, 106.71, 103.71, 110.11, 84.92, 113.04, 106.13]
+sd-method structured T0 think-off: median 153.3  mean 153.2  [151.19, 152.94, 154.77, 153.28, 153.8]
+== held 15:17:09
+held chat: 56.68 tok/s (tokens/decode-time)  mean-of-prompts 59.97  n 198
+held code: 82.01 tok/s (tokens/decode-time)  mean-of-prompts 85.09  n 77
+held math: 81.68 tok/s (tokens/decode-time)  mean-of-prompts 82.93  n 40
+held ALL: 64.36 tok/s  n 315
+== sparkDash 1.8.8 real 15:39:33
+15:39:48 sdrun: c1 prose run 1: 66.95 tok/s, 256 tokens, ttft 143.17 ms 
+15:39:51 sdrun: c1 code run 1: 110.96 tok/s, 256 tokens, ttft 196.71 ms 
+15:39:53 sdrun: c1 structured run 1: 154.03 tok/s, 256 tokens, ttft 135.99 ms 
+15:40:02 sdrun: c1 prose run 2: 66.8 tok/s, 256 tokens, ttft 140.28 ms 
+15:40:05 sdrun: c1 code run 2: 110.74 tok/s, 256 tokens, ttft 196.89 ms 
+15:40:07 sdrun: c1 structured run 2: 152.59 tok/s, 256 tokens, ttft 136.15 ms 
+15:40:16 sdrun: c1 prose run 3: 66.84 tok/s, 256 tokens, ttft 141.07 ms 
+15:40:19 sdrun: c1 code run 3: 110.14 tok/s, 256 tokens, ttft 195.17 ms 
+15:40:21 sdrun: c1 structured run 3: 154.12 tok/s, 256 tokens, ttft 136.03 ms 
+15:40:30 sdrun: c1 prose run 4: 66.82 tok/s, 256 tokens, ttft 140.87 ms 
+15:40:33 sdrun: c1 code run 4: 110.22 tok/s, 256 tokens, ttft 197.83 ms 
+15:40:35 sdrun: c1 structured run 4: 155 tok/s, 256 tokens, ttft 136.78 ms 
+15:40:44 sdrun: c1 prose run 5: 66.66 tok/s, 256 tokens, ttft 139.01 ms 
+15:40:47 sdrun: c1 code run 5: 110.85 tok/s, 256 tokens, ttft 196.36 ms 
+15:40:49 sdrun: c1 structured run 5: 154.07 tok/s, 256 tokens, ttft 137.96 ms 
+15:42:31 sdrun: catalog prose: 16 prompts, mean 49.4 tok/s
+15:43:49 sdrun: catalog structural: 18 prompts, mean 74.8 tok/s
+15:45:35 sdrun: catalog code: 32 prompts, mean 95.1 tok/s
+min MemAvailable during suite: 27786 MiB; max GPU MiB 86344
+gpu temp C min/max during suite: 47/75 on spark-923b
+suite end 2026-11-14T15:45:35Z
+SUITE_DONE

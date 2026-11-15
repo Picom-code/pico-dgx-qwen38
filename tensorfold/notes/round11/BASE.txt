@@ -1,0 +1,12 @@
+ROUND 11 BASE (written by builder A, 2026-11-14 18:55 UTC). Ship-candidate integration tree.
+  git commit : 17a4c9d  (branch integ11, Mac q38/wt/I11; same object store as q38/work/tf)
+  git tree   : c2cbb6494de4418dec69238bdd4eea1c92bdb0e9
+  = MiaAI base 6a8e032 + repo tensorfold/patches/0101..0129 (TREE_EQUAL checked)
+  = integ10 512e3cf (0101-0123) + C r11 (0124) + C r12 (0125) + C r13 (0126) + B r11 delta 0c56877..70fb440 (0127; 0122 stays) + D r11 delta f0552a0..99f2bbe (0128)
+    + A 0129 (the TF_Q38_* copy / prediction knobs are also read as TF_FLASHNEXT_Q38_*: MiaAI start.sh forwards only that prefix).
+  It differs from C's r14 trees: afb40abf (C60) + ALL of B r11 (C61 has only B's commit b9932b6) + D r11.
+  923b: image tensorfold-qwen38:v1.1.4-eab8582 id b052a3f158ad (recipe.sh prepare, 0101-0129); binary dir ~/q38/tfbin/J11 (bb6f3b99e0ec71ba) is the tree WITHOUT 0129 (2c2d718e).
+Make your branch:  cd ~/.hermes/cache/scratch/q38/work/tf && git worktree add -b r12-X ../../wt/X12 17a4c9d
+Hand off: q38/handoff/{B,C,D}/r12-<lever>/ = ONE cumulative patch `git diff 17a4c9d HEAD` + NOTE.md (flags, default, measured before/after with references first and
+  last, identity proof, sha256 of the patch version that was BUILT AND MEASURED).
+(Round 9 base was 0b5cf9b = patches 0101-0115; round 10 integ10 512e3cf = 0101-0123, tree 7628b4db.)
